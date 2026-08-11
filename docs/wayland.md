@@ -159,9 +159,23 @@ and is checked in `tests/wayland.mjs`.
 application into a transient systemd scope and asks the *session* bus to make
 it; a private `dbus-run-session` has no systemd on it, so the cgroup is never
 created and the snap exits before it draws — every snap, every time, with
-`is not a snap cgroup for tag snap.<name>`. Snaps therefore get the server's own
-bus when it has one, and the single-instance risk that comes with it. That was
+`is not a snap cgroup for tag snap.<name>`. Snaps therefore get this user's own
+bus when there is one, and the single-instance risk that comes with it. That was
 the other 14.
+
+**And a packaged install had no such bus in its environment.** Those 14 were
+verified from a shell, where `DBUS_SESSION_BUS_ADDRESS` is simply *there*; a
+systemd unit inherits no such thing. `configure.sh` sets
+`XDG_RUNTIME_DIR` and stops, so the address was empty, every snap got a private
+bus, and every `.deb` application carried on working — which is a confusing
+shape to debug, because nothing is broken except the confined half of the menu.
+`sessionBusAddress()` now derives it from the runtime directory the same way
+`systemd.ts` does for `systemctl --user`, and lingering is what guarantees the
+user manager behind it. The question is asked **only for snaps**: everything
+else keeps its private bus whatever the answer, so a machine that does have a
+desktop session cannot start losing GTK windows to it. Missing
+`dbus-user-session` is the remaining way to have no bus at all, and
+`configure.sh` says so rather than installing it.
 
 **A frame bigger than the socket buffer looked like the application quitting.**
 The frame channel is a socketpair node hands us, and node makes *both* ends

@@ -443,6 +443,22 @@ else
   say "no $RUNTIME_DIR — native applications will be unavailable"
 fi
 
+# Snaps need one thing more than that directory. snap-confine makes its tracking
+# cgroup by asking systemd --user for a transient scope over the session bus, so
+# there has to be a session bus with systemd on it; without one every snap exits
+# before it draws while ordinary .deb applications are perfectly fine, which is
+# a confusing way to find out. `dbus-user-session` is the package that puts the
+# socket there, and a minimal server image does not always carry it.
+#
+# Reported, not installed: pulling a package onto someone's machine during an
+# upgrade is their decision, not this script's.
+if [ -S "${RUNTIME_DIR}/bus" ]; then
+  say "session bus ${RUNTIME_DIR}/bus"
+else
+  say "no ${RUNTIME_DIR}/bus — snap applications will not start"
+  say "  (apt install dbus-user-session, then re-run this)"
+fi
+
 # ---------------------------------------------------------------------------
 # The unit
 # ---------------------------------------------------------------------------

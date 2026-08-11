@@ -28,6 +28,10 @@ fixture wd-test-hidden "WD Test Hidden" /bin/true "OnlyShowIn=NoSuchDesktop;"
 fixture wd-test-shown  "WD Test Shown"  /bin/true "NotShowIn=NoSuchDesktop;"
 # Exits at once, drawing nothing — the shape of a single-instance handoff.
 fixture wd-test-silent "WD Test Silent" /bin/true ""
+# Snap-shaped: what matters is the command, since that is what the launcher
+# reads to decide which bus this gets. Only offered where `snap` is installed,
+# and the suite skips the check when it is not.
+fixture wd-test-snap   "WD Test Snap"   "snap run wd-test-snap" ""
 # Exported the way flatpak and snap export: outside the applications directory,
 # in a tree that only reaches XDG_DATA_DIRS through a login shell's profile.d.
 # A service has no such shell, which is how every snap came to be invisible.

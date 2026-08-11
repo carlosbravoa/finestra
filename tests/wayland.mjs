@@ -193,6 +193,37 @@ if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))
   // explanation and must not be offered as one.
   check('the handoff is only blamed when the machine\'s own bus was shared',
     !/session bus/.test(silent.error ?? ''), silent.error ?? '');
+
+  /* ---------------------------------------------------------------- */
+  /* Which bus a snap gets, and which one everything else gets         */
+  /* ---------------------------------------------------------------- */
+
+  // snap-confine asks systemd --user for a tracking scope over the session
+  // bus, so a private bus is fatal to a snap and to nothing else. A packaged
+  // install has no DBUS_SESSION_BUS_ADDRESS — only XDG_RUNTIME_DIR — so the
+  // address has to be worked out from the runtime directory, and for a long
+  // time it was not: every snap on a normal install died before drawing.
+  //
+  // Two things have to be true for there to be anything to check: `snap` on
+  // PATH, or the entry is not offered at all, and a user bus, or there is no
+  // choice to make.
+  const runtimeDir = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`;
+  const userBus = fs.existsSync(path.join(runtimeDir, 'bus'));
+  if (ids.has('wd-test-snap') && userBus && status.sessionBus) {
+    const snap = open('wayland', 'session', { appId: 'wd-test-snap' });
+    await until(() => snap.info !== null, 8000);
+    check('a snap is given this machine\'s session bus',
+      snap.info?.sessionBus === false, `${runtimeDir}/bus`);
+    // The half that protects a machine with a real desktop on it: sharing the
+    // bus is what lets a single-instance application hand its window to the
+    // copy in someone's login session, so only a snap may pay that price.
+    check('and an ordinary application still gets a private one',
+      silent.info?.sessionBus === true, String(silent.info?.sessionBus));
+    await until(() => snap.closed, 8000);
+  } else {
+    console.log(`SKIP  which bus a snap gets — ${
+      ids.has('wd-test-snap') ? (userBus ? 'no dbus-run-session' : 'no user bus') : 'no snap on PATH'}`);
+  }
 }
 
 /* ------------------------------------------------------------------ */

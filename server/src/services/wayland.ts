@@ -111,6 +111,46 @@ function hasExecutable(name: string): boolean {
   return false;
 }
 
+/**
+ * The address of a session bus a snap can actually use, or null.
+ *
+ * It has to be a bus with `systemd --user` on it: `snap-confine` creates its
+ * tracking scope by calling StartTransientUnit on `org.freedesktop.systemd1`
+ * over the *session* bus, and a bus without that answers nothing. Hence not
+ * `dbus-run-session`, and hence this being a separate question from "is there
+ * a bus daemon on the PATH".
+ *
+ * A packaged install has no DBUS_SESSION_BUS_ADDRESS in its environment —
+ * `configure.sh` sets XDG_RUNTIME_DIR and stops there — so the address is
+ * derived from the runtime directory the same way `systemd.ts` derives it for
+ * `systemctl --user`. Without this, every snap on a normal install got a
+ * private bus and exited before drawing, while ordinary applications were fine.
+ *
+ * Presence rather than a round trip: the socket is `dbus.socket`'s, created by
+ * the user manager that lingering keeps running, so a socket at that path
+ * means a bus behind it. There is no synchronous connect in node, and being
+ * wrong costs exactly the failure the snap has without this.
+ */
+function sessionBusAddress(): string | null {
+  const configured = process.env.DBUS_SESSION_BUS_ADDRESS;
+  if (configured) return configured;
+
+  const uid = process.getuid?.();
+  const runtimeDir = process.env.XDG_RUNTIME_DIR || (uid === undefined ? '' : `/run/user/${uid}`);
+  if (!runtimeDir) return null;
+
+  const socket = path.join(runtimeDir, 'bus');
+  try {
+    if (!fs.statSync(socket).isSocket()) return null;
+    // Ours to talk to, not merely there: a sandbox that denies it should read
+    // as "no bus", not as one that turns out to be unusable later.
+    fs.accessSync(socket, fs.constants.R_OK | fs.constants.W_OK);
+  } catch {
+    return null;
+  }
+  return `unix:path=${socket}`;
+}
+
 /* ------------------------------------------------------------------ */
 /* Shared libraries                                                    */
 /* ------------------------------------------------------------------ */
@@ -765,19 +805,28 @@ export const waylandService: Service = {
        * the application into a transient systemd scope and asks the *session*
        * bus to make it. A private bus has no systemd on it, the cgroup is never
        * created, and the snap exits before it draws — every time, for every
-       * snap. So one gets the server's own bus if the server has one, and the
+       * snap. So one gets this user's own bus when there is one, and the
        * single-instance risk that comes with it.
+       *
+       * Asked only for snaps, deliberately: everything else keeps its private
+       * bus whatever the answer is, which is what keeps a machine with a real
+       * desktop session from losing GTK windows to a copy already running
+       * there. The only behaviour that changes on such a machine is a snap's,
+       * and its alternative was not starting.
        */
       const isSnap = app.argv[0].startsWith('/snap/') || app.argv[0] === 'snap';
-      const hostBus = Boolean(process.env.DBUS_SESSION_BUS_ADDRESS);
-      const useBus = hasExecutable('dbus-run-session') && !(isSnap && hostBus);
+      const hostBus = isSnap ? sessionBusAddress() : null;
+      const useBus = hasExecutable('dbus-run-session') && !hostBus;
       const command = useBus ? 'dbus-run-session' : binary;
       const commandArgs = useBus ? ['--', binary, ...compositorArgs] : compositorArgs;
 
       const env = { ...process.env };
       // A bus of our own replaces this one; with no bus of our own, whatever
-      // the server has is better than none at all.
+      // the server has is better than none at all — and for a snap, the
+      // address may be one we worked out rather than one we were given, so it
+      // has to be put in the environment rather than left to be inherited.
       if (useBus) delete env.DBUS_SESSION_BUS_ADDRESS;
+      else if (hostBus) env.DBUS_SESSION_BUS_ADDRESS = hostBus;
       delete env.WAYLAND_DISPLAY;
       delete env.DISPLAY;
 

@@ -285,6 +285,13 @@ check "it said what it took over" \
   "$(yes_no "$(grep -q 'took over' "$WORK/out.log" && echo 0 || echo 1)")"
 check "it said what it removed" \
   "$(yes_no "$(grep -q 'removed' "$WORK/out.log" && echo 0 || echo 1)")"
+# Either sentence will do — whether the box running this has a user bus is not
+# the point. That it says which way it went is: a snap with no session bus dies
+# before it draws while every .deb application works, and nothing else on the
+# machine will explain that.
+check "it said whether snaps can start" \
+  "$(yes_no "$(grep -qE 'session bus |snap applications will not start' "$WORK/out.log" && echo 0 || echo 1)")" \
+  "$(grep -oE 'session bus [^ ]*|no .*bus — snap applications will not start' "$WORK/out.log" | head -1)"
 # The health poll waits for a service that is not up yet, which is not a fault
 # and must not be printed as one. This caught `curl -fsS` in the loop: a
 # successful install printed "curl: (7) Failed to connect" on its way to working.
