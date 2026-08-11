@@ -100,6 +100,26 @@ grep -q '@@' "$WORK/index.html" && die "a placeholder survived in index.html"
 grep -q '@@' "$WORK/get.sh"     && die "a placeholder survived in get.sh"
 bash -n "$WORK/get.sh" || die "the templated get.sh does not parse"
 
+# A version number is published once. The bucket has no versioning, so a second
+# upload under the same name destroys the first — which is how a 0.2.1 built on
+# one line of work replaced the 0.2.1 someone else had already released that
+# morning, silently, with every check passing. Two different tarballs then
+# claimed one number, and the bytes of the older one were simply gone.
+#
+# Compared by checksum rather than by existence, so re-running this on the same
+# artifact — the ordinary way to recover from a failure partway through — still
+# works.
+PUBLISHED_SHA="$(aws s3 cp "s3://${BUCKET}/releases/${SAFE_NAME}.sha256" - 2>/dev/null | awk 'NR==1 {print $1}')" || true
+if [ -n "${PUBLISHED_SHA:-}" ] && [ "$PUBLISHED_SHA" != "$SHA" ]; then
+  [ "${WD_REPUBLISH:-0}" = 1 ] || die "$(printf '%s\n' \
+    "${VERSION} is already published, and from a different build:" \
+    "  published  ${PUBLISHED_SHA}" \
+    "  this one   ${SHA}" \
+    "Bump the version rather than replacing it. WD_REPUBLISH=1 overrides, and" \
+    "destroys the published tarball — the bucket keeps no previous version.")"
+  log "WARNING: WD_REPUBLISH=1 — replacing the published ${VERSION} (${PUBLISHED_SHA})"
+fi
+
 log "uploading the release ($(du -h "$TARBALL" | cut -f1)) as ${SAFE_NAME}"
 aws s3 cp "$TARBALL" "s3://${BUCKET}/releases/${SAFE_NAME}" \
   --content-type application/gzip --only-show-errors
@@ -133,15 +153,26 @@ aws s3 cp "$WORK/latest.txt" "s3://${BUCKET}/latest.txt" \
 # ---------------------------------------------------------------------------
 # The edge
 # ---------------------------------------------------------------------------
-# Only the three that change. Releases are immutable and arrive under new keys,
-# so invalidating them would spend the 1000-path monthly allowance on nothing.
+# The four that change, and this release's own two keys.
+#
+# "Releases are immutable and arrive under new keys" is true of a version that
+# is only ever published once, and that is not a promise this script can make:
+# re-cutting a number after a bad build overwrites the key, and the edge goes on
+# serving what it cached. It happened — 0.2.1 was published twice, the second
+# upload landed in S3, and CloudFront kept answering with the first checksum for
+# hours. The tarball was the new one and the checksum named the old one, so
+# `sha256sum -c` failed on a perfectly good download, which is exactly what a
+# tampered release looks like to the person checking.
+#
+# Six paths out of a 1000-a-month allowance is not worth reasoning about.
 #
 # The wait is not optional. Without it the checks below race the edge, and the
 # way that fails is not a red run — it is a green one, against the *previous*
 # latest.txt, which is the single object that must never be stale.
-log "invalidating the three files that change"
+log "invalidating the files that change, and this release's own keys"
 INV_ID="$(aws cloudfront create-invalidation --distribution-id "$DIST_ID" \
   --paths /index.html /get.sh /latest.txt /screenshot.png \
+    "/releases/${SAFE_NAME}" "/releases/${SAFE_NAME}.sha256" \
   --query 'Invalidation.Id' --output text)"
 aws cloudfront wait invalidation-completed --distribution-id "$DIST_ID" --id "$INV_ID"
 
@@ -188,6 +219,10 @@ check "get.sh names the licence"            "${BASE}/get.sh"     "licensing@fine
 check "the page is served"                  "${BASE}/"           "$VERSION"
 check "the page links the published file"   "${BASE}/"           "$SAFE_NAME"
 check "the checksum names the published file" "${BASE}/releases/${SAFE_NAME}.sha256" "$SAFE_NAME"
+# The *value*, not just the name. Checking the filename is what let a stale
+# checksum through: the served body named the right file and carried the wrong
+# hash, and every check passed. This is the assertion that would have caught it.
+check "and it is this build's checksum"       "${BASE}/releases/${SAFE_NAME}.sha256" "$SHA"
 
 # A binary, so the substring check above cannot speak for it: ask for the first
 # bytes and look for PNG's own signature rather than trusting a 200.
@@ -207,15 +242,24 @@ case "$redirect" in
 esac
 
 # The URL exactly as the page prints it, since a "+" reaching a path is the
-# specific way this broke before. -o /dev/null without -f so a 403 is reported
-# as 403 rather than as curl's exit status.
-code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 -r 0-1023 ${RESOLVE+"${RESOLVE[@]}"} \
+# specific way this broke before. -o without -f so a 403 is reported as 403
+# rather than as curl's exit status.
+#
+# The whole file, and then its hash: a range request proves the key answers, and
+# proves nothing about *which* bytes are behind it. An edge still holding a
+# previous upload of the same version answers 206 exactly like a correct one.
+code="$(curl -sS -o "$WORK/served.tar.gz" -w '%{http_code}' --max-time 600 ${RESOLVE+"${RESOLVE[@]}"} \
         "${BASE}/releases/${SAFE_NAME}" 2>/dev/null || echo 000)"
-if [ "$code" = "206" ] || [ "$code" = "200" ]; then
-  printf '  PASS  the tarball downloads\n'
+served="$(sha256sum "$WORK/served.tar.gz" 2>/dev/null | awk '{print $1}')"
+if [ "$code" = "200" ] && [ "$served" = "$SHA" ]; then
+  printf '  PASS  the tarball downloads, and is this build\n'
+elif [ "$code" = "200" ]; then
+  printf '  FAIL  the tarball downloads, and is this build  (served %s, built %s)\n' \
+    "${served:-nothing}" "$SHA"; fails=$((fails+1))
 else
-  printf '  FAIL  the tarball downloads  (HTTP %s)\n' "$code"; fails=$((fails+1))
+  printf '  FAIL  the tarball downloads, and is this build  (HTTP %s)\n' "$code"; fails=$((fails+1))
 fi
+rm -f "$WORK/served.tar.gz"
 
 echo
 if [ "$fails" -ne 0 ]; then

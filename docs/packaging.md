@@ -258,7 +258,7 @@ Nothing is ever terminated by instance id alone: every destructive call filters
 on the CI tag and re-checks the tag on the instance itself, so a machine we did
 not create cannot be caught by it.
 
-### Three things that went wrong while building this, and what they cost
+### Four things that went wrong while building this, and what they cost
 
 Worth writing down, because both are ordinary mistakes with unusually
 sharp consequences.
@@ -297,6 +297,42 @@ It came back, and that is the part worth remembering. `ip link set mtu` lasts
 until the DHCP lease renews, at which point AWS's option set puts 9001 straight
 back — mid-build, long after the log had recorded the fix as applied. It is now
 pinned in netplan, where an explicit MTU beats the lease.
+
+**A republished version served a stale checksum for hours.** Publishing 0.2.1
+uploaded the tarball and its `.sha256` to S3, invalidated the four files that
+change, and passed every check. The site then served the *new* tarball beside
+the *old* checksum, because that version number had been published once before
+and CloudFront still held the first `.sha256` — release keys were deliberately
+left out of the invalidation on the reasoning that a release is immutable and
+arrives under a new key. Re-cutting a number is exactly the case that breaks,
+and the failure it produces is the worst-looking one available: `sha256sum -c`
+fails on a good download, which is indistinguishable from a tampered release.
+
+The stale checksum was the symptom. The cause was worse and took longer to see:
+**that number had already been released, from a different line of work.** Two
+branches each bumped to 0.2.1 and each cut a tag; the second publish overwrote
+the first release's tarball in a bucket with no versioning, so two different
+builds claimed one number and the older one's bytes stopped existing. The
+checksum survived only because CloudFront was still serving it, which is what
+made the collision visible at all.
+
+Three changes, because the failure, the reason it went unnoticed, and the reason
+it was possible are separate.
+
+`publish.sh` **refuses to publish a version that is already published from a
+different build**, comparing checksums so that re-running it on the same
+artifact still works. `WD_REPUBLISH=1` overrides and says what it is destroying.
+That is the one that matters: a version number is a promise about contents.
+
+It now invalidates this release's own two keys as well — six paths out of a
+thousand a month, against the previous reasoning that releases are immutable and
+arrive under new keys, which is only true if nothing ever republishes one.
+
+And the check that was supposed to cover this asserted the served checksum file
+named the right *file*, which it did; it now asserts the right *hash*, and the
+tarball check downloads the whole artifact and hashes it rather than
+range-requesting the first kilobyte, because a stale edge answers a range
+request exactly like a correct one.
 
 **A caution about that second sighting.** It was found because a build packaged
 correctly and then dragged its 58 MB artifact home at six kilobytes a second,
