@@ -277,12 +277,29 @@
   margin: 0;
   padding: var(--editor-pad-y) var(--editor-pad-x);
   border: none;
-  outline: none;
   resize: none;
   background: transparent;
   color: var(--text);
   white-space: pre;
   overflow: auto;
+}
+
+/*
+ * The shell's focus ring is right everywhere except here, and turning it off
+ * has to be said at focus to work at all: `outline: none` on the plain class
+ * ties with `:focus-visible` in base.css on specificity, and base.css is
+ * bundled later, so the ring won. It showed as a thick accent border along the
+ * top and left only — `outline-offset: 1px` puts it outside the border box,
+ * where the two edges the window does not clip are the ones drawn over the
+ * toolbar and the gutter. Every other input in the product escapes this by
+ * accident, having written its `outline: none` in a `:focus` rule.
+ *
+ * A caret in a pane that fills the window is the focus indicator here, which
+ * is why this is a removal and not a smaller ring.
+ */
+.editor-text:focus,
+.editor-text:focus-visible {
+  outline: none;
 }
 
 .editor-app.is-wrapped .editor-text {
