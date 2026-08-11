@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { stateDir } from './config.js';
+import { buildInfo } from './version.js';
 
 const HELP = `finestra — ask this machine's desktop to open something
 
@@ -28,6 +29,7 @@ const HELP = `finestra — ask this machine's desktop to open something
   finestra open <file>          open a file with whatever handles it
   finestra apps [filter]        list the applications that can be opened
   finestra status               is a desktop connected?
+  finestra version              which build is installed here
 
 An application that needs a display cannot be started from a shell: each one
 runs under its own compositor, which exists only for the window it draws. Open
@@ -174,6 +176,19 @@ async function main(argv: string[]): Promise<void> {
           : 'no desktop is connected\n',
       );
       if (res.desktops === 0) process.exit(1);
+      return;
+    }
+
+    // Answers without a running desktop, unlike every command above it: the
+    // question "which version is on this box" is usually asked precisely
+    // because something is not working.
+    case 'version':
+    case '--version':
+    case '-V': {
+      const build = buildInfo();
+      process.stdout.write(
+        `finestra ${build.version}${build.builtAt ? `  (built ${build.builtAt})` : ''}\n`,
+      );
       return;
     }
 

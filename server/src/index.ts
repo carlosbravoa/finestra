@@ -176,7 +176,7 @@ heartbeat.unref();
 startDeadman(readDeadmanEnv());
 
 if (config.dial) {
-  console.log(`\n  Finestra  ·  ${host.user}@${host.hostname} (${host.platform}/${host.arch})`);
+  console.log(`\n  Finestra ${host.build.version}  ·  ${host.user}@${host.hostname} (${host.platform}/${host.arch})`);
   console.log(`  services     ${[...serviceMap.keys()].join(', ')}`);
   console.log(`  dialling     ${config.dial}  (not listening on any port)`);
   if (!config.dialTicket) {
@@ -204,7 +204,7 @@ if (config.dial) {
     // In dev the client lives on Vite's port, not this one.
     const clientBase = `http://${display}:${config.dev ? config.clientPort : config.port}`;
 
-    console.log(`\n  Finestra  ·  ${host.user}@${host.hostname} (${host.platform}/${host.arch})`);
+    console.log(`\n  Finestra ${host.build.version}  ·  ${host.user}@${host.hostname} (${host.platform}/${host.arch})`);
     console.log(`  listening    ${config.host}:${config.port}${config.dev ? '  (api + websocket only)' : ''}`);
     console.log(`  services     ${[...serviceMap.keys()].join(', ')}`);
     if (config.root) console.log(`  fs root      ${config.root} (confined)`);

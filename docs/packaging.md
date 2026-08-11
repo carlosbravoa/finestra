@@ -89,12 +89,14 @@ build.
 
 ### Where a version can be read
 
-Four places, all from the same string:
+Six places, all from the same string:
 
 | | |
 |---|---|
-| `MANIFEST` | In the install tree. What `install.sh` and `update.sh` compare |
+| `finestra version` | The first thing to ask for in a bug report. Answers with no desktop connected, because that is usually why someone is asking |
 | The About dialog | Desktop menu → About. Names the **shell** and the **server** separately |
+| The startup banner | `Finestra 0.2.0 · user@host (linux/x64)`, on both the listening and the dialling paths |
+| `MANIFEST` | In the install tree. What `install.sh` and `update.sh` compare |
 | `hello` | `host.build` on every connection, so the shell learns it without asking |
 | The tarball name | `finestra-<version>-linux-x64.tar.gz` |
 
