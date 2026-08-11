@@ -1,0 +1,285 @@
+/* ------------------------------------------------------------------ */
+/* Notifications                                                       */
+/* ------------------------------------------------------------------ */
+
+.notification-stack {
+  position: absolute;
+  right: 14px;
+  bottom: calc(var(--taskbar-height) + 14px);
+  z-index: 8000;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 9px;
+  width: 330px;
+  max-width: calc(100vw - 28px);
+  pointer-events: none;
+}
+
+.notification {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-menu);
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateX(16px);
+  transition:
+    opacity var(--transition),
+    transform var(--transition);
+}
+
+.notification.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+.notification.is-leaving {
+  opacity: 0;
+  transform: translateX(16px);
+}
+
+.notification.is-success { border-left-color: var(--success); }
+.notification.is-warning { border-left-color: var(--warning); }
+.notification.is-error { border-left-color: var(--danger); }
+
+.notification-icon {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--accent-strong);
+}
+
+.notification.is-success .notification-icon { color: var(--success); }
+.notification.is-warning .notification-icon { color: var(--warning); }
+.notification.is-error .notification-icon { color: var(--danger); }
+
+.notification-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.notification-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.notification-message {
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.notification-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.notification-action {
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-4);
+  border: 1px solid var(--border-strong);
+  font-size: 11.5px;
+}
+
+.notification-action:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.notification-close {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.notification-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------------ */
+/* Dialogs                                                             */
+/* ------------------------------------------------------------------ */
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(4, 6, 10, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.dialog-overlay.is-visible {
+  opacity: 1;
+}
+
+.dialog {
+  width: min(480px, 100%);
+  padding: 20px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-window-focused);
+  transform: scale(0.97);
+  transition: transform var(--transition);
+}
+
+.dialog-overlay.is-visible .dialog {
+  transform: none;
+}
+
+.dialog-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  margin-bottom: 9px;
+}
+
+.dialog-message {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  /* Preserves the newlines used by the shortcut and about dialogs. */
+  white-space: pre-wrap;
+  font-variant-numeric: tabular-nums;
+  max-height: 50vh;
+  overflow-y: auto;
+  user-select: text;
+}
+
+.dialog-link {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.dialog-link:hover {
+  text-decoration: underline;
+}
+
+.dialog-input {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 8px 11px;
+  background: var(--surface-0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.dialog-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 20px;
+}
+
+.dialog-button {
+  padding: 7px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-4);
+  border: 1px solid var(--border-strong);
+  font-size: 12.5px;
+  transition: background var(--transition-fast);
+}
+
+.dialog-button:hover {
+  background: var(--surface-3);
+}
+
+.dialog-button.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
+}
+
+.dialog-button.is-primary:hover {
+  background: var(--accent-strong);
+}
+
+.dialog-button.is-primary.is-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.dialog-button.is-primary.is-danger:hover {
+  filter: brightness(1.12);
+}
+
+/* ------------------------------------------------------------------ */
+/* Boot failure                                                        */
+/* ------------------------------------------------------------------ */
+
+.boot-error {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 24px;
+  background: linear-gradient(160deg, #0a0d14, #11151f);
+}
+
+.boot-error-panel {
+  width: min(560px, 100%);
+  padding: 28px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-window);
+}
+
+.boot-error-icon {
+  font-size: 28px;
+  color: var(--warning);
+}
+
+.boot-error h1 {
+  margin: 10px 0 8px;
+  font-size: 18px;
+}
+
+.boot-error p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.boot-error-hint {
+  margin: 18px 0 0;
+  padding: 13px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}

@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finestra — a window into your servers</title>
+<!-- The same mark the desktop uses, inline so the page stays one file
+     and the strict no-external-requests rule keeps holding. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23151a23'/%3E%3Cpath d='M9 11l5 5-5 5' stroke='%238ab4ff' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M17 21h6' stroke='%238ab4ff' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<meta name="description" content="A window into your servers. A desktop environment that runs in a browser and drives a headless Linux server — terminal, files, system manager, and real Linux GUI apps.">
+<style>
+  :root {
+    --bg: #0b0e13; --surface: #12161d; --surface-2: #171c25;
+    --border: #2a3240; --text: #dfe4ec; --muted: #99a3b3; --faint: #6b7686;
+    --accent: #6c9dff; --accent-dim: rgba(108,157,255,.14);
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f8fb; --surface: #fff; --surface-2: #eef1f6;
+      --border: #c6cfdb; --text: #1d2530; --muted: #4d5b6c; --faint: #7d8899;
+      --accent: #2e6de0; --accent-dim: rgba(46,109,224,.10);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 20px 80px;
+    background: var(--bg); color: var(--text);
+    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  header { padding: 72px 0 40px; }
+  h1 { margin: 0 0 12px; font-size: 40px; line-height: 1.15; letter-spacing: -.02em; }
+  h1 .dim { color: var(--faint); font-weight: 400; }
+  .slogan { margin: 0 0 14px; font-size: 21px; color: var(--text); font-weight: 500; letter-spacing: -.01em; }
+  .tagline { margin: 0; font-size: 19px; color: var(--muted); max-width: 60ch; }
+  h2 { margin: 48px 0 14px; font-size: 20px; letter-spacing: -.01em; }
+  h3 { margin: 28px 0 8px; font-size: 15px; color: var(--muted); font-weight: 600; }
+  p { margin: 0 0 14px; color: var(--muted); }
+  p.tight { margin-bottom: 6px; }
+  strong { color: var(--text); font-weight: 600; }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: .9em; }
+  ul { color: var(--muted); padding-left: 22px; }
+  li { margin: 6px 0; }
+
+  .install { position: relative; margin: 8px 0 10px; }
+  /* Wraps rather than scrolls: the copy button sits on top of this box, and a
+     scrolling line slides its own text underneath the button. This is the one
+     line on the page that must always be readable in full. */
+  .install pre {
+    margin: 0; padding: 18px 20px; padding-right: 76px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    font-family: var(--mono); font-size: 14px; color: var(--text);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .install pre .prompt { color: var(--faint); user-select: none; }
+  .copy {
+    position: absolute; top: 10px; right: 10px;
+    padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface-2); color: var(--muted);
+    font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .copy:hover { color: var(--text); border-color: var(--accent); }
+  .copy.done { color: var(--accent); border-color: var(--accent); }
+
+  /* Release URLs are long enough to overflow a phone; wrap them instead of
+     hiding the end of a command someone is meant to copy. */
+  pre.block {
+    margin: 0 0 14px; padding: 16px 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.6; color: var(--muted);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .note {
+    padding: 14px 18px; margin: 0 0 14px;
+    background: var(--accent-dim); border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0; font-size: 14.5px; color: var(--muted);
+  }
+  .shot { margin: 30px 0 8px; }
+  /* width/height are the file's own, so the browser reserves the space before
+     the bytes arrive and the page does not jump under the reader. */
+  .shot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--surface);
+  }
+  .shot figcaption { margin: 10px 0 0; font-size: 13px; color: var(--faint); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 18px 0; }
+  .card { padding: 16px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+  .card h4 { margin: 0 0 6px; font-size: 14.5px; }
+  .card p { margin: 0; font-size: 13.5px; line-height: 1.55; }
+  /* The digest is the one value here someone retypes or compares, so it wraps
+     rather than running off the edge of a narrow screen. */
+  .meta {
+    margin-top: 10px; padding: 14px 18px; font-size: 13px; color: var(--faint);
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+    font-family: var(--mono); overflow-wrap: anywhere;
+  }
+  .meta .sha { color: var(--muted); }
+  .meta a { color: var(--accent); }
+  footer { margin-top: 56px; padding-top: 22px; border-top: 1px solid var(--border); font-size: 13.5px; color: var(--faint); }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>Finestra</h1>
+  <p class="slogan">A window into your servers.</p>
+  <p class="tagline">
+    <em>Finestra</em> is Italian for <em>window</em>. A desktop environment that
+    runs in your browser and drives a headless Linux server: windows, a taskbar,
+    a terminal on a real PTY, a file manager, a system manager — and real Linux
+    GUI applications, drawn on the server and rendered in a window.
+  </p>
+</header>
+
+<figure class="shot">
+  <img src="screenshot.png" width="1920" height="1009" loading="eager" decoding="async"
+       alt="A browser showing Finestra on a headless server: the System Manager with live CPU, memory and network graphs, a terminal running neofetch on Ubuntu on a t3.medium, and GNOME Disks — a real Linux application — in its own window.">
+  <figcaption>
+    A headless EC2 instance, in a browser tab: the system manager, a terminal on
+    a real PTY, and GNOME Disks — an ordinary Linux application, drawn on the
+    server.
+  </figcaption>
+</figure>
+
+<h2>Install</h2>
+<p class="tight">On the server, over SSH:</p>
+
+<div class="install">
+  <pre id="cmd"><span class="prompt">$ </span>curl -fsSL <span id="base">BASE</span>/get.sh | sudo bash</pre>
+  <button class="copy" id="copy">Copy</button>
+</div>
+
+<p>
+  That downloads the current release, checks it against its published SHA-256,
+  and runs the installer inside it. No toolchain, no <code>npm</code>, no
+  third-party apt repository — the release carries its own Node runtime.
+</p>
+
+<p>
+  It asks one question: <strong>who the desktop runs as</strong>. The default is
+  you — your home directory, the journal, and <code>sudo</code>, which is the
+  same reach as the SSH session you are typing it in and nothing more. The
+  alternatives are the same account without privilege, or a system account with
+  no home at all: read-only observability. Answer it in advance if you are not
+  there to type:
+</p>
+
+<pre class="block">curl -fsSL <span class="url">BASE</span>/get.sh | sudo bash -s -- --system-account</pre>
+
+<p class="tight">
+  The answer is recorded and survives upgrades, and it can be changed later —
+  see <a href="#afterwards">Afterwards</a>.
+</p>
+
+<div class="note">
+  <strong>Ubuntu 24.04 or newer, x86_64.</strong> The native pieces are built
+  against 24.04's glibc; the installer refuses an older machine rather than
+  failing later and less clearly.
+</div>
+
+<div class="note">
+  <strong>Already running web desktop?</strong> Run the same one-liner. It takes
+  the old install over: your access token, your settings and your answer to the
+  who-runs-as question all survive, so the URL you have bookmarked keeps working.
+  The old service, <code>/opt/web-desktop</code> and the <code>web-desktop</code>
+  system account are removed, and the installer prints exactly what it took over
+  and what it removed. If the new service does not come up, the old one is put
+  back untouched.
+</div>
+
+<h2>Connect</h2>
+<p>
+  It listens on <code>127.0.0.1:7070</code> and nothing else, so there is no
+  port to open. Forward it over the SSH you already have:
+</p>
+
+<pre class="block">ssh -L 7070:127.0.0.1:7070 you@server</pre>
+
+<p>
+  Then open the URL the installer printed — it carries the access token. That
+  tunnel <em>is</em> the authentication boundary: reaching the desktop means you
+  already got onto the machine with a key you own, and the token is a second
+  latch on top of it.
+</p>
+
+<h2>What you get</h2>
+
+<div class="grid">
+  <div class="card"><h4>Terminal</h4><p>A real PTY on the host. Reopens where you left it, and only asks before closing when something is running.</p></div>
+  <div class="card"><h4>Files</h4><p>Browse, rename, upload, download. Double-click opens whichever app handles that file.</p></div>
+  <div class="card"><h4>System Manager</h4><p>Processes, systemd units, the journal, disks, listening ports and certificates — live, from <code>/proc</code> and <code>journalctl</code>.</p></div>
+  <div class="card"><h4>Native applications</h4><p>Real Linux GUI apps in a window, through a Wayland compositor written for this.</p></div>
+  <div class="card"><h4>Several machines</h4><p>One shell, one connection per server, straight from your browser. The servers never learn about each other.</p></div>
+  <div class="card"><h4>Session restore</h4><p>Windows come back after a reload — geometry, stacking, focus, and where each app was.</p></div>
+  <div class="card"><h4>From the terminal</h4><p><code>finestra open firefox</code> — a shell has no display of its own, so it asks the desktop, and the window appears in your browser.</p></div>
+</div>
+
+<h2 id="afterwards">Afterwards</h2>
+<pre class="block">sudo systemctl status finestra              # is it up
+journalctl -u finestra -f                    # follow its logs
+sudo /opt/finestra/current/update.sh &lt;tarball&gt;    # upgrade in place
+sudo /opt/finestra/current/update.sh --rollback   # undo a bad upgrade</pre>
+
+<h3>Changing who it runs as</h3>
+<p class="tight">
+  The install keeps the script that asked, so the answer can be changed on a
+  machine that no longer has the release it came from. It rewrites the unit,
+  moves the state to follow the account — carrying the token across, so the URL
+  you already have keeps working — and restarts:
+</p>
+<pre class="block">sudo /opt/finestra/current/configure.sh --show   # what it is now
+sudo /opt/finestra/current/configure.sh          # ask again
+sudo /opt/finestra/current/configure.sh --as-me  # or answer directly</pre>
+
+<h3>Prefer to do it by hand?</h3>
+<p class="tight">
+  Download the tarball, check it, unpack it, and run the same installer:
+</p>
+<pre class="block">curl -fLO <span class="url">BASE</span>/releases/<span class="tarball">TARBALL</span>
+curl -fLO <span class="url">BASE</span>/releases/<span class="tarball">TARBALL</span>.sha256
+sha256sum -c <span class="tarball">TARBALL</span>.sha256
+tar xzf <span class="tarball">TARBALL</span>
+cd finestra-<span class="version">VERSION</span> &amp;&amp; sudo ./install.sh</pre>
+
+<div class="meta">
+  <div>release &nbsp;<span class="version">VERSION</span></div>
+  <div>sha256 &nbsp;&nbsp;<span class="sha">SHA</span></div>
+  <div>built &nbsp;&nbsp;&nbsp;<span class="built">BUILT</span></div>
+  <div style="margin-top:8px">
+    <a class="dl" href="#">download the tarball</a> ·
+    <a class="src" href="#">get.sh</a>
+  </div>
+</div>
+
+<footer>
+  © 2026 Carlos Bravo · Free for personal and internal business use, on as many
+  machines as you like. Hosting it as a service or shipping it inside a product
+  needs a <a href="https://github.com/carlosbravoa/finestra/blob/main/LICENSE-COMMERCIAL.md">commercial licence</a> —
+  <a href="mailto:licensing@finestra.dev">licensing@finestra.dev</a>.
+  <a href="https://github.com/carlosbravoa/finestra/blob/main/LICENSE">Read the licence</a>.
+</footer>
+
+</main>
+
+<script>
+  // publish.sh substitutes the placeholders below; everything here is text
+  // replacement into elements, never innerHTML, so nothing in a release string
+  // can become markup.
+  const BASE    = "@@BASE_URL@@";
+  const VERSION = "@@VERSION@@";
+  const TARBALL = "@@TARBALL@@";
+  const SHA     = "@@SHA256@@";
+  const BUILT   = "@@BUILT@@";
+
+  document.getElementById('base').textContent = BASE;
+  for (const el of document.querySelectorAll('.url'))     el.textContent = BASE;
+  for (const el of document.querySelectorAll('.tarball')) el.textContent = TARBALL;
+  for (const el of document.querySelectorAll('.version')) el.textContent = VERSION;
+  for (const el of document.querySelectorAll('.sha'))     el.textContent = SHA;
+  for (const el of document.querySelectorAll('.built'))   el.textContent = BUILT;
+  for (const el of document.querySelectorAll('.dl'))      el.href = `${BASE}/releases/${TARBALL}`;
+  for (const el of document.querySelectorAll('.src'))     el.href = `${BASE}/get.sh`;
+
+  const copy = document.getElementById('copy');
+  copy.addEventListener('click', async () => {
+    // The prompt is decoration; copy what you would actually paste.
+    const text = document.getElementById('cmd').textContent.replace(/^\$\s*/, '');
+    try {
+      await navigator.clipboard.writeText(text);
+      copy.textContent = 'Copied';
+      copy.classList.add('done');
+    } catch {
+      // Clipboard access needs a secure context, which this page now has —
+      // but permission can still be refused, and a browser can be old. Say so
+      // instead of doing nothing.
+      copy.textContent = 'Select it';
+      const r = document.createRange();
+      r.selectNodeContents(document.getElementById('cmd'));
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+    }
+    setTimeout(() => { copy.textContent = 'Copy'; copy.classList.remove('done'); }, 2000);
+  });
+</script>
+</body>
+</html>

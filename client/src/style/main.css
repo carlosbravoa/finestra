@@ -1,0 +1,11 @@
+/*
+ * Shell stylesheet. Apps bring their own CSS and import it from their entry
+ * point, so nothing here needs to know what apps exist.
+ */
+@import './tokens.css';
+@import './base.css';
+@import './desktop.css';
+@import './window.css';
+@import './menu.css';
+@import './taskbar.css';
+@import './overlays.css';

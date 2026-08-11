@@ -1,0 +1,20 @@
+#!/bin/sh
+# `finestra` — the command, as installed. Ships at <prefix>/bin/finestra and is
+# symlinked onto PATH by install.sh.
+#
+# It finds its own install rather than being told where it is, so the same file
+# works from /opt/finestra/current/bin, from a versioned directory beside it,
+# and from an unpacked tarball nobody has installed. readlink -f resolves the
+# `current` symlink too, which means this always runs the runtime and the code
+# that belong to whichever version is actually current.
+set -eu
+here=$(dirname "$(readlink -f "$0")")
+root=$(dirname "$here")
+
+node="${root}/runtime/bin/node"
+cli="${root}/app/server/src/cli.js"
+
+[ -x "$node" ] || { echo "finestra: no runtime at ${node}" >&2; exit 1; }
+[ -f "$cli" ]  || { echo "finestra: no cli at ${cli}" >&2; exit 1; }
+
+exec "$node" "$cli" "$@"

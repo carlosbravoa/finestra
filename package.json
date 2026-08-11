@@ -1,0 +1,27 @@
+{
+  "name": "finestra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A desktop environment that runs in a browser and drives a headless Linux server",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm -w server run dev",
+    "dev:client": "npm -w client run dev",
+    "build": "npm -w client run build && npm -w server run build",
+    "start": "npm -w server run start",
+    "typecheck": "npm -w client run typecheck && npm -w server run typecheck",
+    "test": "bash tests/run.sh"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

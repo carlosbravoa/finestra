@@ -1,0 +1,1068 @@
+/*
+ * System Manager.
+ *
+ * Every class is prefixed `sysman-`: there is no shadow DOM, so the app is
+ * responsible for not colliding with the shell or with other apps.
+ *
+ * The two chart hues are the only colours defined here rather than taken from
+ * tokens.css. They are steps chosen against each theme's chart surface so that
+ * the pair stays distinguishable with any form of colour blindness.
+ */
+.sysman-app {
+  --chart-1: #5288f0;
+  --chart-2: #bd8530;
+
+  display: flex;
+  height: 100%;
+  background: var(--surface-1);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  container-type: inline-size;
+}
+
+:root[data-theme='light'] .sysman-app {
+  --chart-1: #2e6de0;
+  --chart-2: #b97f18;
+}
+
+/* ------------------------------------------------------------------ */
+/* Navigation                                                          */
+/* ------------------------------------------------------------------ */
+
+.sysman-nav {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  width: 172px;
+  padding: 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.sysman-navitem {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.sysman-navitem:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.sysman-navitem.is-active {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.sysman-navitem.is-unavailable {
+  opacity: 0.45;
+}
+
+.sysman-navicon {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+}
+
+.sysman-navicon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.sysman-navlabel {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A narrow window keeps the icons and drops the labels. */
+@container (max-width: 640px) {
+  .sysman-nav {
+    width: 46px;
+  }
+
+  .sysman-navlabel {
+    display: none;
+  }
+
+  .sysman-navitem {
+    justify-content: center;
+  }
+}
+
+.sysman-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sysman-section {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sysman-scroll {
+  flex: 1 1 auto;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+/* ------------------------------------------------------------------ */
+/* Toolbar                                                             */
+/* ------------------------------------------------------------------ */
+
+.sysman-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.sysman-button {
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.sysman-button:hover:not(:disabled) {
+  background: var(--surface-4);
+  border-color: var(--border-strong);
+}
+
+.sysman-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.sysman-button.is-danger {
+  color: var(--danger);
+}
+
+.sysman-button.is-active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.sysman-filter {
+  flex: 1 1 200px;
+  min-width: 140px;
+  max-width: 340px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text);
+  font: inherit;
+}
+
+.sysman-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.sysman-seg {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.sysman-seg-btn {
+  padding: 5px 10px;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sysman-seg-btn:last-child {
+  border-right: none;
+}
+
+.sysman-seg-btn.is-active {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.sysman-toolbar-note {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sysman-path {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sysman-banner {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--danger-dim);
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* Something worth saying that is not something going wrong. */
+.sysman-banner.is-info {
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
+.sysman-progress {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sysman-progress::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--progress, 0%);
+  background: var(--accent-dim);
+  transition: width var(--transition);
+}
+
+/* ------------------------------------------------------------------ */
+/* Overview                                                            */
+/* ------------------------------------------------------------------ */
+
+.sysman-summary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-bottom: 12px;
+}
+
+.sysman-stat {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.sysman-stat-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sysman-stat-value {
+  margin-top: 3px;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sysman-charts {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.sysman-chart {
+  padding: 9px 11px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.sysman-chart-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.sysman-chart-title {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sysman-chart-legend {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.sysman-chart-key {
+  display: flex;
+  gap: 5px;
+  align-items: baseline;
+}
+
+/* Identity is the dot; the number stays in text ink so it reads as data. */
+.sysman-chart-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--chart-1);
+}
+
+.sysman-chart-dot.slot-1 {
+  background: var(--chart-2);
+}
+
+.sysman-chart-keylabel {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.sysman-chart-value {
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sysman-chart-plot {
+  position: relative;
+  height: 74px;
+}
+
+.sysman-chart-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.sysman-chart-tip {
+  position: absolute;
+  bottom: calc(100% - 62px);
+  z-index: 2;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-4);
+  box-shadow: var(--shadow-menu);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.sysman-tip-time {
+  margin-bottom: 3px;
+  color: var(--text-muted);
+}
+
+.sysman-tip-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.sysman-tip-value {
+  margin-left: auto;
+  padding-left: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sysman-panel {
+  margin-top: 14px;
+}
+
+.sysman-panel-title {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sysman-cards {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.sysman-card {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.sysman-card-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.sysman-card-title {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sysman-card-sub {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.sysman-card-foot {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sysman-meter {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--surface-4);
+}
+
+.sysman-meter-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width var(--transition);
+}
+
+.sysman-meter.tone-warn .sysman-meter-fill {
+  background: var(--warning);
+}
+
+.sysman-meter.tone-danger .sysman-meter-fill {
+  background: var(--danger);
+}
+
+.sysman-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 10px;
+}
+
+.sysman-section > .sysman-chips {
+  padding: 8px 10px 0;
+}
+
+.sysman-chip {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 11px;
+}
+
+.sysman-chip.is-hot {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.sysman-chip-label {
+  color: var(--text-muted);
+}
+
+.sysman-chip-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.sysman-chip-remove {
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sysman-chip-remove:hover {
+  color: var(--danger);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tables                                                              */
+/* ------------------------------------------------------------------ */
+
+.sysman-split {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.sysman-table {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sysman-du-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sysman-thead,
+.sysman-tr {
+  display: grid;
+  gap: 10px;
+  align-items: center;
+  padding: 0 10px;
+}
+
+.sysman-thead {
+  flex: 0 0 auto;
+  height: 28px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  user-select: none;
+}
+
+.sysman-th {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sysman-th.is-sortable {
+  cursor: pointer;
+}
+
+.sysman-th.is-sortable:hover {
+  color: var(--text);
+}
+
+.sysman-th.is-active {
+  color: var(--accent);
+}
+
+.sysman-tbody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sysman-tr {
+  height: 26px;
+  border-bottom: 1px solid transparent;
+  cursor: default;
+}
+
+.sysman-tr:hover {
+  background: var(--surface-2);
+}
+
+.sysman-tr.is-selected {
+  background: var(--accent-dim);
+}
+
+.sysman-tr:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.sysman-td {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.sysman-td.is-num,
+.sysman-th.is-num {
+  text-align: right;
+}
+
+.sysman-td.is-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sysman-ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+.sysman-muted {
+  color: var(--text-faint);
+}
+
+.sysman-procname {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.sysman-tag {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--surface-4);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.sysman-state {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.sysman-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.sysman-dot.state-active {
+  background: var(--success);
+}
+
+.sysman-dot.state-failed {
+  background: var(--danger);
+}
+
+.sysman-dot.state-activating,
+.sysman-dot.state-deactivating {
+  background: var(--warning);
+}
+
+.sysman-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-4);
+  font-size: 11px;
+}
+
+.sysman-badge.tone-warn {
+  background: rgba(240, 184, 102, 0.18);
+  color: var(--warning);
+}
+
+.sysman-badge.tone-danger {
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+
+.sysman-du-name {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+}
+
+.sysman-du-icon {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Detail panel                                                        */
+/* ------------------------------------------------------------------ */
+
+.sysman-detail {
+  display: flex;
+  flex: 0 0 300px;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.sysman-detail.is-wide {
+  flex-basis: 360px;
+}
+
+.sysman-detail-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sysman-detail-title {
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sysman-detail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.sysman-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.sysman-tab {
+  padding: 3px 9px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sysman-tab.is-active {
+  background: var(--surface-4);
+  color: var(--text);
+}
+
+.sysman-field {
+  margin-bottom: 9px;
+}
+
+.sysman-field-label {
+  margin-bottom: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.sysman-field-value {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.sysman-code {
+  display: block;
+  padding: 5px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.sysman-detail-list {
+  max-height: 220px;
+  margin-bottom: 10px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+.sysman-detail-fd {
+  display: flex;
+  gap: 8px;
+  padding: 2px 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.sysman-detail-fdnum {
+  flex: 0 0 28px;
+  color: var(--text-faint);
+  text-align: right;
+}
+
+.sysman-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.sysman-log-wrap {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.sysman-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.sysman-log-note {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* A narrow window has no room for a side panel; stack it instead. */
+@container (max-width: 760px) {
+  .sysman-split {
+    flex-direction: column;
+  }
+
+  .sysman-detail,
+  .sysman-detail.is-wide {
+    flex: 0 0 40%;
+    border-top: 1px solid var(--border);
+    border-left: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Placeholders                                                        */
+/* ------------------------------------------------------------------ */
+
+.sysman-placeholder {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 20px;
+  text-align: center;
+}
+
+.sysman-placeholder-title {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.sysman-placeholder-detail {
+  max-width: 420px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------------ */
+/* Journal                                                             */
+/* ------------------------------------------------------------------ */
+
+.sysman-select {
+  flex: 0 0 auto;
+  max-width: 200px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sysman-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* A filter that was picked rather than typed, and so needs a way off. */
+.sysman-jchip {
+  flex: 0 0 auto;
+  max-width: 200px;
+  padding: 4px 9px;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.sysman-jlist {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sysman-jrows {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  user-select: text;
+}
+
+.sysman-jrows:focus {
+  outline: none;
+}
+
+.sysman-jrow {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: 68px minmax(60px, 160px) 1fr;
+  gap: 10px;
+  padding: 2px 10px;
+  cursor: default;
+}
+
+/* Kernel and AppArmor messages routinely wrap to three lines, and without a
+   rule between them a run of them reads as one long entry. */
+.sysman-jrow + .sysman-jrow {
+  border-top: 1px solid var(--surface-2);
+}
+
+.sysman-jrow:hover {
+  background: var(--surface-2);
+}
+
+.sysman-jrow.is-selected {
+  background: var(--accent-dim);
+}
+
+.sysman-jtime {
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.sysman-jsource {
+  overflow: hidden;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sysman-jmsg {
+  min-width: 0;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Severity is the whole reason for scrolling a journal, so it is carried by
+   the message itself rather than a dot that has to be hunted for. */
+.sysman-jrow.prio-0 .sysman-jmsg,
+.sysman-jrow.prio-1 .sysman-jmsg,
+.sysman-jrow.prio-2 .sysman-jmsg,
+.sysman-jrow.prio-3 .sysman-jmsg {
+  color: var(--danger);
+}
+
+.sysman-jrow.prio-0,
+.sysman-jrow.prio-1,
+.sysman-jrow.prio-2 {
+  background: var(--danger-dim);
+}
+
+.sysman-jrow.prio-4 .sysman-jmsg {
+  color: var(--warning);
+}
+
+.sysman-jrow.prio-5 .sysman-jmsg {
+  color: var(--text);
+}
+
+.sysman-jrow.prio-7 .sysman-jmsg {
+  color: var(--text-faint);
+}
+
+.sysman-jjump {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-4);
+  box-shadow: var(--shadow-menu);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* The toolbar carries six controls; below this they need a second line. */
+@container (max-width: 900px) {
+  .sysman-select {
+    max-width: 150px;
+  }
+}

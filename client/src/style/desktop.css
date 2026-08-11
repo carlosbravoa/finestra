@@ -1,0 +1,172 @@
+.desktop {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ */
+/* Wallpaper                                                           */
+/* ------------------------------------------------------------------ */
+
+.wallpaper {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: var(--surface-0);
+  transition: background var(--transition);
+}
+
+.wallpaper[data-paper='nebula'] {
+  background:
+    radial-gradient(1100px 700px at 18% 12%, rgba(84, 116, 214, 0.32), transparent 60%),
+    radial-gradient(900px 620px at 84% 78%, rgba(150, 84, 200, 0.26), transparent 62%),
+    radial-gradient(700px 500px at 62% 20%, rgba(52, 152, 190, 0.2), transparent 60%),
+    linear-gradient(160deg, #0a0d14, #11151f 55%, #0b0f16);
+}
+
+.wallpaper[data-paper='slate'] {
+  background: linear-gradient(155deg, #1a1f28, #0d1117 60%, #14181f);
+}
+
+.wallpaper[data-paper='grid'] {
+  background:
+    linear-gradient(rgba(108, 157, 255, 0.055) 1px, transparent 1px) 0 0 / 34px 34px,
+    linear-gradient(90deg, rgba(108, 157, 255, 0.055) 1px, transparent 1px) 0 0 / 34px 34px,
+    radial-gradient(900px 600px at 50% 0%, rgba(60, 90, 160, 0.22), transparent 65%),
+    #0a0d13;
+}
+
+.wallpaper[data-paper='paper'] {
+  background: linear-gradient(165deg, #e7ebf1, #cfd8e4 55%, #dde3ec);
+}
+
+.wallpaper[data-paper='aurora'] {
+  background:
+    radial-gradient(800px 520px at 12% 88%, rgba(60, 200, 170, 0.24), transparent 60%),
+    radial-gradient(760px 520px at 88% 14%, rgba(120, 90, 220, 0.26), transparent 62%),
+    linear-gradient(200deg, #08131a, #0d1220 60%, #0a0f18);
+}
+
+/* ------------------------------------------------------------------ */
+/* Icon surface                                                        */
+/* ------------------------------------------------------------------ */
+
+.desktop-icons {
+  position: absolute;
+  inset: 0 0 var(--taskbar-height) 0;
+  z-index: 1;
+}
+
+.desktop-icon {
+  position: absolute;
+  width: 84px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 4px 6px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  color: var(--text);
+  text-align: center;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.desktop-icon:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.desktop-icon.is-selected {
+  background: var(--accent-dim);
+  border-color: rgba(138, 180, 255, 0.45);
+}
+
+.desktop-icon.is-dragging {
+  opacity: 0.75;
+  z-index: 50;
+  cursor: grabbing;
+}
+
+.desktop-icon-glyph {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  font-size: 26px;
+  line-height: 1;
+  border-radius: 11px;
+  background: linear-gradient(160deg, var(--surface-3), var(--surface-2));
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  color: var(--accent-strong);
+}
+
+.desktop-icon-glyph svg {
+  width: 24px;
+  height: 24px;
+}
+
+.desktop-icon-label {
+  font-size: 11.5px;
+  line-height: 1.25;
+  max-width: 100%;
+  /* Two lines, then ellipsis — long app names must not overlap neighbours. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+/* ------------------------------------------------------------------ */
+/* Window layer                                                        */
+/* ------------------------------------------------------------------ */
+
+.window-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  /* The layer itself must not eat clicks meant for the icon surface. */
+  pointer-events: none;
+}
+
+.window-layer > * {
+  pointer-events: auto;
+}
+
+/* Shown while dragging files from the host OS over the desktop. */
+.desktop.is-dropping::after {
+  content: 'Drop files to upload';
+  position: absolute;
+  inset: 12px calc(12px) calc(var(--taskbar-height) + 12px);
+  z-index: 6000;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent-strong);
+  border-radius: var(--radius-lg);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+}
+
+.snap-preview {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 90;
+  border: 2px solid var(--accent-strong);
+  border-radius: var(--radius);
+  background: var(--accent-dim);
+  pointer-events: none;
+  transition:
+    transform var(--transition-fast),
+    width var(--transition-fast),
+    height var(--transition-fast);
+}

@@ -1,0 +1,266 @@
+.window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-window);
+  overflow: hidden;
+  transition:
+    box-shadow var(--transition),
+    opacity var(--transition-fast);
+}
+
+.window.is-focused {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-window-focused);
+}
+
+/* Skip the geometry transition while dragging, or the window lags the cursor. */
+.window.is-dragging,
+.window.is-resizing {
+  transition: none;
+  user-select: none;
+}
+
+.window.is-minimized {
+  /* Kept in the DOM so the app keeps running and its state survives. */
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-10000px, -10000px) !important;
+}
+
+.window.is-maximized {
+  border-radius: 0;
+  border-color: transparent;
+}
+
+/* ------------------------------------------------------------------ */
+/* Titlebar                                                            */
+/* ------------------------------------------------------------------ */
+
+.window-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--titlebar-height);
+  flex: 0 0 var(--titlebar-height);
+  padding: 0 6px 0 11px;
+  background: linear-gradient(var(--surface-3), var(--surface-2));
+  border-bottom: 1px solid var(--border);
+  cursor: default;
+  touch-action: none;
+}
+
+.window.is-focused .window-titlebar {
+  background: linear-gradient(var(--surface-4), var(--surface-3));
+}
+
+.window-icon {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  font-size: 13px;
+  color: var(--accent-strong);
+  flex: none;
+}
+
+.window-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.window-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.window.is-focused .window-title {
+  color: var(--text);
+}
+
+.window-controls {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.window-controls button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.window-controls button:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--text);
+}
+
+.window-controls button.close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ------------------------------------------------------------------ */
+/* Menu bar, content, status                                           */
+/* ------------------------------------------------------------------ */
+
+.window-menubar {
+  display: flex;
+  gap: 1px;
+  flex: none;
+  padding: 2px 6px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.window-menubar[hidden] {
+  display: none;
+}
+
+.window-menubar-item {
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-muted);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.window-menubar-item:hover,
+.window-menubar-item.is-open {
+  background: var(--surface-4);
+  color: var(--text);
+}
+
+.window-content {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-1);
+}
+
+.window-status {
+  flex: none;
+  padding: 3px 11px;
+  font-size: 11px;
+  color: var(--text-faint);
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.window-status[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Resize handles                                                      */
+/* ------------------------------------------------------------------ */
+
+.window-resize {
+  position: absolute;
+  touch-action: none;
+  /* Generous grab area; the visible border stays 1px. */
+  --grip: 7px;
+}
+
+.window.is-maximized .window-resize {
+  display: none;
+}
+
+.window-resize-n { top: 0; left: var(--grip); right: var(--grip); height: var(--grip); cursor: ns-resize; }
+.window-resize-s { bottom: 0; left: var(--grip); right: var(--grip); height: var(--grip); cursor: ns-resize; }
+.window-resize-w { left: 0; top: var(--grip); bottom: var(--grip); width: var(--grip); cursor: ew-resize; }
+.window-resize-e { right: 0; top: var(--grip); bottom: var(--grip); width: var(--grip); cursor: ew-resize; }
+.window-resize-nw { top: 0; left: 0; width: var(--grip); height: var(--grip); cursor: nwse-resize; }
+.window-resize-ne { top: 0; right: 0; width: var(--grip); height: var(--grip); cursor: nesw-resize; }
+.window-resize-sw { bottom: 0; left: 0; width: var(--grip); height: var(--grip); cursor: nesw-resize; }
+.window-resize-se { bottom: 0; right: 0; width: var(--grip); height: var(--grip); cursor: nwse-resize; }
+
+/* ------------------------------------------------------------------ */
+/* Failure state                                                       */
+/* ------------------------------------------------------------------ */
+
+.app-error {
+  height: 100%;
+  overflow: auto;
+  padding: 24px;
+  color: var(--text-muted);
+}
+
+.app-error-icon {
+  font-size: 26px;
+  color: var(--warning);
+}
+
+.app-error h2 {
+  margin: 8px 0 12px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.app-error pre {
+  margin: 0;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+}
+
+/* ------------------------------------------------------------------ */
+/* Which server a window belongs to                                    */
+/* ------------------------------------------------------------------ */
+/* Hidden while there is only one, because then it says nothing. */
+
+.window-host {
+  flex: none;
+  max-width: 12ch;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-4);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.window-host[hidden] {
+  display: none;
+}
+
+.window.is-focused .window-host {
+  color: var(--text);
+}

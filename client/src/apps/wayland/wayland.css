@@ -1,0 +1,235 @@
+.wayland-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+  color: var(--text);
+  overflow: hidden;
+}
+
+/* The canvas is the application's own pixels at their own size. It is never
+   scaled: the window's size is pushed to the application instead, so it
+   relayouts for real. Anything left over is dead space, not a stretched
+   image. */
+.wayland-surface {
+  flex: 1;
+  min-height: 0;
+  /* Hidden, not auto: scrollbars take space out of the viewport, and a
+     viewport smaller than the window keeps the next frame overflowing — the
+     bars end up holding themselves up. index.ts turns scrolling on only when
+     the application really is bigger than the space it was given. */
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.wayland-surface.is-scrollable {
+  overflow: auto;
+}
+
+.wayland-canvas {
+  display: block;
+  /* Not `pixelated`. That was a defence against the browser magnifying a 1x
+     frame onto a HiDPI box — nearest-neighbour looked less mushy than bilinear
+     on text. The frame now arrives at the screen's own density, so there is
+     nothing to magnify, and where a fractional ratio still resamples, smooth is
+     the better answer. */
+  image-rendering: auto;
+}
+
+/* Panels: starting, failed, not available. */
+.wayland-panel {
+  margin: auto;
+  padding: 2rem;
+  max-width: 34rem;
+  text-align: center;
+}
+
+.wayland-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.wayland-panel p {
+  margin: 0 0 1rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.wayland-button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--surface-4);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.wayland-button:hover {
+  background: var(--surface-4);
+}
+
+/* The application picker. */
+.wayland-picker {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.wayland-picker-head {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--surface-3);
+}
+
+.wayland-picker-head h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.wayland-filter {
+  width: 100%;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--surface-4);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.wayland-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.4rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.25rem;
+  align-content: start;
+}
+
+.wayland-picker-hint {
+  padding: 0 1rem 0.6rem;
+  border-bottom: 1px solid var(--surface-3);
+  color: var(--text-muted);
+  font-size: 0.82em;
+}
+
+.wayland-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.wayland-item:hover {
+  background: var(--surface-3);
+  border-color: var(--surface-4);
+}
+
+.wayland-item-icon {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+}
+
+.wayland-item-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.wayland-item-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+/* Only drawn on hover or once pinned, so the grid stays quiet. */
+.wayland-pin {
+  flex: 0 0 auto;
+  padding: 0 0.2rem;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  /* Always visible, if quietly. Pinning is the only thing this list does
+     besides launching, and the hint above it tells people to look for a star:
+     one that appears on hover is a star nobody finds. */
+  opacity: 0.5;
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+
+.wayland-item:hover .wayland-pin,
+.wayland-pin:focus-visible,
+.wayland-pin.is-pinned {
+  opacity: 1;
+}
+
+.wayland-pin.is-pinned,
+.wayland-pin:hover {
+  color: var(--warning);
+}
+
+.wayland-item-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wayland-item-comment {
+  color: var(--text-muted);
+  font-size: 0.82em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The stage holds the window's canvas, with menus positioned on top of it in
+   the window's own coordinate space — which is what the compositor works in. */
+.wayland-surface {
+  position: relative;
+}
+
+.wayland-popup {
+  position: absolute;
+  z-index: 2;
+  line-height: 0;
+  filter: drop-shadow(0 4px 12px rgb(0 0 0 / 45%));
+}
+
+/* A dialog is its own window on a real desktop. Until the shell can give it
+   one, it sits over its parent — which is where a modal one belongs anyway. */
+.wayland-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 35%);
+}
+
+.wayland-dialog {
+  line-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  filter: drop-shadow(0 8px 24px rgb(0 0 0 / 55%));
+}

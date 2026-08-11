@@ -1,0 +1,301 @@
+.editor-app {
+  /* Set from JS so the gutter and the text can never disagree about metrics. */
+  --editor-font-size: 13px;
+  --editor-line-height: 20px;
+  --editor-tab-size: 4;
+  --editor-gutter-width: 46px;
+  --editor-number-width: 2ch;
+  --editor-wrap-width: 100%;
+  --editor-pad-y: 8px;
+  --editor-pad-x: 10px;
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--surface-1);
+  /* Lets the toolbar respond to the window's width, not the viewport's. */
+  container-type: inline-size;
+}
+
+/* ------------------------------------------------------------------ */
+/* Toolbar                                                             */
+/* ------------------------------------------------------------------ */
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.editor-tool {
+  flex: none;
+  height: 27px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.editor-tool:hover:not(:disabled) {
+  background: var(--surface-4);
+  color: var(--text);
+}
+
+.editor-tool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------------ */
+/* Banner                                                              */
+/* ------------------------------------------------------------------ */
+
+.editor-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 6px 10px;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.editor-banner[hidden] {
+  display: none;
+}
+
+.editor-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.editor-banner-action {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-4);
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+.editor-banner-action:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+/* ------------------------------------------------------------------ */
+/* Find bar                                                            */
+/* ------------------------------------------------------------------ */
+
+.editor-find {
+  flex: none;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-find[hidden],
+.editor-find-row[hidden] {
+  display: none;
+}
+
+.editor-find-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.editor-find-row + .editor-find-row {
+  margin-top: 5px;
+}
+
+.editor-find-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-0);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.editor-find-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.editor-find-button,
+.editor-find-toggle {
+  display: grid;
+  place-items: center;
+  flex: none;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.editor-find-button:hover,
+.editor-find-toggle:hover {
+  background: var(--surface-4);
+  color: var(--text);
+}
+
+.editor-find-toggle.is-active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.editor-find-count {
+  flex: none;
+  min-width: 76px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The replace row keeps its buttons; the counter is what goes first. */
+@container (max-width: 460px) {
+  .editor-find-count {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Text and gutter                                                     */
+/* ------------------------------------------------------------------ */
+
+.editor-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  background: var(--surface-0);
+}
+
+/*
+ * The gutter and the text share every metric that affects line breaking, so a
+ * wrapped line in one is exactly as tall as the same line in the other.
+ */
+.editor-text,
+.editor-gutter,
+.editor-gutter-inner {
+  font-family: var(--font-mono);
+  font-size: var(--editor-font-size);
+  line-height: var(--editor-line-height);
+  tab-size: var(--editor-tab-size);
+  letter-spacing: normal;
+}
+
+.editor-gutter {
+  flex: none;
+  width: var(--editor-gutter-width);
+  overflow: hidden;
+  background: var(--surface-1);
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+
+.editor-gutter[hidden] {
+  display: none;
+}
+
+/* Scrolled by transform, in step with the textarea's own scrollTop. */
+.editor-gutter-inner {
+  position: relative;
+  width: var(--editor-number-width);
+  padding-top: var(--editor-pad-y);
+  color: var(--text-faint);
+  text-align: right;
+  white-space: pre;
+  will-change: transform;
+}
+
+/*
+ * Wrapped mode: one row per logical line, each holding that line's own text —
+ * invisible, and laid out at the width the textarea wraps at, so the row comes
+ * out exactly as tall as the line it labels. The visible number is drawn over
+ * it, and CSS counts the rows so inserting a line renumbers nothing.
+ */
+.editor-gutter-inner.is-wrapped {
+  width: auto;
+  text-align: left;
+  counter-reset: editor-line;
+}
+
+.editor-gutter-row {
+  position: relative;
+  width: var(--editor-wrap-width);
+  min-height: var(--editor-line-height);
+  padding: 0;
+  color: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  counter-increment: editor-line;
+}
+
+.editor-gutter-row::before {
+  content: counter(editor-line);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--editor-number-width);
+  text-align: right;
+  color: var(--text-faint);
+}
+
+.editor-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: var(--editor-pad-y) var(--editor-pad-x);
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  white-space: pre;
+  overflow: auto;
+}
+
+.editor-app.is-wrapped .editor-text {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overflow-x: hidden;
+}
+
+.editor-text:read-only {
+  color: var(--text-muted);
+}
+
+/* Derived from the accent so it holds up in both the dark and light themes. */
+.editor-text::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}

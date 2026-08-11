@@ -1,0 +1,427 @@
+#!/usr/bin/env bash
+# Shared helpers for the throwaway EC2 instances the packaging scripts use.
+#
+# Every instance this creates is disposable and must die on its own even if the
+# machine driving it is unplugged. Three independent guarantees, because an
+# orphaned instance bills forever:
+#
+#   1. --instance-initiated-shutdown-behavior terminate, plus a `shutdown -h`
+#      timer in user-data: the instance kills itself, needing nothing from us.
+#   2. A trap in the calling script terminates on any exit path.
+#   3. wd_ci_sweep terminates anything tagged past its expiry, and is run at the
+#      start of every script as well as the end.
+#
+# Nothing here ever terminates by instance id alone. Every destructive call
+# filters on our own tag first and re-checks the tag on the instance itself, so
+# a machine we did not create cannot be caught by it.
+
+set -euo pipefail
+
+WD_CI_TAG_KEY="Project"
+WD_CI_TAG_VALUE="fleet-desktop-ci"
+WD_CI_TTL_MIN="${WD_CI_TTL_MIN:-45}"
+WD_CI_REGION="${WD_CI_REGION:-us-east-1}"
+
+# Ubuntu 24.04 is the build target: native artifacts built against its glibc run
+# on everything newer, and the reverse is not true.
+WD_CI_AMI_PARAM="/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+
+WD_CI_RUN_ID=""
+WD_CI_KEY_NAME=""
+WD_CI_KEY_FILE=""
+WD_CI_SG_ID=""
+WD_CI_SUBNET="${WD_CI_SUBNET:-}"
+WD_CI_VPC=""
+WD_CI_INSTANCES=()
+
+aws_() { aws --region "$WD_CI_REGION" "$@"; }
+
+log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
+die() { log "FATAL: $*"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Sweeping: the backstop that runs even when nothing else did
+# ---------------------------------------------------------------------------
+
+# Terminates every instance carrying our tag whose ExpiresAt has passed. Safe to
+# run at any time, including before a run starts — that is the point.
+wd_ci_sweep() {
+  local now ids id expires stale=()
+  now=$(date -u +%s)
+  ids=$(aws_ ec2 describe-instances \
+    --filters "Name=tag:${WD_CI_TAG_KEY},Values=${WD_CI_TAG_VALUE}" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)
+
+  # No early return here. An earlier version bailed out when there were no
+  # stale instances — which is the *normal* case — and so never reached the key
+  # pairs and security groups below. It looked fixed because the check that
+  # "proved" it called the leftovers sweep directly, past this line.
+  for id in ${ids:-}; do
+    expires=$(aws_ ec2 describe-instances --instance-ids "$id" \
+      --query "Reservations[].Instances[].Tags[?Key=='ExpiresAt'].Value|[0][0]" \
+      --output text 2>/dev/null || echo "")
+    # No expiry tag, or past it: it is ours and it is stale either way.
+    if [ -z "$expires" ] || [ "$expires" = "None" ] || [ "$now" -ge "$expires" ]; then
+      stale+=("$id")
+    fi
+  done
+
+  if [ ${#stale[@]} -gt 0 ]; then
+    log "sweeping stale CI instances: ${stale[*]}"
+    wd_ci_terminate "${stale[@]}"
+  fi
+
+  wd_ci_sweep_leftovers
+}
+
+# Key pairs and security groups cost nothing, so they are easy to forget — and a
+# run that is killed from outside leaves them behind, because the trap never
+# gets to run. They accumulate. Both live in our own `wd-ci-` namespace, and a
+# security group still attached to something refuses to delete, so this is safe
+# to run at any time.
+#
+# The `|| true` on both deletions is the load-bearing part. A security group is
+# still attached while the instance holding it finishes terminating, so deleting
+# it answers DependencyViolation — the harmless case this function was written
+# to tolerate. But that call is the last statement in the loop body, so its
+# failure is the loop's exit status, and under `set -e` it killed the whole run:
+# starting a verifier eleven seconds after the previous one released its
+# instance aborted it at startup with exit 254, before it did anything. Every
+# script here begins with a sweep, so a housekeeping call that can fail must
+# never be the thing that decides whether the run happens.
+wd_ci_sweep_leftovers() {
+  local name id
+  for name in $(aws_ ec2 describe-key-pairs \
+      --query 'KeyPairs[?starts_with(KeyName, `wd-ci-`)].KeyName' \
+      --output text 2>/dev/null); do
+    if [ "$name" = "$WD_CI_KEY_NAME" ]; then continue; fi
+    aws_ ec2 delete-key-pair --key-name "$name" 2>/dev/null \
+      && log "swept key pair $name" || true
+  done
+
+  for id in $(aws_ ec2 describe-security-groups \
+      --query 'SecurityGroups[?starts_with(GroupName, `wd-ci-`)].GroupId' \
+      --output text 2>/dev/null); do
+    if [ "$id" = "$WD_CI_SG_ID" ]; then continue; fi
+    # Fails while an instance still holds it; the next run gets it.
+    aws_ ec2 delete-security-group --group-id "$id" 2>/dev/null \
+      && log "swept security group $id" || true
+  done
+  return 0
+}
+
+# Terminates instances, but only after confirming each one carries our tag.
+wd_ci_terminate() {
+  local id tag confirmed=()
+  for id in "$@"; do
+    [ -z "$id" ] && continue
+    tag=$(aws_ ec2 describe-instances --instance-ids "$id" \
+      --query "Reservations[].Instances[].Tags[?Key=='${WD_CI_TAG_KEY}'].Value|[0][0]" \
+      --output text 2>/dev/null || echo "")
+    if [ "$tag" = "$WD_CI_TAG_VALUE" ]; then
+      confirmed+=("$id")
+    else
+      log "REFUSING to terminate $id — it does not carry ${WD_CI_TAG_KEY}=${WD_CI_TAG_VALUE}"
+    fi
+  done
+  [ ${#confirmed[@]} -eq 0 ] && return 0
+  aws_ ec2 terminate-instances --instance-ids "${confirmed[@]}" \
+    --query 'TerminatingInstances[].InstanceId' --output text >/dev/null
+  log "terminated: ${confirmed[*]}"
+}
+
+# ---------------------------------------------------------------------------
+# Run setup and teardown
+# ---------------------------------------------------------------------------
+
+# Everything this run created, asked of AWS rather than remembered locally.
+#
+# wd_ci_launch is normally called inside $( ), which is a subshell — so an array
+# appended to there never reaches the trap in the parent. The first build here
+# leaked a running instance for exactly that reason. Asking EC2 what carries this
+# run's tag cannot go wrong that way.
+wd_ci_own_instances() {
+  aws_ ec2 describe-instances \
+    --filters "Name=tag:RunId,Values=${WD_CI_RUN_ID}" \
+              "Name=tag:${WD_CI_TAG_KEY},Values=${WD_CI_TAG_VALUE}" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true
+}
+
+wd_ci_cleanup() {
+  local rc=$?
+  set +e
+  log "cleanup starting (exit ${rc})"
+
+  local mine
+  mine=$(wd_ci_own_instances)
+  if [ -n "$mine" ]; then
+    # shellcheck disable=SC2086
+    wd_ci_terminate $mine
+  else
+    log "nothing of ours is running"
+  fi
+
+  if [ -n "$WD_CI_SG_ID" ]; then
+    # The security group cannot go until its instances really are gone.
+    if [ -n "$mine" ]; then
+      # shellcheck disable=SC2086
+      aws_ ec2 wait instance-terminated --instance-ids $mine 2>/dev/null
+    fi
+    aws_ ec2 delete-security-group --group-id "$WD_CI_SG_ID" 2>/dev/null && \
+      log "deleted security group $WD_CI_SG_ID"
+  fi
+  if [ -n "$WD_CI_KEY_NAME" ]; then
+    aws_ ec2 delete-key-pair --key-name "$WD_CI_KEY_NAME" 2>/dev/null && \
+      log "deleted key pair $WD_CI_KEY_NAME"
+  fi
+  [ -n "$WD_CI_KEY_FILE" ] && rm -f "$WD_CI_KEY_FILE"
+  wd_ci_sweep
+  log "cleanup done"
+  return $rc
+}
+
+wd_ci_init() {
+  command -v aws >/dev/null || die "aws cli not found"
+  aws_ sts get-caller-identity >/dev/null || die "aws credentials not usable"
+
+  # Anything left behind by an earlier run goes now, before we add more.
+  wd_ci_sweep
+
+  WD_CI_RUN_ID="$(date -u +%Y%m%d-%H%M%S)-$$"
+  WD_CI_KEY_NAME="wd-ci-${WD_CI_RUN_ID}"
+  WD_CI_KEY_FILE="$(mktemp -t wd-ci-key-XXXXXX.pem)"
+  trap wd_ci_cleanup EXIT INT TERM
+
+  aws_ ec2 create-key-pair --key-name "$WD_CI_KEY_NAME" \
+    --query 'KeyMaterial' --output text > "$WD_CI_KEY_FILE"
+  chmod 600 "$WD_CI_KEY_FILE"
+  log "key pair $WD_CI_KEY_NAME"
+
+  wd_ci_pick_subnet
+
+  # One flaky moment on the workstation's own connection should not throw away
+  # a run — a ten-second timeout here killed one that had nothing else wrong.
+  local my_ip=""
+  local attempt
+  for attempt in 1 2 3; do
+    my_ip=$(curl -fsS --max-time 15 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$my_ip" ]; then break; fi
+    log "  could not reach checkip (try ${attempt}/3), retrying"
+    sleep 5
+  done
+  [ -n "$my_ip" ] || die "could not determine this machine's public IP"
+
+  WD_CI_SG_ID=$(aws_ ec2 create-security-group \
+    --group-name "wd-ci-${WD_CI_RUN_ID}" \
+    --description "throwaway: web-desktop packaging CI" \
+    --vpc-id "$WD_CI_VPC" \
+    --query 'GroupId' --output text)
+  aws_ ec2 authorize-security-group-ingress --group-id "$WD_CI_SG_ID" \
+    --protocol tcp --port 22 --cidr "${my_ip}/32" >/dev/null
+  log "security group $WD_CI_SG_ID (ssh from ${my_ip}/32 only)"
+}
+
+# ---------------------------------------------------------------------------
+# Launching
+# ---------------------------------------------------------------------------
+
+# This account has no default VPC, so a subnet has to be chosen deliberately.
+# The requirement is a route to an internet gateway — without one the instance
+# comes up unreachable and the run wastes ten minutes discovering it.
+wd_ci_pick_subnet() {
+  if [ -n "$WD_CI_SUBNET" ]; then
+    WD_CI_VPC=$(aws_ ec2 describe-subnets --subnet-ids "$WD_CI_SUBNET" \
+      --query 'Subnets[0].VpcId' --output text)
+    log "subnet $WD_CI_SUBNET (given) in $WD_CI_VPC"
+    return
+  fi
+
+  local subnet vpc rt igw
+  while read -r subnet vpc; do
+    [ -z "$subnet" ] && continue
+    rt=$(aws_ ec2 describe-route-tables \
+      --filters "Name=association.subnet-id,Values=$subnet" \
+      --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null || echo None)
+    if [ "$rt" = "None" ] || [ -z "$rt" ]; then
+      rt=$(aws_ ec2 describe-route-tables \
+        --filters "Name=vpc-id,Values=$vpc" "Name=association.main,Values=true" \
+        --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null || echo None)
+    fi
+    [ "$rt" = "None" ] && continue
+    igw=$(aws_ ec2 describe-route-tables --route-table-ids "$rt" \
+      --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].GatewayId|[0]" \
+      --output text 2>/dev/null || echo None)
+    case "$igw" in
+      igw-*) WD_CI_SUBNET="$subnet"; WD_CI_VPC="$vpc"
+             log "subnet $subnet in $vpc (routes to $igw)"; return ;;
+    esac
+  done < <(aws_ ec2 describe-subnets \
+             --query 'Subnets[].[SubnetId,VpcId]' --output text)
+
+  die "no subnet with a route to an internet gateway; set WD_CI_SUBNET"
+}
+
+wd_ci_ami() {
+  aws_ ssm get-parameters --names "$WD_CI_AMI_PARAM" \
+    --query 'Parameters[0].Value' --output text
+}
+
+# wd_ci_launch <role> <instance-type> -> prints "<instance-id> <public-ip>"
+wd_ci_launch() {
+  local role="$1" itype="$2" ami expires id ip
+  ami=$(wd_ci_ami)
+  [ -n "$ami" ] && [ "$ami" != "None" ] || die "could not resolve the Ubuntu AMI"
+  expires=$(( $(date -u +%s) + WD_CI_TTL_MIN * 60 ))
+
+  # The deadman. If everything else fails — the script dies, the network drops,
+  # the laptop closes — the instance still shuts down, and shutdown terminates.
+  local userdata
+  userdata=$(printf '#!/bin/bash\nshutdown -h +%s "web-desktop CI deadman"\n' "$WD_CI_TTL_MIN" | base64 -w0)
+
+  id=$(aws_ ec2 run-instances \
+    --image-id "$ami" \
+    --instance-type "$itype" \
+    --key-name "$WD_CI_KEY_NAME" \
+    --security-group-ids "$WD_CI_SG_ID" \
+    --subnet-id "$WD_CI_SUBNET" \
+    --associate-public-ip-address \
+    --instance-initiated-shutdown-behavior terminate \
+    --user-data "$userdata" \
+    --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=12,VolumeType=gp3,DeleteOnTermination=true}' \
+    --tag-specifications \
+      "ResourceType=instance,Tags=[{Key=${WD_CI_TAG_KEY},Value=${WD_CI_TAG_VALUE}},{Key=Name,Value=wd-ci-${role}},{Key=ExpiresAt,Value=${expires}},{Key=Role,Value=${role}},{Key=RunId,Value=${WD_CI_RUN_ID}}]" \
+      "ResourceType=volume,Tags=[{Key=${WD_CI_TAG_KEY},Value=${WD_CI_TAG_VALUE}}]" \
+    --query 'Instances[0].InstanceId' --output text)
+
+  WD_CI_INSTANCES+=("$id")
+  log "launched $role as $id ($itype), self-terminates in ${WD_CI_TTL_MIN}m"
+
+  aws_ ec2 wait instance-running --instance-ids "$id"
+  ip=$(aws_ ec2 describe-instances --instance-ids "$id" \
+    --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+  [ -n "$ip" ] && [ "$ip" != "None" ] || die "$id has no public IP"
+
+  wd_ci_wait_ssh "$ip"
+  echo "$id $ip"
+}
+
+wd_ci_ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+                -o LogLevel=ERROR -o ConnectTimeout=10)
+
+wd_ci_wait_ssh() {
+  local ip="$1" i
+  for i in $(seq 1 60); do
+    if ssh "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" "ubuntu@${ip}" true 2>/dev/null; then
+      log "ssh up on $ip (after ${i} tries)"
+      return 0
+    fi
+    sleep 5
+  done
+  die "ssh never came up on $ip"
+}
+
+wd_ci_ssh() {
+  local ip="$1"; shift
+  ssh "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" "ubuntu@${ip}" "$@"
+}
+
+# A fresh Ubuntu image is busy for its first few minutes: cloud-init is still
+# going, and unattended-upgrades takes the dpkg lock and restarts services. The
+# first build here died with "Connection reset by peer" mid-apt, because one of
+# the services it restarted was sshd. Settle all of that before doing any work.
+wd_ci_prepare_host() {
+  local ip="$1"
+  log "settling the host (cloud-init, apt timers, needrestart)"
+  wd_ci_ssh "$ip" 'bash -s' <<'REMOTE' || true
+set -uo pipefail
+sudo cloud-init status --wait >/dev/null 2>&1 || true
+sudo systemctl disable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+sudo systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service >/dev/null 2>&1 || true
+sudo pkill -f unattended-upgr >/dev/null 2>&1 || true
+printf 'APT::Periodic::Unattended-Upgrade "0";\n' | sudo tee /etc/apt/apt.conf.d/99-wd-ci >/dev/null
+# The interface comes up at MTU 9001 — jumbo frames, the VPC default — but the
+# path to the internet only carries 1500, and the ICMP that path-MTU discovery
+# depends on is filtered somewhere along it. The result is a connection that
+# establishes perfectly and then dies the moment a bulk transfer starts: apt
+# downloads a few tens of megabytes, stalls with an established socket and empty
+# queues, and waits forever holding its own lock. It looks exactly like a hung
+# mirror, and it cost two builds before it was understood.
+#
+# Dropping to 1500 fixed it instantly — a stalled download resumed mid-flight.
+#
+# And it has to be dropped *durably*. `ip link set mtu` lasts until the DHCP
+# lease renews, at which point AWS's option set puts 9001 back and the stall
+# returns — mid-build, long after the log said the fix had been applied. That
+# cost a whole run: apt succeeded, the build succeeded, and then the 58 MB
+# artifact came home at six kilobytes a second. Netplan is where it sticks,
+# because an explicit MTU there beats whatever the lease says.
+iface=$(ip -o -4 route show to default | awk 'NR==1 { print $5 }')
+if [ -n "$iface" ]; then
+  printf 'network:\n  version: 2\n  ethernets:\n    %s:\n      mtu: 1500\n' "$iface" \
+    | sudo tee /etc/netplan/99-wd-ci-mtu.yaml >/dev/null
+  sudo chmod 600 /etc/netplan/99-wd-ci-mtu.yaml
+  sudo netplan apply 2>/dev/null || true
+  # Immediately too, so the current boot does not wait for netplan to settle.
+  sudo ip link set dev "$iface" mtu 1500 2>/dev/null || true
+  echo "  $iface mtu -> $(ip -o link show "$iface" | grep -o 'mtu [0-9]*') (pinned in netplan)"
+fi
+
+# Secondary hardening, not the fix: make a fetch that goes wrong fail and retry
+# rather than block indefinitely.
+sudo tee /etc/apt/apt.conf.d/99-wd-ci-net >/dev/null <<'APTCONF'
+Acquire::http::Timeout "20";
+Acquire::https::Timeout "20";
+Acquire::Retries "3";
+APTCONF
+# needrestart restarts services in the middle of an install, sshd among them.
+sudo mkdir -p /etc/needrestart/conf.d
+printf "\$nrconf{restart} = 'a';\n\$nrconf{kernelhints} = 0;\n" \
+  | sudo tee /etc/needrestart/conf.d/99-wd-ci.conf >/dev/null
+for _ in $(seq 1 60); do
+  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+  sleep 5
+done
+echo "  host settled"
+REMOTE
+}
+
+# Runs a script on the host detached from our SSH connection, so the work keeps
+# going if the link drops — which it will, sooner or later, on a machine that is
+# restarting its own services. Polls for completion, then returns the script's
+# real exit code.
+#
+#   wd_ci_run_detached <ip> <name> <local-script> [timeout-sec]
+wd_ci_run_detached() {
+  local ip="$1" name="$2" script="$3" limit="${4:-1800}"
+  local waited=0 rc=""
+
+  wd_ci_scp_to "$script" "$ip" "/tmp/${name}.sh"
+  wd_ci_ssh "$ip" "rm -f /tmp/${name}.done /tmp/${name}.log; \
+    setsid nohup bash -c 'bash /tmp/${name}.sh >/tmp/${name}.log 2>&1; \
+    echo \$? >/tmp/${name}.done' >/dev/null 2>&1 </dev/null & sleep 1" || true
+
+  while [ "$waited" -lt "$limit" ]; do
+    sleep 10; waited=$((waited + 10))
+    rc=$(wd_ci_ssh "$ip" "cat /tmp/${name}.done 2>/dev/null" 2>/dev/null || echo "")
+    [ -n "$rc" ] && break
+    if [ $((waited % 60)) -eq 0 ]; then
+      log "  ${name}: $(wd_ci_ssh "$ip" "tail -1 /tmp/${name}.log 2>/dev/null | cut -c1-70" 2>/dev/null || echo '...') (${waited}s)"
+    fi
+  done
+
+  wd_ci_ssh "$ip" "cat /tmp/${name}.log 2>/dev/null" 2>/dev/null | sed 's/^/    /' || true
+  [ -n "$rc" ] || { log "${name} did not finish within ${limit}s"; return 124; }
+  return "$rc"
+}
+
+wd_ci_scp_to() {
+  local src="$1" ip="$2" dst="$3"
+  scp "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" -q "$src" "ubuntu@${ip}:${dst}"
+}
+
+wd_ci_scp_from() {
+  local ip="$1" src="$2" dst="$3"
+  scp "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" -q "ubuntu@${ip}:${src}" "$dst"
+}

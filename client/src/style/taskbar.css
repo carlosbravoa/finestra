@@ -1,0 +1,236 @@
+.taskbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--taskbar-height);
+  padding: 0 8px;
+  background: var(--taskbar-bg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid var(--border);
+}
+
+/* ------------------------------------------------------------------ */
+/* Launcher                                                            */
+/* ------------------------------------------------------------------ */
+
+.taskbar-start {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  height: 32px;
+  padding: 0 13px 0 11px;
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.taskbar-start:hover,
+.taskbar-start.is-open {
+  background: var(--surface-4);
+  border-color: var(--border-strong);
+}
+
+.taskbar-start-icon {
+  color: var(--accent-strong);
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Window buttons                                                      */
+/* ------------------------------------------------------------------ */
+
+.taskbar-tasks {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.taskbar-tasks::-webkit-scrollbar {
+  display: none;
+}
+
+.taskbar-task {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 1 190px;
+  min-width: 44px;
+  height: 32px;
+  padding: 0 11px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text-muted);
+  font-size: 12px;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.taskbar-task:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.taskbar-task.is-focused {
+  background: var(--accent-dim);
+  border-color: rgba(138, 180, 255, 0.4);
+  color: var(--text);
+}
+
+.taskbar-task.is-minimized {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.taskbar-task-icon {
+  flex: none;
+  font-size: 13px;
+  color: var(--accent-strong);
+  display: grid;
+  place-items: center;
+}
+
+.taskbar-task-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.taskbar-task-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+/* ------------------------------------------------------------------ */
+/* Tray                                                                */
+/* ------------------------------------------------------------------ */
+
+.taskbar-tray {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding-left: 4px;
+}
+
+.taskbar-host {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: none;
+  border: none;
+  cursor: default;
+}
+
+/* Only looks clickable once there is a choice to make. */
+.taskbar-host.is-switcher {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.taskbar-host.is-switcher::after {
+  content: ' ▾';
+  opacity: 0.7;
+}
+
+.taskbar-host.is-switcher:hover {
+  background: var(--surface-4);
+  color: var(--text);
+}
+
+.taskbar-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.taskbar-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  transition: background var(--transition);
+}
+
+.taskbar-status[data-state='open'] .taskbar-status-dot {
+  background: var(--success);
+  box-shadow: 0 0 6px rgba(109, 213, 140, 0.7);
+}
+
+.taskbar-status[data-state='open'] .taskbar-status-label {
+  /* Connected is the boring case; do not spend pixels saying so. */
+  display: none;
+}
+
+.taskbar-status[data-state='connecting'] .taskbar-status-dot,
+.taskbar-status[data-state='reconnecting'] .taskbar-status-dot {
+  background: var(--warning);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.taskbar-status[data-state='closed'] .taskbar-status-dot {
+  background: var(--danger);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.taskbar-clock {
+  text-align: right;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  min-width: 52px;
+}
+
+.taskbar-time {
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.taskbar-date {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.taskbar-show-desktop {
+  width: 7px;
+  height: 30px;
+  border-radius: 3px;
+  background: var(--border);
+  transition: background var(--transition-fast);
+}
+
+.taskbar-show-desktop:hover {
+  background: var(--accent);
+}

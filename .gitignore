@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.vite/
+*.tsbuildinfo
+
+# Release tarballs built by packaging/aws/build.sh — artifacts, not source.
+dist-release/
+
+# Apps kept outside this repository; see client/src/apps-extra/README.md
+client/src/apps-extra/*
+!client/src/apps-extra/README.md
+
+# Local orientation notes for AI assistants; not part of the project.
+CLAUDE.md
+
+# Assistant scaffolding — never part of the project.
+.claude/

@@ -1,0 +1,147 @@
+.files-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* Lets rows respond to the window's width rather than the viewport's. */
+  container-type: inline-size;
+}
+
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.files-tool {
+  display: grid;
+  place-items: center;
+  flex: none;
+  min-width: 27px;
+  height: 27px;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.files-tool:hover {
+  background: var(--surface-4);
+  color: var(--text);
+}
+
+.files-path {
+  flex: 1;
+  min-width: 0;
+  height: 27px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-0);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.files-path:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.files-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.files-list:focus {
+  outline: none;
+}
+
+/* Highlight while files from the host OS are dragged over this window. */
+.files-list.is-drop {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.files-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  cursor: default;
+}
+
+.files-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.files-row.is-selected {
+  background: var(--accent-dim);
+  box-shadow: inset 0 0 0 1px rgba(138, 180, 255, 0.35);
+}
+
+.files-row.is-unreadable {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.files-row-icon {
+  flex: none;
+  width: 18px;
+  font-size: 13px;
+  text-align: center;
+}
+
+.files-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-row-size {
+  flex: none;
+  width: 76px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.files-row-time {
+  flex: none;
+  width: 138px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The timestamp column is the first thing to go in a narrow window. */
+@container (max-width: 520px) {
+  .files-row-time {
+    display: none;
+  }
+}
+
+.files-empty {
+  padding: 28px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
