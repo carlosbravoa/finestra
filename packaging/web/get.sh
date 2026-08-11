@@ -62,6 +62,16 @@ if command -v ldd >/dev/null; then
   esac
 fi
 
+# Said here rather than at the end, where install.sh prints the tunnel command
+# and the tokened URL and deserves the last word. Whoever is watching this
+# scroll past is, more often than not, putting Finestra on a machine that
+# belongs to a company, and this is the one moment they are certain to be
+# looking. A footer on a website is not.
+step "Licence"
+say "free for personal and internal business use, on as many machines as you like"
+say "hosting it as a service or shipping it in a product needs a commercial licence"
+say "github.com/carlosbravoa/finestra/blob/main/LICENSE · licensing@finestra.dev"
+
 step "Finding the current release"
 # latest.txt names the file rather than a version, so nothing here has to know
 # how a version becomes a filename — a rule that already bit once, since S3

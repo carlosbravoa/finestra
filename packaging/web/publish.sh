@@ -178,6 +178,13 @@ check() { # check <name> <url> <expected-substring>
 check "latest.txt names the published file" "${BASE}/latest.txt" "$SAFE_NAME"
 check "get.sh is served"                    "${BASE}/get.sh"     "checksum mismatch"
 check "get.sh knows its own base url"       "${BASE}/get.sh"     "$BASE"
+# The installer is where the licence reaches the person putting this on a
+# company machine, and it went missing once without anyone noticing: the copy in
+# the repository was wrong while the copy being published came from a different
+# tree that was right, so every check passed until the two swapped places.
+# Asserting against what is *served* is the only version of this check that
+# could have caught it.
+check "get.sh names the licence"            "${BASE}/get.sh"     "licensing@finestra.dev"
 check "the page is served"                  "${BASE}/"           "$VERSION"
 check "the page links the published file"   "${BASE}/"           "$SAFE_NAME"
 check "the checksum names the published file" "${BASE}/releases/${SAFE_NAME}.sha256" "$SAFE_NAME"
