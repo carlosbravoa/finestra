@@ -197,7 +197,6 @@
   <div class="card"><h4>Native applications</h4><p>Real Linux GUI apps in a window, through a Wayland compositor written for this.</p></div>
   <div class="card"><h4>Several machines</h4><p>One shell, one connection per server, straight from your browser. The servers never learn about each other.</p></div>
   <div class="card"><h4>Session restore</h4><p>Windows come back after a reload — geometry, stacking, focus, and where each app was.</p></div>
-  <div class="card"><h4>From the terminal</h4><p><code>finestra open firefox</code> — a shell has no display of its own, so it asks the desktop, and the window appears in your browser.</p></div>
 </div>
 
 <h2 id="afterwards">Afterwards</h2>
@@ -217,15 +216,30 @@ sudo /opt/finestra/current/update.sh --rollback   # undo a bad upgrade</pre>
 sudo /opt/finestra/current/configure.sh          # ask again
 sudo /opt/finestra/current/configure.sh --as-me  # or answer directly</pre>
 
-<h3>Prefer to do it by hand?</h3>
+<h3>Rather read it first, and build it yourself?</h3>
 <p class="tight">
-  Download the tarball, check it, unpack it, and run the same installer:
+  Finestra can do anything you can do on that machine — a root-capable shell, your
+  files, your services. That is the point of it, and it is a good reason not to
+  take anyone's word for what it does. The whole thing is on
+  <a href="https://github.com/carlosbravoa/finestra">GitHub</a>: the services are
+  the entire surface a browser can reach, and they are in one directory,
+  <code>server/src/services/</code>.
 </p>
-<pre class="block">curl -fLO <span class="url">BASE</span>/releases/<span class="tarball">TARBALL</span>
-curl -fLO <span class="url">BASE</span>/releases/<span class="tarball">TARBALL</span>.sha256
-sha256sum -c <span class="tarball">TARBALL</span>.sha256
-tar xzf <span class="tarball">TARBALL</span>
-cd finestra-<span class="version">VERSION</span> &amp;&amp; sudo ./install.sh</pre>
+<p class="tight">
+  Read it, then build the same thing rather than downloading it. Needs Node 20 or
+  newer:
+</p>
+<pre class="block">sudo apt install -y build-essential pkg-config libwayland-dev libxkbcommon-dev zlib1g-dev
+git clone https://github.com/carlosbravoa/finestra.git
+cd finestra
+npm install &amp;&amp; npm run build
+make -C compositor            # the Wayland compositor, for native applications
+npm start                     # 127.0.0.1:7070, prints a URL with a token</pre>
+<p class="tight">
+  That runs it in the foreground, as you, with no service installed and nothing
+  changed on the machine. If you want it to survive a reboot afterwards, the
+  installer in the tarball is what sets up the systemd unit.
+</p>
 
 <div class="meta">
   <div>release &nbsp;<span class="version">VERSION</span></div>
