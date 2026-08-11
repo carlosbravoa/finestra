@@ -86,6 +86,10 @@ const LINE_HEIGHT = 16;
 interface AvailableResult {
   available: boolean;
   reason?: string;
+  /** Sonames the compositor needs and the server does not have. */
+  missing?: string[];
+  /** The command that would install them, when we can name one. */
+  install?: string | null;
 }
 
 interface RemoteApp {
@@ -366,6 +370,39 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
       h('h2', { text: title }),
       h('p', { text: detail }),
       retry ? h('button', { class: 'wayland-button', text: 'Try again', on: { click: retry } }) : null,
+    );
+  }
+
+  /**
+   * The server can run native applications in principle and cannot right now.
+   *
+   * Worth more than one line, because the usual cause is a deliberate choice:
+   * the compositor's two shared libraries are not installed by default, since
+   * nothing else in this desktop needs them. So say that this is the only
+   * thing missing, and print the command that fixes it — the person reading
+   * this has an SSH session to that machine by definition.
+   */
+  function showUnavailable(status: AvailableResult, retry: () => void): void {
+    // Only when the server could name a command it is sure of. Package names
+    // differ between distributions where sonames do not, so the fallback names
+    // the libraries and leaves the packaging to the person who knows it.
+    const libraries = status.missing?.length
+      ? h('p', {
+          text: status.install
+            ? 'Everything else in this desktop works without them. ' +
+              'To turn native applications on, run this on the server:'
+            : 'Everything else in this desktop works without them. To turn native ' +
+              'applications on, install whatever this distribution calls the packages ' +
+              `providing ${status.missing.join(' and ')}.`,
+        })
+      : null;
+
+    showPanel(
+      h('h2', { text: 'Native applications are not available' }),
+      h('p', { text: status.reason ?? 'Unknown reason.' }),
+      libraries,
+      status.install ? h('pre', { class: 'wayland-command', text: status.install }) : null,
+      h('button', { class: 'wayland-button', text: 'Try again', on: { click: retry } }),
     );
   }
 
@@ -1090,27 +1127,34 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
       'The server does not offer the wayland service. It may be an older build.',
     );
   } else {
-    const status = await desktop.rpc
-      .call<AvailableResult>('wayland', 'available', {})
-      .catch(() => ({ available: false, reason: 'The server did not answer.' }));
+    // Its own function so that "Try again" can ask a second time: the missing
+    // piece is usually two packages, and installing them while this window is
+    // open should not need a reload.
+    const checkAndStart = async (): Promise<void> => {
+      const status = await desktop.rpc
+        .call<AvailableResult>('wayland', 'available', {})
+        .catch(() => ({ available: false, reason: 'The server did not answer.' }));
 
-    await loadPins();
+      await loadPins();
 
-    if (!layout) {
-      // Keys are physical positions, so the compositor's keymap has to match
-      // the real keyboard. The browser knows; ask it before starting.
-      layout = (await detectLayout()) ?? 'us';
-    }
+      if (!layout) {
+        // Keys are physical positions, so the compositor's keymap has to match
+        // the real keyboard. The browser knows; ask it before starting.
+        layout = (await detectLayout()) ?? 'us';
+      }
 
-    if (disposed) {
-      // The window closed while we were asking.
-    } else if (!status.available) {
-      showMessage('Not available on this server', status.reason ?? 'Unknown reason.');
-    } else if (currentApp) {
-      start(currentApp);
-    } else {
-      void showPicker();
-    }
+      if (disposed) {
+        // The window closed while we were asking.
+      } else if (!status.available) {
+        showUnavailable(status, () => void checkAndStart());
+      } else if (currentApp) {
+        start(currentApp);
+      } else {
+        void showPicker();
+      }
+    };
+
+    await checkAndStart();
   }
 
   function setLayout(next: string): void {

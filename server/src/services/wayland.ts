@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -109,6 +109,98 @@ function hasExecutable(name: string): boolean {
     }
   }
   return false;
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared libraries                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What to call these libraries, per package manager.
+ *
+ * A soname is the same everywhere and a package name is not: Debian's
+ * `libwayland-server0` is Fedora's `libwayland-server` and Arch's `wayland`.
+ * Answering `apt` to someone on Fedora is worse than answering nothing, so an
+ * entry missing here means we say we do not know rather than guess.
+ *
+ * Only the compositor's own dependencies are listed. `libz.so.1` is here for
+ * completeness and is unlikely ever to be the answer; everything else `wdcomp`
+ * links is libc, which nobody installs.
+ */
+const PACKAGE_MANAGERS = [
+  { probe: 'apt-get', install: 'sudo apt install' },
+  { probe: 'dnf', install: 'sudo dnf install' },
+  { probe: 'zypper', install: 'sudo zypper install' },
+  { probe: 'pacman', install: 'sudo pacman -S' },
+] as const;
+
+type PackageManager = (typeof PACKAGE_MANAGERS)[number]['probe'];
+
+const LIBRARY_PACKAGES: Record<string, Partial<Record<PackageManager, string>>> = {
+  'libwayland-server.so.0': {
+    'apt-get': 'libwayland-server0',
+    dnf: 'libwayland-server',
+    zypper: 'libwayland-server0',
+    pacman: 'wayland',
+  },
+  'libxkbcommon.so.0': {
+    'apt-get': 'libxkbcommon0',
+    dnf: 'libxkbcommon',
+    zypper: 'libxkbcommon0',
+    pacman: 'libxkbcommon',
+  },
+  'libz.so.1': {
+    'apt-get': 'zlib1g',
+    pacman: 'zlib',
+    // Deliberately no dnf/zypper entry: Fedora moved this to zlib-ng-compat
+    // partway through, so there is no one name that is right on both.
+  },
+};
+
+/**
+ * Shared libraries `wdcomp` needs and this machine does not have.
+ *
+ * They are a deliberately optional install: the desktop, the terminal, the
+ * files and everything else work without them, and only native applications
+ * do not — so a machine that never runs one should not be made to carry a
+ * Wayland library. That makes it our job to say so clearly rather than let
+ * the loader kill the compositor with exit 127 and nothing to read.
+ *
+ * `ldd` rather than the binary itself, because the loader reports only the
+ * *first* library it cannot find, and "install this, now install that" twice
+ * over is a worse answer than one command that names both.
+ */
+function missingLibraries(binary: string): string[] {
+  const out = spawnSync('ldd', [binary], { encoding: 'utf8' });
+  // No ldd, or it refused the file: we cannot tell, so claim nothing. A launch
+  // that then fails reports the loader's own words, which is still honest.
+  if (out.error || typeof out.stdout !== 'string') return [];
+
+  const missing: string[] = [];
+  for (const line of out.stdout.split('\n')) {
+    const m = /^\s*(\S+)\s*=>\s*not found/.exec(line);
+    if (m) missing.push(m[1]);
+  }
+  return missing;
+}
+
+/**
+ * The one command that would install all of them, or null if we cannot write
+ * one we are sure of — an unknown package manager, or a library we have no
+ * name for under the manager this machine has. The caller says so plainly
+ * instead; a wrong command wastes more of someone's time than no command.
+ */
+function installCommand(missing: string[]): string | null {
+  const manager = PACKAGE_MANAGERS.find((m) => hasExecutable(m.probe));
+  if (!manager) return null;
+
+  const packages: string[] = [];
+  for (const lib of missing) {
+    const name = LIBRARY_PACKAGES[lib]?.[manager.probe];
+    if (!name) return null;
+    if (!packages.includes(name)) packages.push(name);
+  }
+  return packages.length ? `${manager.install} ${packages.join(' ')}` : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -553,6 +645,19 @@ export const waylandService: Service = {
         return {
           available: false,
           reason: 'XDG_RUNTIME_DIR is not set, so there is nowhere to put the socket.',
+        };
+      }
+      // Checked on every ask rather than cached, so that installing them and
+      // pressing "Try again" works without restarting the service.
+      const missing = missingLibraries(binary);
+      if (missing.length) {
+        return {
+          available: false,
+          reason:
+            `The compositor needs ${missing.join(' and ')}, which ` +
+            `${missing.length > 1 ? 'are' : 'is'} not installed on this machine.`,
+          missing,
+          install: installCommand(missing),
         };
       }
       return { available: true, binary, sessionBus: hasExecutable('dbus-run-session') };

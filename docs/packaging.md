@@ -135,6 +135,28 @@ Two deliberate defaults that people will ask about:
 - **It runs as the person who installed it.** See below; the alternative is
   offered at install time and is a different product.
 
+And one deliberate omission:
+
+- **It installs nothing from a package manager.** The compositor needs two
+  shared libraries at runtime — `libwayland-server.so.0` and
+  `libxkbcommon.so.0` — and the installer reports whether they are there
+  instead of fetching them. They buy exactly one feature, native Linux
+  applications in a window; a machine that will only ever use the terminal, the
+  files and the system tools should not acquire a Wayland library because a
+  desktop was installed on it. `install.sh` prints the install line for the
+  manager it finds, and so does the applications window, which runs the same
+  check (`available()` in `server/src/services/wayland.ts`) every time it opens
+  — so installing them takes effect on **Try again**, with no restart and no
+  reload. This is also why the release tarball is still an install with no
+  network dependency at all beyond fetching the tarball itself.
+
+  Both places name packages per manager rather than assuming `apt`, because a
+  soname is the same everywhere and a package name is not: Debian's
+  `libwayland-server0` is Fedora's `libwayland-server` and Arch's `wayland`.
+  `apt`, `dnf`, `zypper` and `pacman` are covered; anything else is told the
+  sonames and left to name its own packages, because an install command that is
+  wrong costs more than one that is missing.
+
 ### Who it runs as
 
 This was got wrong once, in the direction that looks responsible. The installer

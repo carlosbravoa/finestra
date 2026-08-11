@@ -556,8 +556,8 @@ cd compositor && make
 ```
 
 Requires `libwayland-dev`, `libxkbcommon-dev` and `zlib1g-dev`. The build is
-optional: when `wdcomp` is missing the app simply does not register, which is
-the same mechanism Settings → Apps already uses to hide a disabled app.
+optional: without `wdcomp` the applications window says so and everything else
+in the desktop is unaffected.
 
 `wayland-protocols` is deliberately **not** on that list. The three XML files
 are vendored in `compositor/protocols/`, because which of them a distribution
@@ -567,5 +567,39 @@ ships is a property of its release date: Ubuntu 22.04 has one of the three, and
 also means the compositor can be built on an older base to lower the glibc floor
 of the release, which was previously impossible for a reason that had nothing to
 do with glibc. See `compositor/protocols/README.md`.
+
+## What the machine that runs it needs
+
+`libwayland-server.so.0` and `libxkbcommon.so.0` — the runtime halves of two of
+the build dependencies, and the only thing this product ever wants from a
+package manager. They are **not** installed for you, by `install.sh` or by
+anything else: nothing but the compositor links them, so native applications
+are a feature to opt into rather than a dependency a desktop acquires on your
+server without being asked.
+
+`available()` therefore runs `ldd` on `wdcomp` on *every* ask and reports the
+sonames that came back `not found`, along with the command that would install
+them. Every ask, not once at startup, so the applications window can offer
+**Try again** and have it work the moment the packages land — no restart, no
+reload.
+
+The command is per package manager, and named in sonames everywhere else:
+
+| | |
+|---|---|
+| `apt` | `libwayland-server0 libxkbcommon0` |
+| `dnf` | `libwayland-server libxkbcommon` |
+| `zypper` | `libwayland-server0 libxkbcommon0` |
+| `pacman` | `wayland libxkbcommon` |
+
+A soname is the same on every distribution and a package name is not, so a
+manager that is not in that table — or a library with no name recorded for the
+manager this machine has — produces no command at all, and the window says
+"install whatever this distribution calls the packages providing …" instead.
+Telling someone on Fedora to run `apt` is worse than telling them nothing.
+
+`ldd` rather than simply running the binary: the loader stops at the first
+library it cannot find, so running it would have someone install one package,
+retry, and only then be told about the other.
 
 See [`compositor/README.md`](../compositor/README.md) for how to run stage 1.

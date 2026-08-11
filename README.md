@@ -140,6 +140,20 @@ cd finestra-<version>
 sudo ./install.sh
 ```
 
+The installer fetches nothing. If you also want **native Linux applications** in
+a window, the compositor needs two shared libraries that most server images do
+not carry; `install.sh` says whether they are present and prints the line for
+whichever package manager it finds:
+
+```bash
+sudo apt install libwayland-server0 libxkbcommon0     # Debian, Ubuntu
+sudo dnf install libwayland-server libxkbcommon       # Fedora, RHEL
+```
+
+Nothing else in the desktop needs them, so it is safe to skip — the
+applications window explains the same thing and picks them up as soon as they
+appear, with no restart.
+
 `install.sh` asks one question — who the desktop runs as — then installs under
 `/opt/finestra`, writes a systemd unit and starts it bound to
 `127.0.0.1:7070`. It finishes by printing the tunnel command and the tokened URL

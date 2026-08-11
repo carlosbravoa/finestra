@@ -22,9 +22,11 @@ wd_ci_init
 read -r VERIFY_ID VERIFY_IP <<<"$(wd_ci_launch verify "$VERIFY_TYPE")"
 
 # Same hazard as the builder: unattended-upgrades holds the dpkg lock and
-# restarts sshd underneath us, and install.sh runs apt-get for the compositor's
-# runtime libraries. This only stops the image's own background upgrades — it
-# installs nothing, so the machine is still bare in every way that matters here.
+# restarts sshd underneath us. This only stops the image's own background
+# upgrades — it installs nothing, so the machine is still bare in every way
+# that matters here. install.sh no longer runs apt-get at all: the compositor's
+# two runtime libraries are optional and reported rather than installed, so a
+# verified install is a machine that cannot yet run native applications.
 wd_ci_prepare_host "$VERIFY_IP"
 
 # Prove the machine really is bare before we install anything, so a pass cannot

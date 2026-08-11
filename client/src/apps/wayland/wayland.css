@@ -56,6 +56,21 @@
   line-height: 1.5;
 }
 
+/* A command to paste into a shell on the server. Selectable, so it can be. */
+.wayland-command {
+  margin: 0 0 1rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--surface-4);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  text-align: left;
+  overflow-x: auto;
+  user-select: text;
+}
+
 .wayland-button {
   padding: 0.4rem 0.9rem;
   border: 1px solid var(--surface-4);

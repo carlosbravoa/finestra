@@ -105,27 +105,38 @@ fi
 # Runtime libraries
 # ---------------------------------------------------------------------------
 # Only the compositor needs these, and only at runtime (not the -dev packages).
-# A failure here is not fatal: it costs native applications, nothing else.
+# They are reported, not installed: the desktop, the terminal, the files and
+# everything else work without them, and the person installing a desktop on a
+# headless server has not necessarily asked for a Wayland library on it. Native
+# applications are the one feature that needs them, so it is a feature to opt
+# into rather than a dependency to acquire silently. The applications window
+# runs the same check and says the same thing, so nothing depends on anyone
+# having read this.
 
 if [ -x "$HERE/libexec/wdcomp" ]; then
-  step "Runtime libraries for the compositor"
+  step "Runtime libraries for the compositor (optional)"
   missing=""
   for lib in libwayland-server.so.0 libxkbcommon.so.0; do
     ldconfig -p 2>/dev/null | grep -q "$lib" || missing="$missing $lib"
   done
   if [ -n "$missing" ]; then
-    say "missing:$missing"
+    say "not installed:$missing"
+    say "Native Linux applications need them. Everything else works without."
+    # A soname is the same everywhere; a package name is not. Only names we are
+    # sure of — an unrecognised manager gets the sonames and no guess.
     if command -v apt-get >/dev/null; then
-      say "installing libwayland-server0 libxkbcommon0"
-      DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-        libwayland-server0 libxkbcommon0 >/dev/null 2>&1 \
-        || say "could not install them — native applications will be unavailable"
+      say "To enable them:  sudo apt install libwayland-server0 libxkbcommon0"
+    elif command -v dnf >/dev/null; then
+      say "To enable them:  sudo dnf install libwayland-server libxkbcommon"
+    elif command -v zypper >/dev/null; then
+      say "To enable them:  sudo zypper install libwayland-server0 libxkbcommon0"
+    elif command -v pacman >/dev/null; then
+      say "To enable them:  sudo pacman -S wayland libxkbcommon"
     else
-      say "install them with your package manager to enable native applications"
+      say "Install this distribution's packages for them to enable native applications."
     fi
   else
-    say "present"
+    say "present — native applications are available"
   fi
 fi
 
