@@ -164,6 +164,20 @@
 </div>
 
 <div class="note">
+  <strong>Want native Linux applications?</strong> They need two shared libraries
+  that most server images do not carry, and the installer deliberately does not
+  fetch them for you: nothing else in the desktop links them, so a machine that
+  will only ever use the terminal, the files and the system tools does not
+  acquire a Wayland library because a desktop was installed on it. Everything
+  else works without them. Install them whenever you want the feature —
+  <code>sudo apt install libwayland-server0 libxkbcommon0</code> on Debian and
+  Ubuntu, <code>sudo dnf install libwayland-server libxkbcommon</code> on Fedora
+  and RHEL — and the applications window picks them up the moment they appear,
+  with no restart. It also prints the right command for your distribution if you
+  would rather be told.
+</div>
+
+<div class="note">
   <strong>Already running web desktop?</strong> Run the same one-liner. It takes
   the old install over: your access token, your settings and your answer to the
   who-runs-as question all survive, so the URL you have bookmarked keeps working.
