@@ -131,6 +131,25 @@ export interface ServiceDescriptor {
   channels: string[];
 }
 
+/**
+ * Which Finestra is running on a host. Carried per host rather than announced
+ * once, because one shell drives several machines and they are updated one at
+ * a time: the only way to answer "which version am I looking at" is to ask each
+ * of them separately.
+ */
+export interface BuildInfo {
+  /**
+   * `0.2.0` from a release, `0.2.0+3.g1a2b3c4` when the build is past its tag,
+   * `0.2.0+dev` from a source tree. Safe to show a person and to compare for
+   * equality; deliberately not safe to sort.
+   */
+  version: string;
+  /** ISO 8601, from the release manifest. Absent in a development build. */
+  builtAt?: string;
+  /** Running from a source tree rather than an installed release. */
+  dev: boolean;
+}
+
 export interface HostInfo {
   hostname: string;
   platform: string;
@@ -139,6 +158,8 @@ export interface HostInfo {
   home: string;
   /** Shells found on the host, first is the default. */
   shells: string[];
+  /** The Finestra serving this connection. */
+  build: BuildInfo;
 }
 
 export interface WireError {

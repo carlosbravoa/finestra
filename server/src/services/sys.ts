@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import type { HostInfo } from '../../../shared/protocol.js';
 import type { Service } from '../service.js';
+import { buildInfo } from '../version.js';
 import { availableShells } from './pty.js';
 
 export function hostInfo(): HostInfo {
@@ -13,6 +14,7 @@ export function hostInfo(): HostInfo {
     user: os.userInfo().username,
     home: os.homedir(),
     shells: availableShells(),
+    build: buildInfo(),
   };
 }
 

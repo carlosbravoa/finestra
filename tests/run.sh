@@ -63,6 +63,7 @@ run() {
 }
 
 run "end-to-end (auth, fs, pty)"  node tests/e2e.mjs "$TOKEN" "$PORT"
+run "the host names its build"    node tests/version.mjs "$TOKEN" "$PORT"
 run "pty.cwd"                     node tests/pty-cwd.mjs "$TOKEN" "$PORT"
 run "pty.status"                  node tests/pty-status.mjs "$TOKEN" "$PORT"
 run "transfer + apps service"     node tests/transfer.mjs "$TOKEN" "$PORT"

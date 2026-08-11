@@ -20,10 +20,42 @@ OUT_DIR="${1:-$REPO/dist-release}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 BUILDER_TYPE="${BUILDER_TYPE:-t3.small}"   # 1GB is too little for vite + node-gyp
 
-VERSION="$(node -p "require('./package.json').version" 2>/dev/null || echo 0.1.0)"
-SHA="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
-git diff --quiet 2>/dev/null || SHA="${SHA}-dirty"
-FULL_VERSION="${VERSION}+${SHA}"
+# Versioning, in one place. package.json holds the number a human chose;
+# `git describe` says how far the working tree is from the tag that claims it.
+#
+# A build sitting exactly on its tag is the release and gets the bare number —
+# which is the point of the whole arrangement, because "0.2.0" is what a person
+# can read off an About box and say out loud, and "0.1.0+c59fab0" never was.
+# Anything else is honest about being in between: 0.2.0+3.g1a2b3c4 is three
+# commits past v0.2.0. The separator inside the metadata is a dot, not a dash,
+# so the sha cannot be mistaken for a pre-release suffix.
+VERSION="$(node -p "require('./package.json').version" 2>/dev/null || echo 0.0.0)"
+DESCRIBE="$(git describe --tags --match 'v[0-9]*' --long --dirty 2>/dev/null || true)"
+
+if [ -n "$DESCRIBE" ]; then
+  DIRTY=""
+  case "$DESCRIBE" in *-dirty) DIRTY=".dirty"; DESCRIBE="${DESCRIBE%-dirty}" ;; esac
+  SHA="${DESCRIBE##*-g}"        # 1a2b3c4
+  REST="${DESCRIBE%-g*}"        # v0.2.0-3
+  AHEAD="${REST##*-}"           # 3
+  TAG="${REST%-*}"              # v0.2.0
+
+  # A tag that disagrees with package.json means one of them was forgotten, and
+  # shipping either number would be a lie about what is inside the tarball.
+  [ "${TAG#v}" = "$VERSION" ] || die \
+    "package.json says ${VERSION} but the nearest tag is ${TAG} — bump one or move the other"
+
+  if [ "$AHEAD" = 0 ] && [ -z "$DIRTY" ]; then
+    FULL_VERSION="$VERSION"
+  else
+    FULL_VERSION="${VERSION}+${AHEAD}.g${SHA}${DIRTY}"
+  fi
+else
+  # No tag reachable yet — the first build of a new number, or a shallow clone.
+  SHA="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+  git diff --quiet 2>/dev/null || SHA="${SHA}.dirty"
+  FULL_VERSION="${VERSION}+g${SHA}"
+fi
 TARBALL="finestra-${FULL_VERSION}-linux-x64.tar.gz"
 
 log "building finestra ${FULL_VERSION} on ${BUILDER_TYPE} (Ubuntu 24.04)"
@@ -50,6 +82,9 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 version="${FULL_VERSION}"
 major="${NODE_MAJOR}"
+# Vite bakes this into the bundle, so the shell and the server name the same
+# build rather than each guessing from what it can see.
+export WD_VERSION="${FULL_VERSION}"
 
 # wayland-protocols is deliberately absent: the XML the compositor needs is in
 # compositor/protocols/. Adding it back would reintroduce the bug it fixed —

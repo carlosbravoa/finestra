@@ -57,6 +57,60 @@ finestra-<version>-linux-x64.tar.gz
 Roughly 70–90 MB compressed, most of which is the Node runtime. That is the
 price of not needing a compiler on the target, and it is worth paying.
 
+## Versions
+
+For a long time every build was `0.1.0`, plus a commit sha to tell them apart.
+That is not a version, it is a serial number: nobody can say it out loud, two
+installs cannot be compared without looking up which sha came first, and a bug
+report that says "0.1.0" narrows nothing.
+
+The convention now:
+
+- **`package.json` holds the number a human chose.** One place; the workspaces
+  and the lockfile follow it.
+- **A tag `v<version>` claims a commit for that number.** `build.sh` runs
+  `git describe --tags --match 'v[0-9]*' --long --dirty` and **refuses to build
+  if the nearest tag disagrees with `package.json`** — a mismatch means one of
+  the two was forgotten, and either number would misdescribe the tarball.
+- **On the tag, the version is bare: `0.2.0`.** That is the release, and it is
+  the whole point of the arrangement.
+- **Off the tag it says how far off:** `0.2.0+3.g1a2b3c4` is three commits past
+  `v0.2.0`. A dirty tree appends `.dirty`. A source tree with no build at all
+  reports `0.2.0+dev`.
+
+Everything after the `+` is semver build metadata, and the separator inside it
+is a dot rather than a dash so a sha can never be read as a pre-release suffix.
+Keep it to `[0-9A-Za-z.-]`: `publish.sh` has to rewrite that `+` into something
+S3 will not read as a space, and anything exotic makes the substitution a guess.
+`tests/version.mjs` pins the shape.
+
+Cutting a release is therefore: bump `package.json`, commit, `git tag v0.2.1`,
+build.
+
+### Where a version can be read
+
+Four places, all from the same string:
+
+| | |
+|---|---|
+| `MANIFEST` | In the install tree. What `install.sh` and `update.sh` compare |
+| The About dialog | Desktop menu → About. Names the **shell** and the **server** separately |
+| `hello` | `host.build` on every connection, so the shell learns it without asking |
+| The tarball name | `finestra-<version>-linux-x64.tar.gz` |
+
+The About dialog shows two numbers on purpose. The shell is whatever the browser
+loaded and the server is whatever that machine has installed, and after an
+update they disagree until the page is reloaded — which looks exactly like an
+update that did nothing. It reports the *target* host, because with several
+servers in one shell an answer that does not say which machine it describes is
+worse than no answer.
+
+The shell's copy is baked in by Vite from `WD_VERSION`, which `build.sh`
+exports, so both halves name one build rather than each guessing from what it
+can see. The server's copy comes from `MANIFEST` if there is one and from
+`package.json` if there is not — `server/src/version.ts` walks up from itself
+looking for each in turn.
+
 ## Installing
 
 ```bash

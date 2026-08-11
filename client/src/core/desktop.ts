@@ -54,6 +54,7 @@ export const DEFAULT_UPLOADS_DIR = '~/Uploads';
 /** Shown in About, and nowhere else. */
 export const WEBSITE_URL = 'https://finestra.dev';
 export const COPYRIGHT = '© 2026 Carlos Bravo';
+export const LICENCE = 'Free for personal and internal business use.';
 
 /**
  * The shell. Owns the DOM layers, the app registry, the connection, and the
@@ -750,14 +751,43 @@ export class Desktop implements DesktopAPI {
     });
   }
 
+  /**
+   * Two version numbers, not one. The shell is whatever the browser loaded and
+   * the server is whatever that machine has installed, and after an update they
+   * disagree until the page is reloaded — which looks exactly like an update
+   * that did nothing. Showing both, named, is what makes that diagnosable.
+   *
+   * It reports the *target* host rather than the local one, for the same reason
+   * restart and shut down do: with several servers in one shell, an answer that
+   * does not say which machine it is about is worse than no answer.
+   */
   private showAbout(): void {
-    const host = this.rpc.host;
-    const detail = host
-      ? `${host.user}@${host.hostname}\n${host.platform}/${host.arch}\nHome: ${host.home}`
-      : 'Not connected to a server.';
+    const view = this.viewFor(this.targetHost);
+    const host = view.host ?? this.rpc.host;
+    const shell = __FINESTRA_VERSION__;
+    const lines = ['A desktop environment for a headless server.', ''];
+
+    lines.push(`Desktop   ${shell}`);
+
+    if (host) {
+      // Optional at runtime though the type says otherwise: a server from
+      // before this existed connects fine and simply does not say.
+      const build = host.build as HostInfo['build'] | undefined;
+      lines.push(`Server    ${build?.version ?? 'unknown'}   on ${host.hostname}`);
+      if (build?.builtAt) lines.push(`Built     ${build.builtAt}`);
+      if (build && build.version !== shell) {
+        lines.push('', 'The desktop and the server are different builds. Reload the page.');
+      }
+      lines.push('', `${host.user}@${host.hostname}`, `${host.platform}/${host.arch}`, `Home: ${host.home}`);
+    } else {
+      lines.push('', 'Not connected to a server.');
+    }
+
+    lines.push('', LICENCE, COPYRIGHT);
+
     void this.confirm({
       title: 'Finestra',
-      message: `A desktop environment for a headless server.\n\n${detail}\n\n${COPYRIGHT}`,
+      message: lines.join('\n'),
       link: { href: WEBSITE_URL },
       confirmLabel: 'Close',
       cancelLabel: null,
