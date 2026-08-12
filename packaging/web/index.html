@@ -99,6 +99,21 @@
     margin: -4px 0 18px; font-size: 13px; line-height: 1.6; color: var(--faint);
   }
   .footnote strong { color: var(--muted); }
+  /* Release history. The newest entry is open; the rest fold away, because
+     the reason to scroll here is "what changed since mine", not a history
+     lesson. <details> does that with no script. */
+  .changes details {
+    margin-bottom: 8px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 18px;
+  }
+  .changes summary {
+    cursor: pointer; font-weight: 600; list-style-position: outside;
+  }
+  .changes summary .when { font-weight: 400; color: var(--faint); margin-left: 8px; }
+  .changes ul { margin: 10px 0 2px; padding-left: 20px; }
+  .changes li { margin-bottom: 8px; line-height: 1.6; }
+  .changes p { margin: 10px 0 2px; line-height: 1.6; }
+  .changes strong { color: var(--text); }
   /* The digest is the one value here someone retypes or compares, so it wraps
      rather than running off the edge of a narrow screen. */
   .meta {
@@ -231,6 +246,16 @@
   where a package offers both. What is known, and why, is written down in
   <code>docs/wayland.md</code>.
 </p>
+
+<h2 id="changes">What changed</h2>
+<p class="tight">
+  Every release, newest first — what now works that did not. Rendered from
+  <a href="https://github.com/carlosbravoa/finestra/blob/main/CHANGELOG.md">CHANGELOG.md</a>,
+  so the page and the repository cannot disagree.
+</p>
+<div class="changes">
+@@RELEASE_HISTORY@@
+</div>
 
 <h2 id="afterwards">Afterwards</h2>
 <pre class="block">sudo systemctl status finestra              # is it up

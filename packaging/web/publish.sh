@@ -78,9 +78,75 @@ log "release  $VERSION"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# The release history the page shows is rendered from CHANGELOG.md, so there
+# is one place to write it and the page cannot drift from the repository. The
+# format it accepts is the one the file already uses and nothing more:
+#
+#   ## <version> — <date>      a release
+#   - <text>                   a bullet, continued by indented lines
+#   <text>                     a paragraph
+#   **bold**, `code`           the only inline markup
+#
+# Anything above the first `##` is preamble and skipped. The newest release is
+# open, the rest folded — see the note on .changes in index.html.
+CHANGELOG="$HERE/../../CHANGELOG.md"
+[ -f "$CHANGELOG" ] || die "no CHANGELOG.md to render the release history from"
+grep -q "^## ${VERSION} " "$CHANGELOG" ||
+  die "CHANGELOG.md has no entry for ${VERSION} — write it before publishing"
+
+render_changelog() {
+  awk '
+    function esc(s) {
+      gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s)
+      return s
+    }
+    # Inline markup, after escaping so the tags we add survive.
+    function inline(s) {
+      s = esc(s)
+      while (match(s, /\*\*[^*]+\*\*/))
+        s = substr(s, 1, RSTART - 1) "<strong>" substr(s, RSTART + 2, RLENGTH - 4) \
+            "</strong>" substr(s, RSTART + RLENGTH)
+      while (match(s, /`[^`]+`/))
+        s = substr(s, 1, RSTART - 1) "<code>" substr(s, RSTART + 1, RLENGTH - 2) \
+            "</code>" substr(s, RSTART + RLENGTH)
+      return s
+    }
+    function flush() {
+      if (item != "") { print "    <li>" inline(item) "</li>"; item = "" }
+      if (para != "") { print "  <p>" inline(para) "</p>"; para = "" }
+    }
+    function closelist() { if (inlist) { print "  </ul>"; inlist = 0 } }
+    /^## / {
+      flush(); closelist(); if (open) print "</details>"
+      line = substr($0, 4)
+      dash = index(line, " — ")
+      version = dash ? substr(line, 1, dash - 1) : line
+      when = dash ? substr(line, dash + 5) : ""
+      # The first entry is the newest, and the only one worth opening.
+      printf "<details%s>\n", (seen++ ? "" : " open")
+      printf "  <summary>%s<span class=\"when\">%s</span></summary>\n", esc(version), esc(when)
+      open = 1
+      next
+    }
+    !open { next }                       # preamble, before the first release
+    /^- / { flush(); if (!inlist) { print "  <ul>"; inlist = 1 }; item = substr($0, 3); next }
+    /^  +[^ ]/ && item != "" { sub(/^ +/, ""); item = item " " $0; next }
+    /^$/ { flush(); closelist(); next }
+    { if (item != "") { item = item " " $0 } else { para = (para == "" ? $0 : para " " $0) } }
+    END { flush(); closelist(); if (open) print "</details>" }
+  ' "$1"
+}
+
+render_changelog "$CHANGELOG" > "$WORK/changes.html"
+[ -s "$WORK/changes.html" ] || die "the release history rendered empty"
+
 # The page and the installer are templates; substitute with a delimiter that
-# cannot appear in a URL or a hex digest.
-sed -e "s|@@BASE_URL@@|${BASE}|g" \
+# cannot appear in a URL or a hex digest. The history goes in with `r`, which
+# takes a file and so cannot be confused by markup inside it.
+sed -e "/@@RELEASE_HISTORY@@/{r $WORK/changes.html
+d
+}" \
+    -e "s|@@BASE_URL@@|${BASE}|g" \
     -e "s|@@VERSION@@|${VERSION}|g" \
     -e "s|@@TARBALL@@|${SAFE_NAME}|g" \
     -e "s|@@SHA256@@|${SHA}|g" \
@@ -218,6 +284,9 @@ check "get.sh knows its own base url"       "${BASE}/get.sh"     "$BASE"
 check "get.sh names the licence"            "${BASE}/get.sh"     "licensing@finestra.dev"
 check "the page is served"                  "${BASE}/"           "$VERSION"
 check "the page links the published file"   "${BASE}/"           "$SAFE_NAME"
+# Uploading the history is not the same as serving it — the snap footnote was
+# once present in the file and absent from what the CDN handed back.
+check "the page carries this release's notes" "${BASE}/"         "<summary>${VERSION}"
 check "the checksum names the published file" "${BASE}/releases/${SAFE_NAME}.sha256" "$SAFE_NAME"
 # The *value*, not just the name. Checking the filename is what let a stale
 # checksum through: the served body named the right file and carried the wrong
