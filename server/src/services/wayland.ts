@@ -112,6 +112,17 @@ function hasExecutable(name: string): boolean {
 }
 
 /**
+ * Whether this entry runs a snap.
+ *
+ * One definition, used both to decide which bus the application gets and to
+ * tell the browser which entries carry the caveat — those two must never
+ * disagree, or the warning appears on the wrong rows.
+ */
+function isSnapApp(argv: string[]): boolean {
+  return argv[0]?.startsWith('/snap/') === true || argv[0] === 'snap';
+}
+
+/**
  * The address of a session bus a snap can actually use, or null.
  *
  * It has to be a bus with `systemd --user` on it: `snap-confine` creates its
@@ -707,13 +718,16 @@ export const waylandService: Service = {
       // argv is deliberately not sent: the browser names an id, never a command.
       // Icon *data* is not sent either — a hundred applications is megabytes;
       // the picker asks for the ones it draws through `icon`.
-      return cachedApps().map(({ id, name, comment, icon, categories }) => ({
+      return cachedApps().map(({ id, name, comment, icon, categories, argv }) => ({
         id,
         name,
         comment,
         icon,
         categories,
         pinned: pinned.has(id),
+        // Not the command, just the one fact about it the picker has to say out
+        // loud: a snap comes with caveats a distribution package does not.
+        snap: isSnapApp(argv),
       }));
     },
 
@@ -814,8 +828,7 @@ export const waylandService: Service = {
        * there. The only behaviour that changes on such a machine is a snap's,
        * and its alternative was not starting.
        */
-      const isSnap = app.argv[0].startsWith('/snap/') || app.argv[0] === 'snap';
-      const hostBus = isSnap ? sessionBusAddress() : null;
+      const hostBus = isSnapApp(app.argv) ? sessionBusAddress() : null;
       const useBus = hasExecutable('dbus-run-session') && !hostBus;
       const command = useBus ? 'dbus-run-session' : binary;
       const commandArgs = useBus ? ['--', binary, ...compositorArgs] : compositorArgs;

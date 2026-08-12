@@ -99,6 +99,8 @@ interface RemoteApp {
   categories: string[];
   /** Pinned applications also appear as apps of this desktop in their own right. */
   pinned?: boolean;
+  /** Packaged as a snap, which is the one packaging difference a user must know about. */
+  snap?: boolean;
 }
 
 /** An icon as the server found it in the host's icon theme. */
@@ -1082,7 +1084,24 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
             h(
               'span',
               { class: 'wayland-item-text' },
-              h('span', { class: 'wayland-item-name', text: app.name }),
+              h(
+                'span',
+                { class: 'wayland-item-name-row' },
+                h('span', { class: 'wayland-item-name', text: app.name }),
+                // On the row rather than only in the hint below, because the
+                // hint explains the caveat and this says which entries it is
+                // about — a machine can list both kinds side by side.
+                app.snap
+                  ? h('span', {
+                      class: 'wayland-item-tag',
+                      text: 'snap',
+                      title:
+                        'Packaged as a snap. Snap support is experimental: simple applications ' +
+                        'run, more complex ones may not paint or may fail at Open File. Prefer ' +
+                        'the distribution package where a project ships both.',
+                    })
+                  : null,
+              ),
               app.comment
                 ? h('span', { class: 'wayland-item-comment', text: app.comment })
                 : null,
@@ -1107,6 +1126,25 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
           text: 'Click to run. Star an application to pin it to the desktop as an app of its own.',
         }),
         list,
+        // Only where there is something to warn about. A machine with no snaps
+        // installed should not be told about a limitation it cannot hit.
+        apps.some((app) => app.snap)
+          ? h('div', {
+              class: 'wayland-picker-note',
+              // The detail lives on the tag's own tooltip; this line has to
+              // survive a narrow window without pushing the list off it.
+              title:
+                'Snap support is experimental. A snap runs under its own confinement and ' +
+                'runtime, so the software-rendering and portal arrangements that a ' +
+                'distribution package inherits may not reach it. See docs/wayland.md.',
+            },
+              h('strong', { text: 'Snaps are experimental. ' }),
+              document.createTextNode(
+                'Entries marked snap may open no window, or fail at Open File. Prefer the ' +
+                'distribution package where a project ships both.',
+              ),
+            )
+          : null,
       ),
     );
     filter.focus();

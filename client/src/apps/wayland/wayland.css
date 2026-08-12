@@ -116,7 +116,10 @@
 
 .wayland-list {
   flex: 1;
-  min-height: 0;
+  /* Not 0: the note below is the last thing that should win a fight for space.
+     Measured at 13px of list against a 98px note in a small window, which is a
+     picker that cannot pick. The list keeps a few rows; the note yields. */
+  min-height: 5rem;
   overflow-y: auto;
   padding: 0.4rem;
   display: grid;
@@ -130,6 +133,24 @@
   border-bottom: 1px solid var(--surface-3);
   color: var(--text-muted);
   font-size: 0.82em;
+}
+
+/* Under the list, not above it: it qualifies what you just read rather than
+   standing between you and the application you came here to run. */
+.wayland-picker-note {
+  /* Shrinkable, so a short window loses the caveat rather than the list. */
+  flex: 0 1 auto;
+  overflow: hidden;
+  padding: 0.6rem 1rem 0.7rem;
+  border-top: 1px solid var(--surface-3);
+  background: var(--surface-1);
+  color: var(--text-faint);
+  font-size: 0.78em;
+  line-height: 1.5;
+}
+
+.wayland-picker-note strong {
+  color: var(--text-muted);
 }
 
 .wayland-item {
@@ -201,11 +222,31 @@
   color: var(--warning);
 }
 
+/* The name keeps the ellipsis; the tag must not be the thing that gets cut. */
+.wayland-item-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .wayland-item-name {
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.wayland-item-tag {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-faint);
+  font-size: 0.72em;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
 }
 
 .wayland-item-comment {
