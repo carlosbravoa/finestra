@@ -298,7 +298,7 @@ actually replaces the running process.
 | **Files** | Browse, rename, delete, download, upload. Double-click routes to whichever app handles that file. |
 | **Text Editor** | Edit files on the server. Claims `.txt`, `.md`, `.conf` and friends by file association. |
 | **System Manager** | Overview, processes, services, journal, disk usage, network and certificates — see below. |
-| **Native Desktop Applications** | Browses the host's installed `.desktop` entries and runs a real Linux GUI app in a window. Pin one and it becomes an app of this desktop, with its own icon. Empty on a headless server, and meant to be. |
+| **Native Desktop Applications** | Browses the host's installed `.desktop` entries and runs a real Linux GUI app in a window. Pin one and it becomes an app of this desktop, with its own icon. Empty on a headless server, and meant to be. Distribution packages are what this is tested against; **snaps are experimental** — see [Known issues: snaps](#known-issues-snaps). |
 | **Settings** | Appearance, terminal, uploads, which apps are enabled, file associations, session restore. |
 
 The **System Manager** is the largest of them, and each section is a live view
@@ -318,6 +318,28 @@ rather than a snapshot:
 
 Everything it shows comes from `/proc`, `/sys`, `systemctl` and `journalctl` —
 there is no agent to install and nothing is cached behind your back.
+
+### Known issues: snaps
+
+Applications installed from a **distribution package** are what native
+application support is tested against. **Snaps are experimental**: a simple one
+runs, a complex one is not to be relied on yet. Getting a snap to *start* is
+solved — the socket is named the one thing AppArmor permits, and the session bus
+`snap-confine` needs is found rather than assumed. What is not solved is what a
+substantial application expects once it is running:
+
+| Limit | What you see |
+|---|---|
+| No dmabuf import | A window that never paints. The software-rendering variables that rescue a `.deb` are set when the client is spawned, but snapd rebuilds much of the environment and we do not control whether they survive into the snap's own runtime. Electron-based snaps are the usual casualty |
+| No `xdg-desktop-portal` | *Open File* and *Save As* do nothing or hang; screenshots, secrets and notifications fail. A confined snap often has no fallback, because the portal *is* its file access |
+| No Xwayland | `Failed to open display` from anything X11-only |
+| No audio | Silence, or a refusal to start |
+| Single-instance handoff | On a machine that has a desktop session, a snap can hand its window to the copy already running there. The session says so rather than reporting a clean exit. A headless server never sees this |
+
+So: prefer the `.deb` where a project ships both, and treat a snap that does not
+work as expected rather than as a surprise. The mechanisms, the debugging order,
+and what has actually been observed are in
+[`docs/wayland.md`](docs/wayland.md) under "Snaps are experimental".
 
 ## More than one machine
 

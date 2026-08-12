@@ -206,6 +206,52 @@ waits out a D-Bus activation timeout for `org.freedesktop.secrets`, which a
 private bus does not have. Turning accessibility off (`NO_AT_BRIDGE`,
 `GTK_A11Y=none`) was measured and changed nothing, so it is not done.
 
+### Snaps are experimental, and this is what that means
+
+**Status: a simple snap runs. A complex one is not to be relied on.** The
+product says so on the download page, because a user who installs this expecting
+their whole snap library to work will file the same handful of issues over and
+over, and every one of them is already understood.
+
+Two things get conflated here and are worth separating. Getting a snap to
+*start* is solved, and it took two fixes: the socket has to be named
+`wayland-<digits>` for `abstractions/wayland` to permit it, and the process
+needs a session bus with `systemd --user` on it or `snap-confine` cannot make
+its tracking cgroup. Both are above. What is *not* solved is everything a
+substantial application expects once it is running, and a snap is more exposed
+to that than a `.deb` because it carries its own runtime and cannot see much of
+the host.
+
+The known limits, worst first. None is snap-specific in mechanism; snaps just
+hit them sooner and harder.
+
+| Limit | What you see | Why |
+| --- | --- | --- |
+| **No dmabuf import** | A window that never paints, or an application that exits complaining about EGL | Anything on the GPU commits buffers we cannot read. `wdcomp` sets `GSK_RENDERER=cairo`, `QT_QUICK_BACKEND=software` and `LIBGL_ALWAYS_SOFTWARE=1` when it spawns the client (`force_shm`, on by default), which is what rescues GTK 4 and Qt Quick. **Whether those survive into a snap's own runtime is not something we control** — snapd rebuilds much of the environment — so the escape hatch that fixes a `.deb` may simply not apply. Electron-based snaps are the usual casualty |
+| **No portals** | *Open File* and *Save As* do nothing, hang, or return empty; screenshots, secrets and notifications fail | `xdg-desktop-portal` is the interface a confined application uses to reach anything outside itself, and a headless server has no portal running. A `.deb` often falls back to its own file chooser; a strictly confined snap frequently has no fallback because the portal *is* its file access |
+| **No Xwayland** | `Failed to open display` from anything X11-only | Stage 6, unstarted. A snap shipping an X11-only toolkit is out of reach for the same reason `dosbox-x` is |
+| **No audio** | Silence, or a startup failure in an application that insists on a sound server | No PipeWire or PulseAudio is offered to the session |
+| **Single-instance handoff** | Starts, draws nothing, exits cleanly | Only on a machine that *has* a desktop session: snaps share this user's real session bus, so a copy already running there takes the window. The session says so rather than reporting a clean exit — see below. A headless server never sees this |
+| **snapd counts an open window as the snap running** | Refreshes held back while you work | `snap-confine`'s scope stays alive as long as the application does. Ordinary snapd behaviour, listed because it surprises people |
+| **A desktop entry that cannot work here** | The application is not offered at all | Deliberate: the Chromium snap ships one whose whole body is `OnlyShowIn=UbuntuFrame` and `Exec=/usr/bin/false`, and offering it would make its failure look like ours. `OnlyShowIn`/`NotShowIn` filtering is above |
+
+What has actually been seen to work: the fourteen snaps that came on screen once
+they were given a session bus, and the Snap Store drawing its window on a server
+started the way the unit starts one. What has been seen to fail is consistent
+with the table — the failures are in what the application wants next, not in
+getting it launched.
+
+**If you are debugging one**, the useful order is: does it appear in the
+applications window at all (desktop entry filtering); does it exit immediately
+(bus, cgroup, or handoff — the session's closing message distinguishes these);
+does it start and never paint (dmabuf, almost always); does it start, paint, and
+then fail at one particular action (portals, almost always). `wdcomp -v` and the
+`L` log messages carry the compositor's side of it.
+
+**Prefer the distribution package where a project ships both.** Not a
+philosophical position — a `.deb` inherits the environment we set, uses the
+host's libraries, and has no confinement between it and the socket.
+
 ### Explaining the handoff, rather than preventing it
 
 A session that never maps a window now closes with a sentence saying so, and —

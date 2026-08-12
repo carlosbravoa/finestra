@@ -91,6 +91,14 @@
   .card { padding: 16px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
   .card h4 { margin: 0 0 6px; font-size: 14.5px; }
   .card p { margin: 0; font-size: 13.5px; line-height: 1.55; }
+  /* The asterisk has to be findable from the card that carries it, so it is a
+     link rather than decoration, and the footnote it lands on is quiet enough
+     not to compete with the feature it qualifies. */
+  .fn { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .footnote {
+    margin: -4px 0 18px; font-size: 13px; line-height: 1.6; color: var(--faint);
+  }
+  .footnote strong { color: var(--muted); }
   /* The digest is the one value here someone retypes or compares, so it wraps
      rather than running off the edge of a narrow screen. */
   .meta {
@@ -208,10 +216,21 @@
   <div class="card"><h4>Terminal</h4><p>A real PTY on the host. Reopens where you left it, and only asks before closing when something is running.</p></div>
   <div class="card"><h4>Files</h4><p>Browse, rename, upload, download. Double-click opens whichever app handles that file.</p></div>
   <div class="card"><h4>System Manager</h4><p>Processes, systemd units, the journal, disks, listening ports and certificates — live, from <code>/proc</code> and <code>journalctl</code>.</p></div>
-  <div class="card"><h4>Native applications</h4><p>Real Linux GUI apps in a window, through a Wayland compositor written for this.</p></div>
+  <div class="card"><h4>Native applications<a class="fn" href="#snaps">*</a></h4><p>Real Linux GUI apps in a window, through a Wayland compositor written for this.</p></div>
   <div class="card"><h4>Several machines</h4><p>One shell, one connection per server, straight from your browser. The servers never learn about each other.</p></div>
   <div class="card"><h4>Session restore</h4><p>Windows come back after a reload — geometry, stacking, focus, and where each app was.</p></div>
 </div>
+
+<p class="footnote" id="snaps">
+  <strong>*</strong> Applications installed from a <strong>distribution package</strong>
+  are what this is tested against. <strong>Snaps are experimental:</strong> simple
+  ones run, more complex ones do not yet — a snap draws through the same
+  compositor, but it also brings its own confinement, its own runtime and its own
+  expectations about the desktop session around it. Treat a snap that does not
+  work as expected rather than as a surprise, and prefer the <code>.deb</code>
+  where a package offers both. What is known, and why, is written down in
+  <code>docs/wayland.md</code>.
+</p>
 
 <h2 id="afterwards">Afterwards</h2>
 <pre class="block">sudo systemctl status finestra              # is it up
