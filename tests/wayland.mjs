@@ -194,6 +194,115 @@ if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))
   check('the handoff is only blamed when the machine\'s own bus was shared',
     !/session bus/.test(silent.error ?? ''), silent.error ?? '');
 
+  // The application usually says why it went, and for an afternoon the shell
+  // answered Chrome's "Aborting now to avoid profile corruption" with a guess
+  // about desktop services — which is the wrong place to look. The tail was
+  // already being kept, and then dropped unless WD_DEV was set.
+  const loud = open('wayland', 'session', { appId: 'wd-test-complains' });
+  await until(() => loud.closed, 12000);
+  check('a session that dies quotes what the application said',
+    /profile lock is not mine/.test(loud.error ?? ''), loud.error ?? 'never closed');
+  // Its own words replace the guess rather than trailing after it.
+  check('and stops guessing at desktop services once it has been told',
+    !/desktop service this session does not provide/.test(loud.error ?? ''),
+    loud.error ?? '');
+  // Chromium stamps every line with [pid:tid:date:LEVEL:file(line)], which is
+  // noise to everyone who is not debugging Chromium.
+  check('and strips the log prefix the application wrote it with',
+    !/ERROR:chrome\/app/.test(loud.error ?? ''), loud.error ?? '');
+  // Crashpad complains about its own bookkeeping *after* the reason, so taking
+  // the newest line told a user whose browser would not start about a missing
+  // crash-report directory. Seen on a real machine, not imagined.
+  check('and does not mistake crashpad\'s grumbling for the reason',
+    !/crashpad|Crash Reports/.test(loud.error ?? ''), loud.error ?? '');
+
+  /* ---------------------------------------------------------------- */
+  /* Launch quirks: argv only, and only for what needs them            */
+  /* ---------------------------------------------------------------- */
+
+  // Chromium defaults to the X11 Ozone platform, which on a machine with no
+  // display is an abort and not a fallback: it is gone in under a second
+  // without the compositor ever seeing a client. There is no environment
+  // variable for it, so the flag has to be argv — and argv is the only place
+  // it may go, because a .desktop file would put a duplicate in the menu of
+  // anyone who also has a real desktop session.
+  const argvOf = (file) => {
+    try {
+      return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+    } catch {
+      return null;
+    }
+  };
+
+  const chromium = open('wayland', 'session', { appId: 'wd-test-chromium' });
+  await until(() => chromium.closed, 12000);
+  const chromiumArgv = argvOf(process.env.WD_TEST_CHROMIUM_ARGV);
+  check('a Chromium browser is told which platform to use',
+    chromiumArgv?.includes('--ozone-platform=wayland') === true,
+    chromiumArgv ? chromiumArgv.join(' ') : 'never ran');
+  // %U and friends are the launcher's job to strip, and adding a flag must not
+  // put them back or leave the command it was added to unrecognisable.
+  check('and the entry\'s own command survives the addition',
+    chromiumArgv !== null && !chromiumArgv.some((a) => /^%[fFuUdDnNickvm]$/.test(a)),
+    chromiumArgv ? chromiumArgv.join(' ') : 'never ran');
+
+  const plain = open('wayland', 'session', { appId: 'wd-test-plain' });
+  await until(() => plain.closed, 12000);
+  const plainArgv = argvOf(process.env.WD_TEST_PLAIN_ARGV);
+  check('and everything else is launched exactly as its entry wrote it',
+    plainArgv !== null && plainArgv.length === 0,
+    plainArgv ? plainArgv.join(' ') : 'never ran');
+
+  /* ---------------------------------------------------------------- */
+  /* What a child is born with, and how it dies                        */
+  /* ---------------------------------------------------------------- */
+
+  // Node blocks the signals it handles around fork, and the mask survives
+  // exec: every application used to be born deaf to SIGTERM, so the 4-second
+  // grace before SIGKILL had never once been a grace. Node also leaks
+  // non-CLOEXEC fds — a terminal's PTY master reached a launched browser.
+  // The compositor scrubs both before exec; a launched process reports.
+  const birth = open('wayland', 'session', { appId: 'wd-test-birth' });
+  await until(() => birth.closed, 12000);
+  const readReport = (file) => {
+    try {
+      return fs.readFileSync(file, 'utf8');
+    } catch {
+      return null;
+    }
+  };
+  const birthReport = readReport(process.env.WD_TEST_BIRTH);
+  check('a launched application is born with a clean signal mask',
+    /SigBlk:\s*0000000000000000/.test(birthReport ?? ''),
+    birthReport?.split('\n')[0] ?? 'no report written');
+  // /proc/self/fd shows 0-3 plus the fd of the listing itself.
+  const fds = (birthReport ?? '').split('\n').filter((l) => /^\d+$/.test(l)).map(Number);
+  check('and with no file descriptors that are not its own',
+    fds.length > 0 && fds.every((fd) => fd <= 4), fds.join(',') || 'none listed');
+
+  // Closing a session must reach the application as a request it can act on,
+  // not as an unannounced SIGKILL four seconds later.
+  const life = open('wayland', 'session', { appId: 'wd-test-longrun' });
+  await until(() => life.info !== null, 8000);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  // Close and relaunch back to back — the same race a tab reload runs, where
+  // session restore used to hand the new window to a dying twin.
+  ws.send(JSON.stringify({ t: 'close', id: life.id }));
+  const again = open('wayland', 'session', { appId: 'wd-test-longrun' });
+  await until(() => again.info !== null, 12000);
+  await until(() => /term /.test(readReport(process.env.WD_TEST_LIFE) ?? ''), 8000);
+  const lifeLog = (readReport(process.env.WD_TEST_LIFE) ?? '').trim();
+  check('closing a session is a request the application hears',
+    /term /.test(lifeLog), lifeLog.split('\n')[1] ?? 'the TERM trap never ran');
+  const stamps = lifeLog.split('\n').map((line) => line.split(' '));
+  const termAt = Number(stamps.find((s) => s[0] === 'term')?.[1] ?? NaN);
+  const secondStart = Number(stamps.filter((s) => s[0] === 'start')[1]?.[1] ?? NaN);
+  check('and a relaunch waits for the dying instance to be gone',
+    Number.isFinite(termAt) && Number.isFinite(secondStart) && secondStart > termAt,
+    lifeLog.replace(/\n/g, ' | '));
+  ws.send(JSON.stringify({ t: 'close', id: again.id }));
+  await until(() => again.closed, 8000);
+
   /* ---------------------------------------------------------------- */
   /* Which bus a snap gets, and which one everything else gets         */
   /* ---------------------------------------------------------------- */

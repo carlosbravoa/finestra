@@ -175,6 +175,10 @@ function formatBytes(n: number): string {
 
 async function mount({ window: win, root, desktop, params }: AppContext): Promise<AppInstance> {
   let disposed = false;
+  /** The application destroyed its own toplevel; a close needs no asking. */
+  let appGone = false;
+  /** When the ✕ last asked the application to close, 0 before it has. */
+  let closeAskedAt = 0;
   root.classList.add('wayland-root');
 
   /** Scroll container; the window's canvas lives here, popups on top of it. */
@@ -633,9 +637,15 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         break;
 
       case 'closed':
-        // The application closing its own window closes ours.
-        if (id === mainId) win.close();
-        else destroySurface(id);
+        // The application closing its own window closes ours. The flag lets
+        // that close through the veto in onClose below — without it, the ✕
+        // would ask an already-exiting application to close, and wait forever.
+        if (id === mainId) {
+          appGone = true;
+          win.close();
+        } else {
+          destroySurface(id);
+        }
         break;
 
       case 'copy':
@@ -939,6 +949,8 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     mainId = null;
     minWidth = 0;
     minHeight = 0;
+    appGone = false;
+    closeAskedAt = 0;
   }
 
   function start(appId: string): void {
@@ -1236,6 +1248,24 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     },
 
     saveState: () => (currentApp ? { appId: currentApp } : undefined),
+
+    onClose: () => {
+      // Nothing running, or it already went: close for real. The teardown
+      // behind this is the group SIGTERM — audible now that the compositor
+      // clears the signal mask node spawned us all deaf with.
+      if (!channel || mainId === null || appGone) return true;
+      // Asked recently and still here: the application is hung, or its save
+      // dialog went unnoticed. The second ✕ is the user overruling it.
+      if (closeAskedAt && Date.now() - closeAskedAt < 8000) return true;
+      closeAskedAt = Date.now();
+      // Ask, exactly as a desktop's ✕ does. The application exits on its own
+      // terms — locks released, settings written — and its 'closed' message
+      // closes this window through the handler above. One that wants to show
+      // "save your work?" keeps the window and shows it; one that will not
+      // answer yields to the second click.
+      channel.ctl('closeWindow', { id: mainId });
+      return false;
+    },
 
     destroy: () => {
       disposed = true;

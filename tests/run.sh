@@ -32,6 +32,67 @@ fixture wd-test-silent "WD Test Silent" /bin/true ""
 # reads to decide which bus this gets. Only offered where `snap` is installed,
 # and the suite skips the check when it is not.
 fixture wd-test-snap   "WD Test Snap"   "snap run wd-test-snap" ""
+
+# Launch quirks are added on the way to spawn and written down nowhere, so the
+# only way to see one is to ask the thing that was launched what it was given.
+# The launcher decides on the basename, so the name of the script is the point.
+BIN_DIR="$XDG_DATA_HOME/bin"
+mkdir -p "$BIN_DIR"
+export WD_TEST_CHROMIUM_ARGV="$XDG_STATE_HOME/chromium-argv"
+export WD_TEST_PLAIN_ARGV="$XDG_STATE_HOME/plain-argv"
+recorder() { # name, file
+  cat > "$BIN_DIR/$1" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" > "$2"
+exit 0
+EOF
+  chmod +x "$BIN_DIR/$1"
+}
+recorder chromium     "$WD_TEST_CHROMIUM_ARGV"
+recorder wd-plain-app "$WD_TEST_PLAIN_ARGV"
+fixture wd-test-chromium "WD Test Chromium" "$BIN_DIR/chromium %U" ""
+fixture wd-test-plain    "WD Test Plain"    "$BIN_DIR/wd-plain-app" ""
+
+# What a launched application is born with. Node blocks the signals it
+# handles around fork and leaks non-CLOEXEC fds (a terminal's PTY master
+# reached a launched browser as fd 23); the compositor scrubs both before
+# exec, and the only way to see that it did is to ask something it launched.
+export WD_TEST_BIRTH="$XDG_STATE_HOME/birth"
+cat > "$BIN_DIR/wd-birth" <<EOF
+#!/bin/sh
+grep SigBlk /proc/self/status > "$WD_TEST_BIRTH"
+ls /proc/self/fd >> "$WD_TEST_BIRTH"
+exit 0
+EOF
+chmod +x "$BIN_DIR/wd-birth"
+fixture wd-test-birth "WD Test Birth" "$BIN_DIR/wd-birth" ""
+
+# Lives until asked to stop, and writes down how it went. SIGTERM reaching it
+# at all is the point: children used to be born with it blocked, so every
+# shutdown was secretly a SIGKILL and the trap never ran.
+export WD_TEST_LIFE="$XDG_STATE_HOME/life"
+cat > "$BIN_DIR/wd-longrun" <<EOF
+#!/bin/sh
+echo "start \$(date +%s.%N)" >> "$WD_TEST_LIFE"
+trap 'echo "term \$(date +%s.%N)" >> "$WD_TEST_LIFE"; exit 0' TERM
+i=0; while [ \$i -lt 300 ]; do sleep 0.1 & wait \$!; i=\$((i+1)); done
+EOF
+chmod +x "$BIN_DIR/wd-longrun"
+fixture wd-test-longrun "WD Test Longrun" "$BIN_DIR/wd-longrun" ""
+
+# Says why it is going, the way a real application does. The reason has to
+# reach the person who clicked, rather than being replaced by a guess.
+# The real reason first and crashpad's grumble last, which is the order Chrome
+# actually produces: taking the newest error quoted a missing crash-report
+# directory at someone whose browser would not start.
+cat > "$BIN_DIR/wd-complainer" <<'EOF'
+#!/bin/sh
+echo "[9901:9901:0812/124845.9:ERROR:chrome/app/main.cc:520] Refusing to start: the profile lock is not mine" >&2
+echo "[0812/143714.6:ERROR:third_party/crashpad/crashpad/util/file/directory_reader_posix.cc:43] opendir /home/u/.config/google-chrome/Crash Reports/attachments/ce86: No such file or directory (2)" >&2
+exit 1
+EOF
+chmod +x "$BIN_DIR/wd-complainer"
+fixture wd-test-complains "WD Test Complains" "$BIN_DIR/wd-complainer" ""
 # Exported the way flatpak and snap export: outside the applications directory,
 # in a tree that only reaches XDG_DATA_DIRS through a login shell's profile.d.
 # A service has no such shell, which is how every snap came to be invisible.

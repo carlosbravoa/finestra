@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <signal.h>
+#include <sys/syscall.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -158,6 +159,7 @@ struct wdc_server {
 	int max_frames;
 	int frames_written;
 	struct ipc *ipc;
+	struct wl_event_source *ipc_source;
 
 	bool running;
 	pid_t child;
@@ -1570,11 +1572,23 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
 	}
 	wl_resource_set_implementation(resource, &output_impl, server, NULL);
 
+	/*
+	 * -g 0x0 means "let each window choose its own size" — it must never
+	 * mean "the screen is zero pixels". Chrome consults the output mode
+	 * during startup and CHECK-crashes on an empty one, silently, with the
+	 * message stripped from the release build: every launch of a browser
+	 * from an entry with no saved window size died this way, while the same
+	 * launch through session restore — which carries a size — worked. The
+	 * screen a window sizes itself against has to exist even when the
+	 * window is free to pick.
+	 */
+	int32_t out_w = server->width > 0 ? server->width : 1920;
+	int32_t out_h = server->height > 0 ? server->height : 1080;
 	wl_output_send_geometry(resource, 0, 0, 0, 0, WL_OUTPUT_SUBPIXEL_UNKNOWN,
 		"Finestra", "wdcomp", WL_OUTPUT_TRANSFORM_NORMAL);
 	wl_output_send_mode(resource,
-		WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, server->width,
-		server->height, 60000);
+		WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, out_w,
+		out_h, 60000);
 	if (version >= WL_OUTPUT_SCALE_SINCE_VERSION) {
 		wl_output_send_scale(resource, server->scale > 0 ? server->scale : 1);
 	}
@@ -2757,6 +2771,14 @@ static int handle_ipc_readable(int fd, uint32_t mask, void *data) {
 	if (ipc_read(server->ipc, handle_ipc_message, server) != 0) {
 		logmsg("the server closed the channel");
 		server->running = false;
+		/* A dead fd stays readable forever. Left registered, it makes the
+		 * teardown loop below spin through its whole budget in
+		 * microseconds — SIGKILL arrived on SIGTERM's heels and no client
+		 * ever got to exit cleanly. */
+		if (server->ipc_source) {
+			wl_event_source_remove(server->ipc_source);
+			server->ipc_source = NULL;
+		}
 	}
 	return 0;
 }
@@ -2802,6 +2824,26 @@ static void spawn_client(struct wdc_server *server, const char *socket_name,
 		logmsg("launched %s (pid %d)", argv[0], pid);
 		return;
 	}
+
+	/*
+	 * A clean birth, whatever we inherited. Node blocks the signals it
+	 * handles (SIGINT, SIGTERM) around fork, and the mask survives exec:
+	 * every application we launched was born deaf to SIGTERM, so every
+	 * "graceful" shutdown in the product was secretly a SIGKILL — "client
+	 * ignored SIGTERM, killing it" was this, not stubborn applications.
+	 * Node also leaks non-CLOEXEC fds (a terminal's PTY master reached
+	 * Chrome as fd 23). Neither problem is ours to have caused, but this
+	 * is the one place every launch passes through, so both end here.
+	 */
+	sigset_t empty;
+	sigemptyset(&empty);
+	sigprocmask(SIG_SETMASK, &empty, NULL);
+	/* From 3, not 4: our own frame channel is fd 3, and an application
+	 * holding it open would keep the channel alive after we are gone. */
+#ifdef __linux__
+	if (syscall(SYS_close_range, 3, ~0U, 0) != 0)
+#endif
+		for (int fd = 3; fd < 256; fd++) close(fd);
 
 	setenv("WAYLAND_DISPLAY", socket_name, 1);
 	/* Leave no X11 fallback for the toolkit to prefer. */
@@ -3011,8 +3053,8 @@ int main(int argc, char **argv) {
 		}
 		int flags = fcntl(WDC_IPC_FD, F_GETFL, 0);
 		fcntl(WDC_IPC_FD, F_SETFL, (flags < 0 ? 0 : flags) | O_NONBLOCK);
-		wl_event_loop_add_fd(server.loop, WDC_IPC_FD, WL_EVENT_READABLE,
-			handle_ipc_readable, &server);
+		server.ipc_source = wl_event_loop_add_fd(server.loop, WDC_IPC_FD,
+			WL_EVENT_READABLE, handle_ipc_readable, &server);
 		logmsg("listening on WAYLAND_DISPLAY=%s, streaming frames on fd %d",
 			socket_name, WDC_IPC_FD);
 	} else {
@@ -3052,12 +3094,21 @@ int main(int argc, char **argv) {
 	 */
 	if (server.child > 0) {
 		kill(server.child, SIGTERM);
-		for (int i = 0; i < 30 && server.child > 0; i++) {
+		/* A clock, not a counter: a hot fd makes dispatch return at once,
+		 * and thirty instant iterations put SIGKILL on SIGTERM's heels. */
+		uint32_t give_up = now_ms() + 3000;
+		while (server.child > 0 && now_ms() < give_up) {
 			if (waitpid(server.child, NULL, WNOHANG) == server.child) {
 				server.child = 0;
 				break;
 			}
-			nanosleep(&(struct timespec){0, 100 * 1000 * 1000}, NULL);
+			/* Keep answering while it dies. A client shutting down still
+			 * round-trips the display; sleeping here instead turned a
+			 * clean exit into an abort — Chrome quits in ~1s when the
+			 * display answers, and dumps core when it goes silent. */
+			wl_display_flush_clients(server.display);
+			wl_event_loop_dispatch(server.loop, 100);
+			nanosleep(&(struct timespec){0, 10 * 1000 * 1000}, NULL);
 		}
 		if (server.child > 0) {
 			logmsg("client ignored SIGTERM, killing it");

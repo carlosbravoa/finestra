@@ -141,6 +141,51 @@ apply them per application: `GSK_RENDERER=cairo` puts GTK 4 back on shm,
 `QT_QUICK_BACKEND=software` does it for Qt Quick, `LIBGL_ALWAYS_SOFTWARE=1`
 covers the rest. That is enough to cover GTK 4 without implementing dmabuf.
 
+### The second dividing line: who draws into the toplevel
+
+There is a sharper split than the buffer type, and it is invisible until you go
+looking: **whether the application draws into its `xdg_toplevel` or into a
+subsurface.** `wl_subcompositor` exists here so that clients binding it do not
+fall over, but it composites nothing, and the IPC path drops every commit that
+arrives without an xdg role — `commit on a surface with no xdg role`.
+
+Chrome creates **zero** subsurfaces: chrome, tabs, page, all of it goes to the
+toplevel, which is the whole reason it works. Firefox puts its **entire**
+interface — tab strip, toolbar, URL bar and web content — into one
+`wl_subsurface`, and its toplevel is nothing but an empty rounded rectangle
+holding the shadow. So Finestra faithfully renders the one surface Firefox does
+not draw in. In a 55-second run the browser received exactly **one** frame, 1.9
+kB of blank window, while **27** subsurface commits were dropped. The window is
+there, correctly sized and titled, and permanently empty.
+
+Three things about this are worth keeping:
+
+**It is not dmabuf, and not the GPU.** The subsurface carries ordinary shm the
+compositor can read perfectly well — the PNG sink proves it by writing a
+pixel-exact Firefox window. Nothing needs to be imported, converted or
+accelerated; the pixels are already in hand and simply have nowhere to go.
+
+**The debug path flatters the shipping path.** `emit_frame_png()` writes *every*
+commit regardless of role, so `smoke.sh` renders Firefox beautifully while the
+product shows a blank window. A compositor check that passes and a product that
+fails, on the same machine in the same second — trust the IPC path, not the PNG.
+
+**No pref avoids it.** `gfx.webrender.compositor=false`,
+`gfx.webrender.software=true` and `layers.acceleration.disabled` were measured
+and change nothing: the subsurface is `MozContainerWayland`, part of how Gecko
+draws on Wayland, not a compositing option. Firefox cannot be configured into
+working here.
+
+The work is smaller than "implement compositing", because this compositor never
+composites anything. It ships each surface to the browser as its own canvas and
+lets CSS stack them — which is exactly what popups already do, via `IPC_POPUP`
+and `placePopup()`. A subsurface is the same mechanism: a message carrying
+parent and position, `place_above`/`place_below` for z-order, and the client's
+existing `createSurface()`. The genuinely fiddly part is **synchronised**
+subsurfaces, whose state applies on the *parent's* commit rather than their own;
+ignore that and the result is tearing and stale frames — which is to say, it
+looks like the bug it was meant to fix.
+
 ### What the buffer type does not explain
 
 Running all 63 desktop entries on one Ubuntu machine put only 21 on screen, and
@@ -190,6 +235,124 @@ applications" rather than as a frame size. `write_all` now polls for room,
 which is the blocking behaviour the design always assumed it had, and
 `compositor/src/ipc-test.c` pins it — that test needs no Wayland, no display
 and no application, so it runs in `npm test` everywhere.
+
+**Chromium picks X11, and dies before it ever reaches Wayland.** Chrome, and
+everything derived from Chromium, defaults to the X11 Ozone platform. On a
+machine with no display that is not a fallback, it is an immediate abort:
+`Missing X server or $DISPLAY`, then `The platform failed to initialize.
+Exiting.`, status 1, in well under a second, with the compositor never seeing a
+client at all. Nothing about the GPU is involved, which is the misleading part —
+with no `zwp_linux_dmabuf` global to bind, Chrome selects shm by itself and
+renders a page correctly, software all the way down. The one thing it needs is
+`--ozone-platform=wayland`, and it has to be **argv**: `OZONE_PLATFORM` in the
+environment is ignored, so the trick that works for GTK (`GDK_BACKEND`) and Qt
+(`QT_QPA_PLATFORM`) has no equivalent, and `force_shm` cannot carry it. That
+makes it a launch quirk belonging in the argv the service spawns, and nowhere
+else. A `.desktop` file under `~/.local/share/applications` would fix it just as
+well here and charge a machine that *does* have a desktop session for the
+privilege: a duplicate entry in that person's own menu, forcing Wayland, and so
+breaking the browser for anyone on an Xorg session. Nothing done to make an
+application run here should be visible to a login session this did not start.
+Electron applications embed the same Ozone and are expected to fail identically;
+not tested.
+
+**Closing a window kills the group, and a single-instance application never
+recovers from it.** A window closing takes the whole process group with it, so
+nothing the application would have done on the way out gets done. Chrome is the
+loudest example: it leaves `SingletonLock` behind in its profile, and every
+later launch reads it, fails to make sense of it, and kills *itself* rather than
+risk the profile —
+
+```
+process_singleton_posix.cc:1150  Failed to extract pid from path: …/SingletonLock
+process_singleton_posix.cc:347   Failed to create …/SingletonLock: File exists (17)
+chrome_main_delegate.cc:520      Failed to create a ProcessSingleton for your profile
+                                 directory. Aborting now to avoid profile corruption.
+```
+
+— with `SIGTRAP`, which `wdcomp` reports as `client exited (status -1)` because
+it was a signal and not an exit code. The state is a file in the user's profile,
+so it outlives the session, the service, a restart and a reinstall: the symptom
+is **"it worked once and never again"**, and the shell says only "started and
+exited without opening a window", which points at desktop services and is the
+wrong place to look. It was isolated by changing exactly one thing —
+`--user-data-dir` to a fresh directory — which turned `KILLED BY SIGNAL 5` into
+a normal exit and a window.
+
+That was the first diagnosis, and the profile turned out to be innocent: a
+"poisoned" profile, copied back byte for byte, ran perfectly outside the
+service. What was actually wrong took a day of A/B bisection — same profile,
+same minute, replica spawn working while the product failed — and came apart
+into three faults stacked on each other, each masking the next:
+
+**Every application was born deaf to SIGTERM.** Node blocks the signals it has
+handlers for around `fork`, and the mask survives `exec`: a diagnostic script
+launched through the product began life with `SigBlk 4002` — SIGINT and SIGTERM
+blocked — all the way down through `dbus-run-session` and the compositor into
+the application. So the product's polite `SIGTERM → 4 s → SIGKILL` had never
+once delivered a SIGTERM, `wdcomp`'s "client ignored SIGTERM, killing it" was
+this and not a stubborn client, and every shutdown in the product's history was
+secretly a SIGKILL. The same spawn also leaked every non-CLOEXEC fd the server
+held — a terminal's PTY master reached Chrome as fd 23, which is a live handle
+into someone's shell session. Both are scrubbed in `spawn_client` now
+(`sigprocmask` to empty, `close_range(3, ~0)`), which is the one place every
+launch passes through whatever leaks node grows next.
+
+**Closing never asked; it ambushed.** The polite path — client `closeWindow`,
+server `MSG_CLOSE`, compositor `xdg_toplevel_send_close` — existed end to end
+and had zero callers. Every ✕, tab close and reload tore down the channel and
+SIGTERMed the process group, killing the compositor in the same instant — so
+the application lost its display mid-shutdown. Chrome aborts inside half a
+second when that happens (measured: eight processes to none in 0.5 s), leaving
+its `SingletonLock` behind. The ✕ now sends the xdg close and vetoes the window
+close; the application exits on its own terms and its `closed` message closes
+the window — one that shows a "save your work?" dialog keeps its window, and
+one that answers nothing yields to a second click. `stop()` does the same for a
+dead tab: ask every live toplevel, two seconds, then SIGTERM, then SIGKILL.
+
+**Session restore handed new windows to corpses.** Reloading the tab kills the
+old session's application at the same moment restore relaunches it; the new
+instance found the dying one's singleton socket still answering, handed its
+window over, and exited 0 — reported as "started and exited without opening a
+window", with nothing left running at all. Captured directly: one reload, two
+exit records, an exit-0 handoff among them, zero survivors. A relaunch now
+waits out the previous instance's exit (`stoppingApps`), which closes the
+window in which a corpse can be handed anything.
+
+The single ingredients were each verified harmless before the stack was found:
+a stale lock alone recovers (launch → crash-kill → relaunch works), the leaked
+ptmx alone does not crash Chrome, the blocked mask alone does not either. It
+took all three faults plus concurrency to produce "worked once, never again" —
+which is why it resisted every single-variable explanation, including two
+confidently wrong ones recorded in earlier versions of this note.
+
+**And under all of it, a fourth fault, the one that made the crash itself:
+`-g 0x0` advertised a zero-pixel screen.** The option means "let each window
+choose its own size", and the output advertisement passed the zeros straight
+through — `wl_output.mode(…, 0, 0, …)`. GTK shrugs at an empty screen; Chrome
+consults the output metrics during startup and CHECK-crashes, silently,
+because official builds strip the CHECK message. This is why the failure
+pattern read as haunted: a launch through session restore carries the saved
+window size and worked; a fresh launch from the picker carries none and died;
+and every probe run outside the product happened to pass a real `-g`, so the
+replica could never reproduce it. `WAYLAND_DEBUG=client` is what finally
+named it — the protocol trace ends at the 0×0 mode, three lines before the
+trap. The output now advertises a real screen (the configured size, or
+1920×1080 when the windows are choosing their own), which is the difference
+between "your window may pick its size" and "you live on zero pixels".
+
+Alongside, **say what the application said**: the reason for a death was on
+stderr the whole time, collected into a 4 kB tail and discarded unless
+`WD_DEV=1`. `lastComplaint()` now filters the ever-present noise (ours, the
+bus, Chromium's GPU/telemetry/crashpad grumbles), skips warnings, prefers
+fatal-sounding lines over merely loud ones, strips the
+`[pid:tid:date:LEVEL:file(line)]` stamp, and quotes what is left. And
+`explainSilentExit()` no longer asserts a desktop-session handoff on machines
+that have no desktop session — logind's session `Type` is checked first, since
+telling a headless-VM user to "close it there" sends them looking for a screen
+that does not exist. In official Chrome builds a failed CHECK traps with the
+message stripped, so when Chrome dies silently by SIGTRAP there is genuinely
+nothing to quote — the fallback sentence remains for that case.
 
 What is genuinely out of reach, and stays that way:
 
@@ -353,11 +516,12 @@ application's *Open File* dialog at the Files app.
 5. **Integration.** ✅ Browse-and-pin, cursor shapes, keyboard-layout
    detection, and the clipboard — copying out fully, pasting in with the
    limitation described below.
-6. **Later, if something demands it.** dmabuf import for GPU applications;
-   H.264 for animated content; Xwayland (it is just another Wayland client, but
-   it drags a full X11 window-management job behind it); audio over PipeWire;
-   an `xdg-desktop-portal` so an application's *Open File* dialog opens the
-   Files app.
+6. **Later, if something demands it.** Subsurface composition — and Firefox is
+   the something that demands it, being unusable without it; dmabuf import for
+   GPU applications; H.264 for animated content; Xwayland (it is just another
+   Wayland client, but it drags a full X11 window-management job behind it);
+   audio over PipeWire; an `xdg-desktop-portal` so an application's *Open File*
+   dialog opens the Files app.
 
 Stages 1–3 are the small half. Stage 4 is where the time goes, and it is what
 decides whether this feels like a desktop or a demo.

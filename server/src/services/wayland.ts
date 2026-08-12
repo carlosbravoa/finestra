@@ -122,6 +122,117 @@ function isSnapApp(argv: string[]): boolean {
   return argv[0]?.startsWith('/snap/') === true || argv[0] === 'snap';
 }
 
+/*
+ * Lines that are always there and never the reason. Ours (`wdcomp:`), the bus
+ * announcing each activation, and the handful Chromium prints on every start:
+ * a GPU context it did not get, a battery service that is not running, cpufreq
+ * files a virtual machine does not have, telemetry that failed to register.
+ */
+const STDERR_NOISE =
+  /^wdcomp:|^dbus-daemon\[|GpuControl|command_buffer_proxy|UPower|scaling_(cur|max)_freq|XNNPACK|gcm\/engine|registration_request|DEPRECATED_ENDPOINT|crashpad/;
+
+/**
+ * The last thing the application said that might be the reason it went.
+ *
+ * It usually does say. Chrome, refusing a profile whose lock it cannot parse,
+ * prints `Failed to create a ProcessSingleton for your profile directory.
+ * Aborting now to avoid profile corruption.` and kills itself — and this used
+ * to be answered with a guess about missing desktop services, which sent the
+ * reader to entirely the wrong place. The tail was already being kept and then
+ * dropped unless WD_DEV was set; quoting it turns an afternoon into a sentence.
+ */
+function lastComplaint(tail: string): string | null {
+  const lines = tail
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !STDERR_NOISE.test(line));
+  // A warning is the toolkit saying it carried on regardless, so it is never
+  // the reason something stopped — and taking the newest loud line quoted
+  // Chromium's "Failed to read portal settings" at someone whose browser had
+  // died of something else entirely.
+  const spoken = lines.filter((line) => !/\bWARN(ING)?\b/.test(line));
+  // Ranked, not newest-first: a process that is going to die says so, and says
+  // it before the crash handler starts narrating its own difficulties.
+  const fatal = spoken.filter((line) =>
+    /FATAL|abort|Trace\/breakpoint|terminate called|Segmentation fault|core dumped|cannot open display|Missing X server|failed to initialize/i.test(
+      line,
+    ),
+  );
+  const loud = spoken.filter((line) => /error|failed|cannot|unable|no such/i.test(line));
+  const pick = fatal.at(-1) ?? loud.at(-1) ?? spoken.at(-1);
+  if (!pick) return null;
+  // Chromium stamps every line with [pid:tid:date:LEVEL:file(line)].
+  const said = pick.replace(/^\[[^\]]*\]\s*/, '').trim();
+  if (!said) return null;
+  return said.length > 300 ? `${said.slice(0, 300)}…` : said;
+}
+
+/**
+ * Whether this machine has a desktop session that could have taken the window.
+ *
+ * The handoff was offered as the explanation to any snap that exited quietly,
+ * on the grounds that it was sharing the machine's bus — which is true, and is
+ * not the same as there being anything on the other end of it. On the headless
+ * server this product is for there is nothing to hand a window to, so "close it
+ * there, or start this one on a separate profile" sent the reader looking for a
+ * screen that does not exist while the real reason sat unread on stderr.
+ *
+ * logind is the thing that actually knows. A session with a display reports
+ * `wayland` or `x11`; a server full of ssh sessions reports `tty` for every one
+ * of them. Asked only when a session has already failed, so the cost never
+ * lands on a launch that works, and a missing `loginctl` means we decline to
+ * make the claim rather than making it anyway.
+ */
+function hasGraphicalSession(): boolean {
+  const list = spawnSync('loginctl', ['list-sessions', '--no-legend'], { encoding: 'utf8' });
+  if (list.status !== 0 || !list.stdout) return false;
+  return list.stdout
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/)[0])
+    .filter(Boolean)
+    .some((id) => {
+      const type = spawnSync('loginctl', ['show-session', id, '-p', 'Type', '--value'], {
+        encoding: 'utf8',
+      });
+      return /^(wayland|x11|mir)$/.test((type.stdout ?? '').trim());
+    });
+}
+
+/** Chrome, Chromium, and the browsers built by renaming them. */
+const CHROMIUM_BINARY =
+  /^(google-chrome|chrome|chromium|brave-browser|microsoft-edge|vivaldi|opera)(-(stable|beta|dev|unstable|browser))?$/;
+
+function isChromium(argv: string[]): boolean {
+  return CHROMIUM_BINARY.test(path.basename(argv[0] ?? ''));
+}
+
+/**
+ * Flags an application needs to run *here*, added on the way to spawn.
+ *
+ * Chromium defaults to the X11 Ozone platform, and on a machine with no display
+ * that is an abort rather than a fallback: `Missing X server or $DISPLAY`, then
+ * `The platform failed to initialize`, gone in under a second with the
+ * compositor never seeing a client. Nothing about the GPU is involved — with no
+ * dmabuf global to bind it picks shm by itself and renders perfectly.
+ *
+ * It has to be argv. `OZONE_PLATFORM` in the environment is read by nothing, so
+ * the trick `force_shm` uses for GTK (`GDK_BACKEND`) and Qt (`QT_QPA_PLATFORM`)
+ * has no equivalent, and this is the only place left to put it.
+ *
+ * Here, and never in a file: writing the flag into a `.desktop` entry would fix
+ * this machine and charge one with a real desktop session for it — a duplicate
+ * in that person's own menu, forcing Wayland, breaking the browser for anyone on
+ * Xorg. We only ever launch into our own compositor, so the answer is never in
+ * doubt and never has to be recorded anywhere.
+ */
+function withLaunchQuirks(argv: string[]): string[] {
+  if (!isChromium(argv)) return argv;
+  // An entry that already chose has chosen — including one that says x11,
+  // which is not ours to overrule.
+  if (argv.some((arg) => /^--ozone-platform(-hint)?(=|$)/.test(arg))) return argv;
+  return [argv[0], '--ozone-platform=wayland', ...argv.slice(1)];
+}
+
 /**
  * The address of a session bus a snap can actually use, or null.
  *
@@ -667,6 +778,16 @@ interface SessionArgs {
 
 let sessionCounter = 0;
 
+/**
+ * Running instances by application id, each entry a promise that settles when
+ * that instance's child is really gone. A new launch of the same application
+ * waits these out — see the note at the launch site for the reload race this
+ * closes. Keyed on the running set, not a "stopping" set: a reload's restore
+ * relaunch arrives *before* the dead tab's close event, so at that moment the
+ * old instance is not stopping yet, merely doomed.
+ */
+const liveApps = new Map<string, Set<Promise<void>>>();
+
 export const waylandService: Service = {
   name: 'wayland',
 
@@ -764,7 +885,7 @@ export const waylandService: Service = {
   },
 
   channels: {
-    session(args: SessionArgs, ctx) {
+    async session(args: SessionArgs, ctx) {
       const binary = findCompositor();
       if (!binary) {
         throw new ServiceError(
@@ -777,6 +898,26 @@ export const waylandService: Service = {
       // never a command line of its own.
       const app = cachedApps().find((a) => a.id === args?.appId);
       if (!app) throw new ServiceError('Unknown application', 'ENOAPP');
+
+      /*
+       * Never launch alongside a doomed twin. Reloading the tab relaunches
+       * the application via session restore *before* the dead tab's close is
+       * even seen — so the new instance found the old one's singleton socket
+       * answering, handed its window to a session that no longer had a screen,
+       * and exited "cleanly": the browser reported an application that did not
+       * start, with nothing left running at all. So a launch waits out every
+       * existing instance of the same application; in the reload case the old
+       * tab's teardown lands within the wait and the exit settles it. The cap
+       * bounds the one genuine overlap — the same application open in two
+       * live tabs — where the old behaviour (hand off, report it) resumes.
+       */
+      const doomed = liveApps.get(app.id);
+      if (doomed && doomed.size > 0) {
+        await Promise.race([
+          Promise.all([...doomed]),
+          new Promise((r) => setTimeout(r, 5000)),
+        ]);
+      }
 
       // No size asked for means the application picks its own; see the note on
       // clampDimension. The shell then sizes its window to whatever it chose.
@@ -807,7 +948,7 @@ export const waylandService: Service = {
         layout,
         ...(variant ? ['--variant', variant] : []),
         '--',
-        ...app.argv,
+        ...withLaunchQuirks(app.argv),
       ];
 
       /*
@@ -843,6 +984,10 @@ export const waylandService: Service = {
       delete env.WAYLAND_DISPLAY;
       delete env.DISPLAY;
 
+      /** Settled once the child has actually exited; see liveApps. */
+      let markStopped!: () => void;
+      const stopped = new Promise<void>((resolve) => (markStopped = resolve));
+
       let child: ChildProcess;
       try {
         child = spawn(command, commandArgs, {
@@ -870,6 +1015,12 @@ export const waylandService: Service = {
         throw new ServiceError('The compositor channel did not open', 'EPIPE');
       }
 
+      // Registered from birth, not from stop: the launch gate above must see
+      // instances whose teardown has not started yet.
+      let instances = liveApps.get(app.id);
+      if (!instances) liveApps.set(app.id, (instances = new Set()));
+      instances.add(stopped);
+
       /*
        * Node opens extra stdio pipes as bidirectional sockets, but types them
        * as one direction only — hence the cast. Verified: the compositor
@@ -884,30 +1035,54 @@ export const waylandService: Service = {
       let stopping = false;
       /** Whether anything was ever put on screen. See explainSilentExit. */
       let sawWindow = false;
+      /** Toplevels currently mapped, so a stop can ask before killing. */
+      const liveWindows = new Set<number>();
+      /** The client already asked, and the application refused or ignored it. */
+      let closeAsked = false;
       const startedAt = Date.now();
 
       const stop = () => {
         if (!alive) return;
         stopping = true;
-        alive = false;
         const group = -child.pid!;
-        try {
-          // Negative pid: the whole group, so dbus-run-session and the
-          // application go too. This is the easiest serious bug to write.
-          process.kill(group, 'SIGTERM');
-        } catch {
-          return; // Already gone.
+
+        /*
+         * Escalation is closing the frame channel, not signalling. A SIGTERM
+         * from here lands on the compositor too, and an application that
+         * loses its display mid-shutdown aborts on the spot — Chrome in half
+         * a second, profile lock left behind — so the polite ask below was
+         * being undone by its own follow-through. The compositor's teardown
+         * is the correct next step: on channel death it SIGTERMs just the
+         * application, display still answering, and SIGKILLs it three
+         * seconds later if ignored. The group SIGKILL here is the backstop
+         * for a compositor that has itself stopped listening.
+         */
+        const escalate = () => {
+          alive = false;
+          channel.destroy();
+          killTimer = setTimeout(() => {
+            try {
+              process.kill(group, 'SIGKILL');
+            } catch {
+              // Exited in the meantime, which is the normal case.
+            }
+          }, 6000);
+          killTimer.unref();
+        };
+
+        /*
+         * Ask before anything: an xdg close lets the application exit on its
+         * own terms — locks released, settings written. Skipped when nothing
+         * is mapped (nothing to ask), and when the client already asked and
+         * the application would not go.
+         */
+        if (liveWindows.size > 0 && !closeAsked) {
+          for (const id of liveWindows) sendToCompositor(MSG_CLOSE, id);
+          killTimer = setTimeout(escalate, 2000);
+          killTimer.unref();
+        } else {
+          escalate();
         }
-        // An application that traps SIGTERM to save its work gets a moment to
-        // do it, and then stops being asked.
-        killTimer = setTimeout(() => {
-          try {
-            process.kill(group, 'SIGKILL');
-          } catch {
-            // Exited in the meantime, which is the normal case.
-          }
-        }, 4000);
-        killTimer.unref();
       };
 
       channel.on('data', (chunk: Buffer) => {
@@ -949,6 +1124,7 @@ export const waylandService: Service = {
           case MSG_WINDOW: {
             if (body.length < 16) return;
             sawWindow = true;
+            liveWindows.add(body.readUInt32BE(0));
             const [title, next] = readString(body, 16);
             const [appId] = readString(body, next);
             ctx.send({
@@ -1022,6 +1198,7 @@ export const waylandService: Service = {
 
           case MSG_CLOSED:
             if (body.length < 4) return;
+            liveWindows.delete(body.readUInt32BE(0));
             ctx.send({ t: 'closed', id: body.readUInt32BE(0) });
             break;
 
@@ -1103,6 +1280,8 @@ export const waylandService: Service = {
 
       child.on('error', (err) => {
         alive = false;
+        markStopped();
+        liveApps.get(app.id)?.delete(stopped);
         ctx.close(`Could not start the compositor: ${err.message}`);
       });
 
@@ -1116,22 +1295,47 @@ export const waylandService: Service = {
        */
       const explainSilentExit = (): string => {
         const opening = `${app.name} started and exited without opening a window.`;
+        const said = lastComplaint(stderrTail);
+        const quoted = said ? ` It said: “${said}”` : '';
+
+        // The commonest handover has nothing to do with the bus: the same
+        // application is open in another window — often another tab's session
+        // of this same desktop — and this copy gave its window to that one.
+        // That window is invisible from here, so without this sentence the
+        // failure reads as haunted. Our own instance has already left the set
+        // by the time this runs, so anything left is genuinely someone else.
+        const elsewhere = liveApps.get(app.id);
+        if (elsewhere && elsewhere.size > 0) {
+          return (
+            `${opening} It is already running in another window of this desktop — possibly ` +
+            `in another tab's session. Close it there first, or find its window.`
+          );
+        }
 
         // Sharing the machine's own bus is what makes the handover possible:
         // the copy already running in its desktop session is reachable, and
-        // single-instance applications hand the window straight to it.
-        if (!useBus && hostBus && Date.now() - startedAt < 15_000) {
+        // single-instance applications hand the window straight to it. Both
+        // halves have to be true — a shared bus with no desktop session behind
+        // it hands the window to nobody, and saying otherwise on a headless
+        // server is a confident lie about a screen that is not there.
+        if (!useBus && hostBus && hasGraphicalSession() && Date.now() - startedAt < 15_000) {
           return (
             `${opening} It is sharing this machine's session bus, which snaps need in order to ` +
             `start at all, so a copy of it already running in the machine's own desktop session ` +
-            `will have taken the window. Close it there, or start this one on a separate profile.`
+            `will have taken the window. Close it there, or start this one on a separate profile.` +
+            quoted
           );
         }
+        // Its own words beat our guess whenever there are any: the guess is
+        // what sent the last reader looking at desktop services for an hour.
+        if (quoted) return `${opening}${quoted}`;
         return `${opening} That usually means it wanted a desktop service this session does not provide.`;
       };
 
       child.on('exit', (code, signal) => {
         alive = false;
+        markStopped();
+        liveApps.get(app.id)?.delete(stopped);
         if (killTimer) clearTimeout(killTimer);
         // We asked, so there is nothing to explain.
         if (stopping) {
@@ -1195,6 +1399,9 @@ export const waylandService: Service = {
           } else if (method === 'ack') {
             sendToCompositor(MSG_ACK, id);
           } else if (method === 'closeWindow') {
+            // The polite ask. If the application will not go — a save dialog,
+            // a hang — the client's next close skips straight to signals.
+            closeAsked = true;
             sendToCompositor(MSG_CLOSE, id);
           } else if (method === 'pointer') {
             sendPointer(
