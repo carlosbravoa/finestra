@@ -18,6 +18,7 @@
 #                                else is in
 #   a CloudFront distribution    HTTPS only, aliased to the domain
 #   a Route 53 hosted zone       so the apex can ALIAS to the distribution
+#   s3://finestra-logs-<account> the access logs, and a delivery that fills it
 #
 # The apex is why the zone has to live here. `https://finestra.dev` with no
 # `www.` needs an ALIAS record, which is a Route 53 thing; a plain CNAME is not
@@ -33,6 +34,9 @@ DOMAIN="${WD_SITE_DOMAIN:-finestra.dev}"
 BUCKET="${WD_WEB_BUCKET:-finestra-dl-$(aws sts get-caller-identity --query Account --output text 2>/dev/null | tail -c 7)}"
 REGION="${WD_WEB_REGION:-$(aws configure get region 2>/dev/null || echo us-east-1)}"
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+# Same six-digit tail as the downloads bucket, and downloads.sh defaults to the
+# same name. Two scripts agreeing by construction rather than by a note.
+LOG_BUCKET="${WD_LOG_BUCKET:-finestra-logs-${ACCOUNT: -6}}"
 
 # CloudFront's own hosted-zone id. A constant, the same in every account, and
 # the thing an ALIAS record at the apex has to point at.
@@ -74,6 +78,13 @@ find_oac() {
     --query "OriginAccessControlList.Items[?Name=='${BUCKET}'].Id | [0]" \
     --output text 2>/dev/null | grep -v '^None$' || true
 }
+# Reported as the bucket rather than the delivery id, because "where are the
+# logs" is the question, and the id answers a different one.
+find_delivery() {
+  aws logs describe-deliveries --region us-east-1 \
+    --query "deliveries[?deliverySourceName=='finestra-cf-access'] | [0].id" \
+    --output text 2>/dev/null | grep -q -v '^None$' && printf 's3://%s' "$LOG_BUCKET" || true
+}
 zone_nameservers() {
   aws route53 get-hosted-zone --id "$1" --query 'DelegationSet.NameServers' --output text
 }
@@ -96,6 +107,7 @@ if [ "${1:-}" = "--show" ]; then
   printf '  zone          %s\n' "$(find_zone || echo '(none)')"
   printf '  certificate   %s\n' "$(find_certificate || echo '(none)')"
   printf '  distribution  %s\n' "$(find_distribution || echo '(none)')"
+  printf '  logs          %s\n' "$(find_delivery || echo '(not delivering — re-run to fix)')"
   printf '  nameservers   %s\n' "$(live_nameservers)"
   exit 0
 fi
@@ -106,7 +118,7 @@ log "domain $DOMAIN, bucket $BUCKET, account $ACCOUNT"
 # The bucket: private, and it stays private
 # ---------------------------------------------------------------------------
 
-if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+if aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
   log "bucket exists"
 else
   log "creating the bucket"
@@ -304,6 +316,84 @@ aws s3api put-bucket-policy --bucket "$BUCKET" --policy "$(cat <<POLICY
 }
 POLICY
 )" >/dev/null
+
+# ---------------------------------------------------------------------------
+# The access logs. Every number packaging/web/downloads.sh prints comes from
+# here, and this is the only measurement the project takes at all — so a site
+# built without it is a site that cannot answer "is anyone installing this".
+#
+# Not the `Logging` block in the distribution config: that is the legacy
+# mechanism, it delivers by writing object ACLs, and buckets created since
+# April 2023 have ObjectOwnership=BucketOwnerEnforced, which rejects ACLs
+# outright. Enabling it on a modern bucket produces a distribution that claims
+# to be logging and a bucket that stays empty. The current mechanism is a
+# CloudWatch Logs *delivery*, three resources rather than one field, and like
+# the certificate it lives in us-east-1 whatever region anything else is in,
+# because that is where a global service keeps its logs.
+# ---------------------------------------------------------------------------
+
+LOG_REGION=us-east-1
+
+if aws s3api head-bucket --bucket "$LOG_BUCKET" >/dev/null 2>&1; then
+  log "log bucket ${LOG_BUCKET} exists"
+else
+  log "creating the log bucket ${LOG_BUCKET}"
+  aws s3api create-bucket --bucket "$LOG_BUCKET" --region "$LOG_REGION" >/dev/null
+fi
+aws s3api put-public-access-block --bucket "$LOG_BUCKET" \
+  --public-access-block-configuration \
+  "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" >/dev/null
+
+# Nothing reads a log older than a quarter, and a bucket the CDN writes to
+# forever is a bill that grows without anyone deciding it should.
+aws s3api put-bucket-lifecycle-configuration --bucket "$LOG_BUCKET" \
+  --lifecycle-configuration '{"Rules":[{"ID":"expire-logs-after-90-days","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":90}}]}' >/dev/null
+
+# Written before the delivery is created: CreateDelivery checks that it can
+# actually write, and fails the whole call if this is missing.
+log "letting log delivery write there, and nothing else"
+aws s3api put-bucket-policy --bucket "$LOG_BUCKET" --policy "$(cat <<POLICY
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "AWSLogDeliveryWrite",
+    "Effect": "Allow",
+    "Principal": {"Service": "delivery.logs.amazonaws.com"},
+    "Action": "s3:PutObject",
+    "Resource": "arn:aws:s3:::${LOG_BUCKET}/*",
+    "Condition": {
+      "StringEquals": {"aws:SourceAccount": "${ACCOUNT}"},
+      "ArnLike": {"aws:SourceArn": "arn:aws:logs:${LOG_REGION}:${ACCOUNT}:delivery-source:*"}
+    }
+  }]
+}
+POLICY
+)" >/dev/null
+
+# put-* are both upserts, so they reconcile on every run. create-delivery is
+# the one that is not: it raises ConflictException on a second call, which
+# under set -e ends the script — so it is asked for first.
+aws logs put-delivery-source --region "$LOG_REGION" --name finestra-cf-access \
+  --resource-arn "arn:aws:cloudfront::${ACCOUNT}:distribution/${DIST_ID}" \
+  --log-type ACCESS_LOGS >/dev/null
+DEST_ARN="$(aws logs put-delivery-destination --region "$LOG_REGION" --name finestra-cf-s3 \
+  --delivery-destination-configuration "destinationResourceArn=arn:aws:s3:::${LOG_BUCKET}" \
+  --query 'deliveryDestination.arn' --output text)"
+
+HAVE_DELIVERY="$(aws logs describe-deliveries --region "$LOG_REGION" \
+  --query "deliveries[?deliverySourceName=='finestra-cf-access'].id | [0]" \
+  --output text 2>/dev/null | grep -v '^None$' || true)"
+if [ -z "$HAVE_DELIVERY" ]; then
+  log "creating the log delivery"
+  # The suffix path is not decoration: downloads.sh syncs the whole bucket and
+  # finds *.gz wherever they are, but {account-id} keeps the layout the same as
+  # every other AWS log in the account, which is what a future reader expects.
+  aws logs create-delivery --region "$LOG_REGION" \
+    --delivery-source-name finestra-cf-access \
+    --delivery-destination-arn "$DEST_ARN" \
+    --s3-delivery-configuration 'suffixPath=AWSLogs/{account-id}/CloudFront/' >/dev/null
+fi
+log "access logs deliver to s3://${LOG_BUCKET}"
 
 log "pointing ${DOMAIN} at it"
 for rec in A AAAA; do
