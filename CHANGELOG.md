@@ -7,6 +7,15 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.1 — 2026-08-13
+
+- **Windows give a band back.** An application's menus now sit behind one ☰
+  button alongside minimize, maximize and close, instead of in a row of their
+  own — so every window is 25px shorter. It matters most for native
+  applications, which draw their own titlebar inside their window: that used to
+  make three bars stacked above the content, and now makes two. Nothing moved
+  out of reach; the same menus are one press away.
+
 ## 0.3.0 — 2026-08-12
 
 **Browsers run.** Chrome, Chromium and anything built on them now open, draw,
