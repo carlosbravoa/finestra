@@ -200,7 +200,16 @@ if (config.dial) {
   }
 } else {
   server.listen(config.port, config.host, () => {
-    const display = config.host === '0.0.0.0' ? host.hostname : config.host;
+    // A wildcard bind has no single address to print, so the machine's own name
+    // is the honest one — it is what resolves for whoever else is on that
+    // network. An IPv6 literal needs brackets or the port reads as part of it.
+    const wildcard = config.host === '0.0.0.0' || config.host === '::';
+    const loopback = config.host.startsWith('127.') || config.host === '::1';
+    const display = wildcard
+      ? host.hostname
+      : config.host.includes(':')
+        ? `[${config.host}]`
+        : config.host;
     // In dev the client lives on Vite's port, not this one.
     const clientBase = `http://${display}:${config.dev ? config.clientPort : config.port}`;
 
@@ -219,8 +228,11 @@ if (config.dial) {
       }
       console.log(`  token file   ${path.join(config.stateDir, 'token')}  (delete to rotate)\n`);
     }
-    if (config.host === '0.0.0.0') {
-      console.log('  \x1b[33mBound to all interfaces. Put TLS in front of this before exposing it.\x1b[0m\n');
+    // Any bind that is not loopback, not just the wildcard: one address of a
+    // VPN is still a network, and the advice is the same either way.
+    if (!loopback) {
+      const where = wildcard ? 'all interfaces' : config.host;
+      console.log(`  \x1b[33mBound to ${where}. Put TLS in front of this before exposing it.\x1b[0m\n`);
     }
   });
 

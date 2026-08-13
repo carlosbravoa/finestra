@@ -81,6 +81,21 @@ case "$1" in
     # Whether the new service comes up is the scripted part.
     if [ "$1" = "finestra.service" ] && [ -e "$STUBSTATE/start-fails" ]; then exit 1; fi
     touch "$active_dir/$1"; exit 0 ;;
+  # The merge, which is the whole point of asking systemd instead of reading
+  # the unit: drop-ins are concatenated after the unit file, so a later
+  # assignment of the same variable is the one in force. Only the one form
+  # configure.sh uses is emulated — `show -p Environment --value <unit>`.
+  show)
+    unit=""
+    for a in "$@"; do case "$a" in -*|show|Environment) ;; *) unit="$a" ;; esac; done
+    env=""
+    [ -f "/etc/systemd/system/$unit" ] &&
+      env="$(sed -n 's/^Environment=//p' "/etc/systemd/system/$unit" | tr '\n' ' ')"
+    for conf in "/etc/systemd/system/$unit.d"/*.conf; do
+      [ -f "$conf" ] || continue
+      env="$env $(sed -n 's/^Environment=//p' "$conf" | tr '\n' ' ')"
+    done
+    echo "$env"; exit 0 ;;
   *) exit 0 ;;
 esac
 EOF
@@ -402,6 +417,123 @@ check "it said nothing about migrating" \
   "$(yes_no "$(grep -qi 'took over\|migrated' "$WORK/out.log" && echo 1 || echo 0)")"
 check "no legacy command ran" \
   "$(yes_no "$(grep -q "$LEGACY" "$WORK/calls.log" && echo 1 || echo 0)")"
+
+echo ""
+echo "== by default it is loopback and a token"
+fabricate none
+run_configure --keep; rc=$?
+check "it succeeds" "$(yes_no $rc)"
+check "it binds loopback" \
+  "$(yes_no "$(grep -qx 'Environment=WD_HOST=127.0.0.1' "$(new_unit)" && echo 0 || echo 1)")" \
+  "$(grep -m1 '^Environment=WD_HOST=' "$(new_unit)" 2>/dev/null)"
+check "it says nothing about disabling auth" \
+  "$(yes_no "$(grep -q 'WD_NO_AUTH' "$(new_unit)" && echo 1 || echo 0)")"
+check "it offers the way out of the tunnel" \
+  "$(yes_no "$(grep -q -- '--bind 0.0.0.0' "$WORK/out.log" && echo 0 || echo 1)")"
+
+echo ""
+echo "== --bind and --no-token open it, and say so"
+fabricate none
+# The account is pinned rather than left to the default, only so the sentence
+# about who that terminal belongs to can be asserted on verbatim.
+run_configure --keep --user "$USER_NAME" --bind any --no-token; rc=$?
+check "it succeeds" "$(yes_no $rc)" "$(tail -2 "$WORK/out.log" | tr '\n' ' ')"
+check "'any' is written as an address the server understands" \
+  "$(yes_no "$(grep -qx 'Environment=WD_HOST=0.0.0.0' "$(new_unit)" && echo 0 || echo 1)")" \
+  "$(grep -m1 '^Environment=WD_HOST=' "$(new_unit)" 2>/dev/null)"
+check "the token is turned off in the unit" \
+  "$(yes_no "$(grep -qx 'Environment=WD_NO_AUTH=1' "$(new_unit)" && echo 0 || echo 1)")"
+# Warned, never blocked: the whole point is that someone holding root gets to
+# make this call. What it owes them is an accurate account of it.
+check "it warns rather than refusing" \
+  "$(yes_no "$(grep -q 'every interface' "$WORK/out.log" && echo 0 || echo 1)")"
+check "it names who that terminal will be" \
+  "$(yes_no "$(grep -q "no token: anyone who can open that address gets a terminal as ${USER_NAME}" "$WORK/out.log" && echo 0 || echo 1)")"
+check "the report drops the ssh tunnel it no longer needs" \
+  "$(yes_no "$(grep -q 'forward the port over SSH' "$WORK/out.log" && echo 1 || echo 0)")"
+check "and says how to close it again" \
+  "$(yes_no "$(grep -q -- '--bind local --token' "$WORK/out.log" && echo 0 || echo 1)")"
+
+echo ""
+echo "== an opened install stays open across an upgrade"
+: > "$WORK/calls.log"
+run_configure --keep; rc=$?
+check "it succeeds" "$(yes_no $rc)"
+check "the bind survived a run that never mentioned it" \
+  "$(yes_no "$(grep -qx 'Environment=WD_HOST=0.0.0.0' "$(new_unit)" && echo 0 || echo 1)")" \
+  "$(grep -m1 '^Environment=WD_HOST=' "$(new_unit)" 2>/dev/null)"
+check "and so did the missing token" \
+  "$(yes_no "$(grep -qx 'Environment=WD_NO_AUTH=1' "$(new_unit)" && echo 0 || echo 1)")"
+# Read back without --keep too. This one is not a question the script asks, so
+# no run of it re-asks — a configure.sh invoked months later to move the
+# desktop to another account must not silently close the port on the way.
+: > "$WORK/calls.log"
+run_configure --user "$USER_NAME"; rc=$?
+check "a run about something else leaves it alone" \
+  "$(yes_no "$(grep -qx 'Environment=WD_HOST=0.0.0.0' "$(new_unit)" && echo 0 || echo 1)")" \
+  "$(grep -m1 '^Environment=WD_HOST=' "$(new_unit)" 2>/dev/null)"
+# And the one flag that undoes it.
+: > "$WORK/calls.log"
+run_configure --bind local --token; rc=$?
+check "--bind local closes it again" \
+  "$(yes_no "$(grep -qx 'Environment=WD_HOST=127.0.0.1' "$(new_unit)" && echo 0 || echo 1)")"
+check "--token puts the token back" \
+  "$(yes_no "$(grep -q 'WD_NO_AUTH' "$(new_unit)" && echo 1 || echo 0)")"
+
+echo ""
+echo "== the health check follows the bind, or an opened install cannot update"
+# A service bound to one address answers nothing on 127.0.0.1. Both callers of
+# the health check treat no answer as a reason to roll back, so a loopback
+# assumption here turns every update of an opened install into a failed one.
+# 192.0.2.0/24 is TEST-NET-1: reserved for documentation and never assigned to
+# anything, so no machine running this can accidentally have it.
+fabricate none
+run_configure --keep --bind 192.0.2.9; rc=$?
+check "it succeeds" "$(yes_no $rc)" "$(tail -2 "$WORK/out.log" | tr '\n' ' ')"
+check "it probed the address it bound" \
+  "$(yes_no "$(grep -q 'curl .*http://192.0.2.9:7070/healthz' "$WORK/calls.log" && echo 0 || echo 1)")" \
+  "$(grep -o 'http://[^ ]*healthz' "$WORK/calls.log" | tail -1)"
+# An address no interface has is the commonest way to get this wrong — a
+# tailnet address that only exists once tailscaled is up, in a unit that is not
+# ordered against it. Warned about, and still written: it may be right by the
+# time the machine next boots.
+check "it warns that no interface has that address" \
+  "$(yes_no "$(grep -q 'no interface currently has 192.0.2.9' "$WORK/out.log" && echo 0 || echo 1)")" \
+  "$(grep -m1 'no interface' "$WORK/out.log")"
+run_configure --health-url
+check "--health-url answers the same thing update.sh will ask for" \
+  "$(yes_no "$([ "$(cat "$WORK/out.log")" = "http://192.0.2.9:7070/healthz" ] && echo 0 || echo 1)")" \
+  "$(cat "$WORK/out.log")"
+
+echo ""
+echo "== a drop-in beats the unit, and must be said out loud rather than lost"
+# What someone reached for before --bind existed. systemctl edit writes it, it
+# is merged after the unit, and it wins — so a script that reports what it just
+# wrote would be reporting a bind it does not get, and would then health-check
+# the wrong address and roll a working install back.
+fabricate none
+mkdir -p "$WORK/etc/finestra.service.d"
+cat > "$WORK/etc/finestra.service.d/override.conf" <<'DROPIN'
+[Service]
+Environment=WD_HOST=192.0.2.9
+DROPIN
+run_configure --keep --user "$USER_NAME"; rc=$?
+check "it still succeeds" "$(yes_no $rc)" "$(tail -2 "$WORK/out.log" | tr '\n' ' ')"
+check "the unit says what was asked for" \
+  "$(yes_no "$(grep -qx 'Environment=WD_HOST=127.0.0.1' "$(new_unit)" && echo 0 || echo 1)")" \
+  "$(grep -m1 '^Environment=WD_HOST=' "$(new_unit)" 2>/dev/null)"
+check "but it says the drop-in overrides it" \
+  "$(yes_no "$(grep -q 'something else sets WD_HOST=192.0.2.9' "$WORK/out.log" && echo 0 || echo 1)")" \
+  "$(grep -m1 'something else sets' "$WORK/out.log")"
+check "and points at where to look" \
+  "$(yes_no "$(grep -q 'finestra.service.d' "$WORK/out.log" && echo 0 || echo 1)")"
+# The consequence that matters: having believed the drop-in, it must knock on
+# that door and not on loopback.
+check "the health check follows the effective value, not the written one" \
+  "$(yes_no "$(grep -q 'curl .*http://192.0.2.9:7070/healthz' "$WORK/calls.log" && echo 0 || echo 1)")" \
+  "$(grep -o 'http://[^ ]*healthz' "$WORK/calls.log" | tail -1)"
+check "the drop-in is left exactly where its author put it" \
+  "$(yes_no "$([ -f "$WORK/etc/finestra.service.d/override.conf" ] && echo 0 || echo 1)")"
 
 echo ""
 if [ "$fails" -gt 0 ]; then

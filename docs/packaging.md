@@ -222,6 +222,72 @@ Two things fall out of that, both learned the hard way:
   account already is; the system account is in nothing, so the installer adds
   it — otherwise the one thing that mode is *for* would not work either.
 
+### What can reach it
+
+The other half of the same question, and the same script owns it:
+
+```bash
+sudo /opt/finestra/current/configure.sh --bind 0.0.0.0     # every interface
+sudo /opt/finestra/current/configure.sh --bind 100.83.0.4  # one address
+sudo /opt/finestra/current/configure.sh --no-token         # no login at all
+sudo /opt/finestra/current/configure.sh --bind local --token
+```
+
+Loopback and a token remain the defaults, and the reasoning above is why: the
+tunnel is the authentication boundary, so the port is only reachable by someone
+who already has a shell here. But that reasoning is an argument for a default,
+not for a refusal. A machine on a network its owner controls — a tailnet, a
+LAN behind their own router, a lab with no route out — is a real thing to
+install onto, and there the tunnel is a tax rather than a boundary.
+
+Neither flag asks for confirmation and neither can be refused. The alternative
+is not a safer install; it is a hand-edited unit, and `configure.sh` rewrites
+that whole file on every upgrade — so the person who worked around the tool
+loses their setting on a routine update, in the one place nothing will explain
+it. What the tool owes them instead is an accurate account: it warns at the
+point of choosing, records the choice in the unit, prints what it opened, and
+answers for it in `--show`.
+
+Four details that are not obvious:
+
+- **No marker, unlike the account.** `User=` needed `# wd-choice=1` because
+  `User=web-desktop` is ambiguous — it is what every unit written before the
+  question existed says. `WD_HOST=127.0.0.1` and an absent `WD_NO_AUTH` are not
+  ambiguous: they are exactly what someone who never touched this wants kept.
+  So the unit is read, and reading it is the record.
+- **It is read whether or not `--keep` was passed.** The account is re-asked
+  when `configure.sh` is run by hand, so `--keep` is what distinguishes an
+  upgrade from a change. Reach is never asked, so there is no run that re-asks
+  it — and without this, a `configure.sh` invoked months later to move the
+  desktop to another account would silently close the port on the way past.
+- **The health check follows the bind.** A service bound to one VPN address
+  answers nothing on `127.0.0.1`, and both callers of the health check treat no
+  answer as a reason to roll back — so a loopback assumption would turn every
+  update of an opened install into a failed one, and every `configure.sh` run
+  into a rollback. `configure.sh --health-url` is the one definition; `update.sh`
+  asks it, the same way it already asks `--state-dir`.
+- **A drop-in still wins.** `systemctl edit` writes
+  `finestra.service.d/override.conf`, which is merged after the unit, so
+  anything set there overrides what `configure.sh` just wrote. It reads the
+  effective environment back out of `systemctl show` after `daemon-reload` and
+  says so rather than reporting a bind it did not get. It never removes the
+  drop-in: a file someone wrote by hand in `/etc` is theirs.
+
+Binding one address of a VPN is tighter than `0.0.0.0` and more fragile. The
+address exists only once the tunnel is up, the unit is not ordered against
+`tailscaled` or `wg-quick`, and a service that wins that race exits with
+`EADDRNOTAVAIL` — after which `Restart=on-failure` gives up within seconds and
+what anyone sees is a service that will not start for no visible reason.
+`configure.sh` warns when no interface currently carries the address. The shape
+that survives a reboot is `--bind 0.0.0.0` with the firewall deciding
+(`ufw allow in on tailscale0 to any port 7070`), or loopback with
+`tailscale serve` in front of it.
+
+The token file is left in place under `--no-token` rather than deleted, so
+`--token` later gives back the same token and every bookmarked `?t=` URL still
+works. The server never writes one while `WD_NO_AUTH=1` is set, so a first
+install made with `--no-token` simply has no token file until it is turned on.
+
 ## Verifying
 
 ```bash

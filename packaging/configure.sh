@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Chooses who Finestra runs as, writes the systemd unit, and restarts it.
-# Ships inside the install, so the choice can be changed at any time without
-# the tarball it was installed from:
+# Chooses who Finestra runs as and what can reach it, writes the systemd unit,
+# and restarts it. Ships inside the install, so either can be changed at any
+# time without the tarball it was installed from:
 #
 #   sudo /opt/finestra/current/configure.sh              ask
 #   sudo /opt/finestra/current/configure.sh --show       what it is now
@@ -10,6 +10,23 @@
 #   sudo /opt/finestra/current/configure.sh --as-me --no-privilege
 #   sudo /opt/finestra/current/configure.sh --user NAME  some other account
 #   sudo /opt/finestra/current/configure.sh --system-account
+#
+# And what may reach it. Loopback and a token are the defaults, and both stay
+# as they are — through upgrades and through re-runs — unless one of these
+# says otherwise:
+#
+#   sudo /opt/finestra/current/configure.sh --bind 0.0.0.0     every interface
+#   sudo /opt/finestra/current/configure.sh --bind 100.83.0.4  one address
+#   sudo /opt/finestra/current/configure.sh --bind local       back to loopback
+#   sudo /opt/finestra/current/configure.sh --no-token         no login at all
+#   sudo /opt/finestra/current/configure.sh --token            put it back
+#
+# Neither of those two is refused, and neither needs a confirmation. A machine
+# on a network its owner trusts is a real thing to install onto, and a tool
+# that argues with the person holding root is one they route around — with a
+# hand-edited unit an upgrade will overwrite, which is worse than either
+# answer. It warns, it writes down what it opened, and --show says so
+# afterwards. That is the whole deal.
 #
 # install.sh hands over to this with --keep, which means "if a choice is already
 # recorded, keep it" — an upgrade must not re-ask a question that was answered.
@@ -55,21 +72,37 @@ LEGACY_SYSTEM_HOME="${LEGACY_SYSTEM_HOME:-/var/lib/${LEGACY_SERVICE}}"
 
 say()  { printf '  %s\n' "$*"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+warn() { printf '  \033[33m%s\033[0m\n' "$*"; }
 die()  { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 
 # Empty means "not chosen on the command line", which is what lets --keep keep
 # whatever the installed unit already says.
 WANT_USER=""
 WANT_PRIVILEGE=""
+WANT_BIND=""
+WANT_TOKEN=""
 KEEP=""
 SHOW=""
 STATE_DIR_QUERY=""
+HEALTH_URL_QUERY=""
+
+# 0.0.0.0 and 127.0.0.1 are what the unit records, because that is what the
+# server's WD_HOST takes. The words are for the person typing, who should not
+# have to remember which quad of zeroes means "everything".
+normalize_bind() {
+  case "$1" in
+    any|all|world|"*")  printf '0.0.0.0\n' ;;
+    local|loopback)     printf '127.0.0.1\n' ;;
+    *)                  printf '%s\n' "$1" ;;
+  esac
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep)           KEEP=1 ;;
     --show)           SHOW=1 ;;
     --state-dir)      STATE_DIR_QUERY=1 ;;
+    --health-url)     HEALTH_URL_QUERY=1 ;;
     --as-me)          WANT_USER="${SUDO_USER:-}"
                       [ -n "$WANT_USER" ] || die "--as-me needs sudo from a login account; use --user NAME" ;;
     --user)           shift; WANT_USER="${1:-}"; [ -n "$WANT_USER" ] || die "--user needs a name" ;;
@@ -77,7 +110,13 @@ while [ $# -gt 0 ]; do
     --system-account) WANT_USER="$SYSTEM_ACCOUNT"; WANT_PRIVILEGE="no" ;;
     --privilege)      WANT_PRIVILEGE="yes" ;;
     --no-privilege)   WANT_PRIVILEGE="no" ;;
-    -h|--help)        sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --bind)           shift; [ -n "${1:-}" ] || die "--bind needs an address, or one of: any, local"
+                      WANT_BIND="$(normalize_bind "$1")" ;;
+    --bind=*)         WANT_BIND="$(normalize_bind "${1#--bind=}")"
+                      [ -n "$WANT_BIND" ] || die "--bind needs an address, or one of: any, local" ;;
+    --token)          WANT_TOKEN="yes" ;;
+    --no-token)       WANT_TOKEN="no" ;;
+    -h|--help)        sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)                die "unknown option: $1" ;;
   esac
   shift
@@ -132,12 +171,43 @@ state_dir_in() {  # <unit> <leaf>
   printf '%s/%s\n' "$parent" "$2"
 }
 
+# What may reach it needs no marker, and that is not an oversight. The marker
+# exists because `User=<system account>` is ambiguous — it is what every unit
+# written before the question existed says, whether or not anyone chose it.
+# These two have no such ambiguity: an old unit says WD_HOST=127.0.0.1 and
+# carries no WD_NO_AUTH, which is exactly what someone who never touched this
+# wants to keep. So the unit is simply read, and reading it is the record.
+installed_bind_in()  { unit_env "$1" WD_HOST; }
+installed_token_in() {
+  [ -f "$1" ] || return 0
+  if grep -qx 'Environment=WD_NO_AUTH=1' "$1"; then echo no; else echo yes; fi
+}
+
 choice_recorded()    { choice_recorded_in "$UNIT"; }
 installed_user()     { installed_user_in "$UNIT"; }
 installed_privilege() { installed_privilege_in "$UNIT"; }
-# Unlike the two above this reads any unit, marker or not: an upgrade from
-# before the question existed still has to find the token it left behind.
+installed_bind()     { installed_bind_in "$UNIT"; }
+installed_token()    { installed_token_in "$UNIT"; }
+# Unlike installed_user and installed_privilege this reads any unit, marker or
+# not: an upgrade from before the question existed still has to find the token
+# it left behind.
 installed_state_dir() { state_dir_in "$UNIT" "$STATE_LEAF"; }
+
+# Where to knock to find out whether it came up. It follows the bind address,
+# and it has to: a service bound to one address on a VPN answers nothing on
+# 127.0.0.1, so a health check that assumes loopback reports a perfectly
+# healthy install as dead — and both callers of this treat "dead" as a reason
+# to roll back. 0.0.0.0 is the exception that keeps loopback, since it includes
+# it. update.sh asks for this rather than deriving it; one definition.
+health_url_for() {  # <bind> <port>
+  local h="${1:-127.0.0.1}"
+  case "$h" in
+    0.0.0.0)   h=127.0.0.1 ;;
+    ::|"[::]") h="[::1]" ;;
+    *:*)       h="[$h]" ;;
+  esac
+  printf 'http://%s:%s/healthz\n' "$h" "${2:-7070}"
+}
 
 # The one implementation of "where does this install keep its state", so that
 # install.sh, update.sh and the verifiers ask rather than each re-deriving it.
@@ -149,14 +219,33 @@ if [ -n "$STATE_DIR_QUERY" ]; then
   exit 0
 fi
 
+# Also before the root check: update.sh runs as root anyway, but a health URL
+# is a fact about a text file and asking for it should not need anything.
+if [ -n "$HEALTH_URL_QUERY" ]; then
+  health_url_for "$(installed_bind)" "$(unit_env "$UNIT" WD_PORT)"
+  exit 0
+fi
+
 if [ -n "$SHOW" ]; then
   [ -f "$UNIT" ] || die "nothing is installed at ${UNIT}"
   now_user="$(unit_field "$UNIT" User)"
+  now_bind="$(installed_bind)"
+  now_port="$(unit_env "$UNIT" WD_PORT)"
   if grep -q '^NoNewPrivileges=no$' "$UNIT"; then now_priv="with privilege"; else now_priv="unprivileged"; fi
   step "${SERVICE_NAME} runs as ${now_user}, ${now_priv}"
   say "home   $(unit_env "$UNIT" HOME)"
   say "state  $(installed_state_dir)"
   say "chosen $(choice_recorded && echo 'at install time' || echo 'before this was a question — run this with no flags to choose')"
+  case "${now_bind:-127.0.0.1}" in
+    127.*|::1|localhost) say  "reach  ${now_bind:-127.0.0.1}:${now_port:-$PORT} — loopback only; tunnel or proxy to get to it" ;;
+    0.0.0.0|::)          warn "reach  ${now_bind}:${now_port:-$PORT} — every interface on this machine" ;;
+    *)                   warn "reach  ${now_bind}:${now_port:-$PORT} — that address, from anything that can route to it" ;;
+  esac
+  if [ "$(installed_token)" = no ]; then
+    warn "login  none — anyone who can reach that address gets a terminal as ${now_user}"
+  else
+    say "login  a token, in $(installed_state_dir)/token"
+  fi
   exit 0
 fi
 
@@ -184,6 +273,8 @@ legacy_present() {
 
 LEGACY_USER=""
 LEGACY_PRIV=""
+LEGACY_BIND=""
+LEGACY_TOKEN=""
 LEGACY_STATE_DIR=""
 LEGACY_WAS_RUNNING=0
 TOOK_OVER=()
@@ -194,6 +285,12 @@ if legacy_present; then
   step "Found an install under the previous name"
   LEGACY_STATE_DIR="$(state_dir_in "$LEGACY_UNIT" "$LEGACY_LEAF")"
   LEGACY_PRIV="$(installed_privilege_in "$LEGACY_UNIT")"
+  # No marker test on these two, for the reason given at installed_bind_in:
+  # what an old unit says about reach is what its owner has been living with,
+  # and a takeover that quietly re-closed the port would look like the upgrade
+  # broke the desktop.
+  LEGACY_BIND="$(installed_bind_in "$LEGACY_UNIT")"
+  LEGACY_TOKEN="$(installed_token_in "$LEGACY_UNIT")"
   systemctl is-active --quiet "${LEGACY_SERVICE}.service" && LEGACY_WAS_RUNNING=1 || true
 
   # The account it ran as, translated only when it was actually chosen. An
@@ -340,6 +437,89 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# What can reach it
+# ---------------------------------------------------------------------------
+# Unlike the account, this is never asked. A prompt is for a decision that has
+# to be made before the thing can work, and this one does not: loopback and a
+# token are right for everybody until someone decides otherwise, and a second
+# menu in front of every install would be a question most people have no reason
+# to have an opinion on.
+#
+# So it is flags only — and because there is no question, there is no run of
+# this script that re-asks it. That is why the recorded value is read whether
+# or not --keep was passed, unlike User and NoNewPrivileges above: those two
+# get re-asked when someone runs this by hand, and this one would simply snap
+# back to loopback on a run that was about something else entirely. Someone who
+# opened this to their network, then ran configure.sh months later to move it
+# to another account, must not find the desktop unreachable afterwards with
+# nothing having said so.
+
+step "What can reach it"
+
+BIND="$WANT_BIND"
+TOKEN="$WANT_TOKEN"
+[ -n "$BIND" ]  || BIND="$(installed_bind)"
+[ -n "$TOKEN" ] || TOKEN="$(installed_token)"
+[ -n "$BIND" ]  || BIND="$LEGACY_BIND"
+[ -n "$TOKEN" ] || TOKEN="$LEGACY_TOKEN"
+[ -n "$BIND" ]  || BIND="127.0.0.1"
+[ -n "$TOKEN" ] || TOKEN="yes"
+
+# An address that is not on this machine is not a refusal, but it is worth
+# saying out loud: the process exits with EADDRNOTAVAIL, Restart=on-failure
+# gives up after a few tries, and what anyone sees is a service that will not
+# start with no obvious cause. The usual reason is a VPN — a tailnet address
+# exists only once tailscaled is up, which is not ordered against this unit —
+# and for that case binding everything and closing the firewall is the shape
+# that survives a reboot.
+#
+# Built as one string and matched with `case`, not piped into grep: grep -q
+# closes the pipe on its first match, the writer dies of SIGPIPE, and under
+# `set -o pipefail` a successful match reports failure.
+address_present() {  # <addr>
+  local addrs
+  case "$1" in 0.0.0.0 | :: | "") return 0 ;; esac
+  command -v ip >/dev/null 2>&1 || return 0
+  addrs=" $(ip -o addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }' | tr '\n' ' ' || true) "
+  case "$addrs" in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+case "$BIND" in
+  127.* | ::1 | localhost)
+    say "bind ${BIND}:${PORT} — loopback, so reaching it means already having a shell here"
+    ;;
+  0.0.0.0 | ::)
+    warn "bind ${BIND}:${PORT} — every interface, including any public address this machine has"
+    ;;
+  *)
+    say "bind ${BIND}:${PORT} — that address only"
+    address_present "$BIND" || \
+      warn "no interface currently has ${BIND}; the service will fail to start until one does"
+    ;;
+esac
+
+if [ "$TOKEN" = no ]; then
+  warn "no token: anyone who can open that address gets a terminal as ${SERVICE_USER}"
+else
+  say "a token is required, and the URL at the end of this carries it"
+fi
+
+# The one sentence that matters, said once, where the two choices meet. Not a
+# confirmation and not a refusal — the person typing this holds root already,
+# and the only thing they are owed is an accurate account of what they just
+# turned on.
+case "$BIND" in
+  127.* | ::1 | localhost) ;;
+  *)
+    warn "this is plain HTTP: put TLS in front of it before it faces anything untrusted"
+    if [ "$TOKEN" = no ] && [ "$PRIVILEGE" = yes ]; then
+      warn "and with no token and privilege, that terminal can sudo — right for a network you trust, and only that"
+    fi
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Directories
 # ---------------------------------------------------------------------------
 # State goes where the XDG spec already puts it, so the server needs no special
@@ -462,10 +642,12 @@ fi
 # ---------------------------------------------------------------------------
 # The unit
 # ---------------------------------------------------------------------------
-# Binding to localhost is deliberate: reaching it from elsewhere should be an
-# explicit decision, over SSH or a reverse proxy, and never a default. That is
-# also what makes the sandbox below a choice rather than a necessity — the port
-# is only reachable by someone who already has a shell on this machine.
+# Binding to localhost is the default: reaching it from elsewhere should be an
+# explicit decision, over SSH, a reverse proxy, or --bind, and never something
+# that happens by not choosing. That default is also what makes the sandbox
+# below a choice rather than a necessity — on a loopback bind the port is only
+# reachable by someone who already has a shell on this machine, which is not
+# true once --bind says otherwise.
 
 step "systemd unit"
 
@@ -509,6 +691,18 @@ PrivateTmp=yes"
   fi
 fi
 
+# Written as a line rather than always present, so a unit with a token in force
+# carries nothing about authentication at all. An `Environment=WD_NO_AUTH=0`
+# would read, to anyone opening this file, like a setting someone considered —
+# and it is not one the server has: config.ts tests for the string "1".
+if [ "$TOKEN" = no ]; then
+  NO_AUTH_LINE="# No token. Chosen with --no-token; undo with:
+#   sudo ${PREFIX}/current/configure.sh --token
+Environment=WD_NO_AUTH=1"
+else
+  NO_AUTH_LINE="# A token is required. ${STATE_DIR}/token holds it."
+fi
+
 cat > "$UNIT" <<UNIT_EOF
 [Unit]
 Description=Finestra — a desktop environment for a headless server
@@ -528,8 +722,13 @@ Group=${SERVICE_GROUP}
 WorkingDirectory=${HOME_DIR}
 
 Environment=NODE_ENV=production
-Environment=WD_HOST=127.0.0.1
+# What can reach this. Change it here and an upgrade will overwrite you — the
+# whole file is rewritten every time. Change it with the script that owns it:
+#   sudo ${PREFIX}/current/configure.sh --bind 0.0.0.0
+#   sudo ${PREFIX}/current/configure.sh --bind local
+Environment=WD_HOST=${BIND}
 Environment=WD_PORT=${PORT}
+${NO_AUTH_LINE}
 # Set explicitly rather than left to systemd: everything the desktop opens by
 # default — the file manager, the terminal, an upload — resolves from here, so
 # it is not a detail to inherit by luck.
@@ -553,6 +752,34 @@ WantedBy=multi-user.target
 UNIT_EOF
 
 systemctl daemon-reload
+
+# What the unit says and what systemd will actually run are two different
+# things once a drop-in exists, and a drop-in is exactly what someone reached
+# for before this script grew --bind. `systemctl edit` puts it in
+# <unit>.d/override.conf, which is merged after the unit and therefore wins —
+# so this script would report a bind it does not get, which is worse than
+# either value. The last assignment is the effective one. Reported, never
+# removed: a file someone wrote by hand in /etc is theirs.
+effective_env() {  # <KEY>
+  local out
+  out="$(systemctl show -p Environment --value "$UNIT_NAME" 2>/dev/null || true)"
+  printf '%s\n' "$out" | tr ' ' '\n' | sed -n "s/^$1=//p" | awk 'END { print }'
+}
+DROPIN_DIR="${UNIT}.d"
+now_bind="$(effective_env WD_HOST)"
+now_auth="$(effective_env WD_NO_AUTH)"
+if [ -n "$now_bind" ] && [ "$now_bind" != "$BIND" ]; then
+  warn "something else sets WD_HOST=${now_bind}, which overrides the ${BIND} just written"
+  say  "  look in ${DROPIN_DIR}/ — a drop-in there is merged after this unit and wins"
+  # Taken as the truth from here on, which is what makes the health check below
+  # knock on the right door and the report print an address that works.
+  BIND="$now_bind"
+fi
+if [ -n "$now_auth" ] && [ "$now_auth" = 1 ] && [ "$TOKEN" = yes ]; then
+  warn "something else sets WD_NO_AUTH=1, so there is no token whatever this unit says"
+  say  "  look in ${DROPIN_DIR}/"
+  TOKEN=no
+fi
 
 # ---------------------------------------------------------------------------
 # The hand-off
@@ -633,11 +860,13 @@ say "enabled and started"
 # "curl: (7) Failed to connect to 127.0.0.1 port 7070" on its way to working.
 # When the loop really does give up, the caller prints the journal, which is a
 # better answer than curl's one line anyway.
+HEALTH_URL="$(health_url_for "$BIND" "$PORT")"
+
 healthy() {
   local i
   for i in $(seq 1 20); do
     if systemctl is-active --quiet "$UNIT_NAME" \
-       && curl -fs --max-time 3 -o /dev/null "http://127.0.0.1:${PORT}/healthz"; then
+       && curl -fs --max-time 3 -o /dev/null "$HEALTH_URL"; then
       return 0
     fi
     sleep 1
@@ -704,7 +933,12 @@ if [ ${#TOOK_OVER[@]} -gt 0 ] || [ ${#REMOVED[@]} -gt 0 ]; then
 fi
 
 TOKEN_FILE="${STATE_DIR}/token"
-for _ in $(seq 1 10); do [ -s "$TOKEN_FILE" ] && break; sleep 1; done
+# Not waited for when there is no token to wait for: with WD_NO_AUTH=1 the
+# server never writes one, and this would be ten seconds of silence at the end
+# of a successful install.
+if [ "$TOKEN" = yes ]; then
+  for _ in $(seq 1 10); do [ -s "$TOKEN_FILE" ] && break; sleep 1; done
+fi
 
 # Whoever will be typing the ssh command. Not `id -un`, which under sudo is
 # always root and never the account anyone logs in with.
@@ -726,6 +960,71 @@ for candidate in "${SUDO_USER:-}" "$SERVICE_USER" "$(logname 2>/dev/null || true
 done
 [ -n "$LOGIN_USER" ] || LOGIN_USER="you"
 
+FQDN="$(hostname -f 2>/dev/null || hostname)"
+
+# The address to type into a browser. For 0.0.0.0 there is no single answer, so
+# the machine's own name is the honest one — it is what resolves for whoever
+# else is on that network, and it is what the server itself prints.
+case "$BIND" in
+  0.0.0.0) OPEN_HOST="$FQDN" ;;
+  ::)      OPEN_HOST="$FQDN" ;;
+  *:*)     OPEN_HOST="[$BIND]" ;;
+  *)       OPEN_HOST="$BIND" ;;
+esac
+if [ "$TOKEN" = yes ]; then
+  OPEN_QUERY="/?t=$(cat "$TOKEN_FILE" 2>/dev/null || echo '<see '"$TOKEN_FILE"'>')"
+else
+  OPEN_QUERY="/"
+fi
+
+# Two shapes of the same paragraph. A loopback install is told how to tunnel
+# and how to stop needing to; an opened one is told what it opened and how to
+# close it again. Printing the tunnel instructions for a bind that does not
+# need them was the old fault worth not repeating in reverse.
+case "$BIND" in
+  127.* | ::1 | localhost)
+    REACH="  It is listening on ${BIND}:${PORT}, which is not reachable from anywhere else
+  on purpose. To use it from your own machine, forward the port over SSH:
+
+      ssh -L ${PORT}:${BIND}:${PORT} ${LOGIN_USER}@${FQDN}
+
+  and then open the URL below$([ "$TOKEN" = yes ] && echo ', which carries the token' || echo ''):
+
+      http://${BIND}:${PORT}${OPEN_QUERY}
+
+  On a network you trust — a VPN, a tailnet, a LAN behind your own router —
+  you can skip the tunnel and let it answer directly:
+
+      sudo ${PREFIX}/current/configure.sh --bind 0.0.0.0
+      sudo ${PREFIX}/current/configure.sh --bind 0.0.0.0 --no-token   # and no login"
+    ;;
+  *)
+    REACH="  It is listening on ${BIND}:${PORT}, so anything that can route to this machine
+  can open it. Open it at:
+
+      http://${OPEN_HOST}:${PORT}${OPEN_QUERY}
+
+$(if [ "$TOKEN" = no ]; then
+cat <<NOTOKEN
+  There is no token: whoever opens that gets a terminal as ${SERVICE_USER},
+  $([ "$PRIVILEGE" = yes ] && echo 'and sudo with it. That is' || echo 'though not sudo. That is') the right shape for a network you control
+  and the wrong one for any other. It is also plain HTTP, so put TLS in
+  front of it before it faces one.
+NOTOKEN
+else
+cat <<TOKENED
+  It is plain HTTP, so the token in that URL crosses the network in the clear
+  the first time you use it. On a trusted network that is a fair trade; facing
+  anything else, put TLS in front.
+TOKENED
+fi)
+
+  To close it again, either way:
+
+      sudo ${PREFIX}/current/configure.sh --bind local --token"
+    ;;
+esac
+
 cat <<REPORT
 
   It runs as ${SERVICE_USER}$([ "$PRIVILEGE" = yes ] && echo ', with privilege' || echo ', unprivileged'), and reads and writes ${HOME_DIR}.
@@ -734,16 +1033,19 @@ cat <<REPORT
       sudo ${PREFIX}/current/configure.sh          # asks
       sudo ${PREFIX}/current/configure.sh --show   # what it is now
 
-  It is listening on 127.0.0.1:7070, which is not reachable from anywhere else
-  on purpose. To use it from your own machine, forward the port over SSH:
+${REACH}
 
-      ssh -L 7070:127.0.0.1:7070 ${LOGIN_USER}@$(hostname -f 2>/dev/null || hostname)
-
-  and then open the URL below, which carries the token:
-
-      http://127.0.0.1:7070/?t=$(cat "$TOKEN_FILE" 2>/dev/null || echo '<see '"$TOKEN_FILE"'>')
-
-  The token lives in ${TOKEN_FILE}. Delete that file and restart to rotate it.
+$(if [ "$TOKEN" = yes ]; then
+cat <<TOKENFILE
+  The token lives in ${TOKEN_FILE}.
+  Delete that file and restart to rotate it.
+TOKENFILE
+else
+cat <<TOKENKEPT
+  ${TOKEN_FILE} is left alone rather than deleted,
+  so --token later gives back the same one and every bookmark still works.
+TOKENKEPT
+fi)
 
       systemctl status ${SERVICE_NAME}
       journalctl -u ${SERVICE_NAME} -f

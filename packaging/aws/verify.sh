@@ -134,6 +134,40 @@ exit \$fails
 REMOTE
 RESTART=$?
 
+# The other half of what configure.sh owns: what may reach the desktop. The
+# sandbox test proves what gets written into the unit; only a real machine
+# proves the server then does it — that WD_HOST reached a listening socket and
+# WD_NO_AUTH reached the request path. The security group here allows nothing
+# but SSH, so "beyond loopback" is checked from the instance against its own
+# address, which is the distinction that matters and the one a bind to
+# 127.0.0.1 fails.
+log "opening it to the network, and closing it again"
+wd_ci_ssh "$VERIFY_IP" "bash -s" <<REMOTE
+set -uo pipefail
+$CHECK_HELPER
+ip=\$(ip -4 -o addr show scope global | awk 'NR==1 { sub(/\/.*/, "", \$4); print \$4 }')
+sudo /opt/finestra/current/configure.sh --bind 0.0.0.0 --no-token >/dev/null
+t "it listens past loopback"          bash -c 'ss -ltnH "sport = :7070" | grep -q "0\.0\.0\.0:7070"'
+t "its own address answers"           curl -sf -o /dev/null "http://\$ip:7070/healthz"
+# -f, so a 401 is a failure: with no token configured, the session endpoint has
+# to answer rather than refuse. This is the check that would catch WD_NO_AUTH
+# being written into a unit the server never reads it from.
+t "and nothing asks for a token"      curl -sf -o /dev/null "http://\$ip:7070/api/session"
+t "--show admits what it opened"      bash -c 'sudo /opt/finestra/current/configure.sh --show | grep -q "every interface"'
+# The property that matters more than the flag: someone who opened this months
+# ago must not have a routine upgrade quietly close it.
+cd /tmp/finestra-*/ && sudo ./install.sh >/dev/null
+t "a plain reinstall keeps it open"   bash -c 'systemctl show -p Environment --value finestra | grep -q "WD_HOST=0.0.0.0"'
+t "and keeps the token turned off"    curl -sf -o /dev/null "http://\$ip:7070/api/session"
+# And back, because everything after this expects the shape the defaults give.
+sudo /opt/finestra/current/configure.sh --bind local --token >/dev/null
+t "closing it puts it back on loopback" bash -c '! ss -ltnH "sport = :7070" | grep -q "0\.0\.0\.0:7070"'
+t "and the token is required again"     bash -c '! curl -sf -o /dev/null http://127.0.0.1:7070/api/session'
+t "while it still answers here"         curl -sf -o /dev/null http://127.0.0.1:7070/healthz
+exit \$fails
+REMOTE
+REACH=$?
+
 # The other answer to the question install.sh asks. It is a different product —
 # observability rather than a desktop — and it has to keep working, because it
 # is what anyone who wants this locked down will install.
@@ -193,9 +227,10 @@ REMOTE
 UNINSTALL=$?
 set -e
 
-if [ $CHECKS -eq 0 ] && [ $RESTART -eq 0 ] && [ $LOCKED -eq 0 ] && [ $UNINSTALL -eq 0 ]; then
+if [ $CHECKS -eq 0 ] && [ $RESTART -eq 0 ] && [ $REACH -eq 0 ] \
+   && [ $LOCKED -eq 0 ] && [ $UNINSTALL -eq 0 ]; then
   log "VERIFIED — $(basename "$TARBALL") installs and runs on a bare Ubuntu 24.04"
   exit 0
 fi
-log "FAILED (checks=$CHECKS restart=$RESTART locked-down=$LOCKED uninstall=$UNINSTALL)"
+log "FAILED (checks=$CHECKS restart=$RESTART reach=$REACH locked-down=$LOCKED uninstall=$UNINSTALL)"
 exit 1

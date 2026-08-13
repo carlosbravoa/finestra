@@ -14,6 +14,8 @@
 #   --as-me [--no-privilege]   run as the user invoking sudo (the default)
 #   --user NAME                run as some other existing account
 #   --system-account           run as an unprivileged system account
+#   --bind ADDR                answer on an address, not just loopback
+#   --no-token                 no login at all — for a network you trust
 #
 # There is deliberately no toolchain here and no third-party apt repository: the
 # tarball carries its own Node runtime, so the only thing this script needs from
@@ -41,7 +43,7 @@ PASS_THROUGH=()
 for arg in "$@"; do
   case "$arg" in
     --uninstall) UNINSTALL=1 ;;
-    -h|--help)   sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)   sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)           PASS_THROUGH+=("$arg") ;;
   esac
 done

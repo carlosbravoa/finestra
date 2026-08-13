@@ -27,7 +27,13 @@ UNIT="finestra.service"
 # find `last-good` must still update rather than abort.
 STATE_DIR="$("$(dirname "${BASH_SOURCE[0]}")/configure.sh" --state-dir 2>/dev/null \
              || printf '%s\n' "${STATE_PARENT:-/var/lib}/finestra")"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:7070/healthz}"
+# Where to knock, which is not always loopback: --bind can put the listener on
+# one address of a VPN, and then 127.0.0.1 answers nothing at all. That would
+# make every update of an opened install look like a failed one and roll itself
+# back. configure.sh derives it from the unit it wrote — same reasoning as
+# STATE_DIR above, same fallback for the same reason.
+HEALTH_URL="${HEALTH_URL:-$("$(dirname "${BASH_SOURCE[0]}")/configure.sh" --health-url 2>/dev/null \
+             || printf 'http://127.0.0.1:7070/healthz\n')}"
 HEALTH_TRIES="${HEALTH_TRIES:-20}"
 KEEP_VERSIONS="${KEEP_VERSIONS:-3}"
 

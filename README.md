@@ -68,7 +68,7 @@ serving the last production build.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `WD_HOST` | `127.0.0.1` | Bind address. Loopback by default — this is a remote shell. |
+| `WD_HOST` | `127.0.0.1` | Bind address. Loopback by default — this is a remote shell. On an installed service, set it with `configure.sh --bind`, not by hand. |
 | `WD_PORT` | `7070` | Port. |
 | `WD_TOKEN` | generated | Access token. Persisted to `~/.local/state/finestra/token`; delete that file to rotate. |
 | `WD_NO_AUTH` | unset | `1` disables authentication entirely. Only ever for a private network you control. |
@@ -100,8 +100,33 @@ To reach it from elsewhere, tunnel it rather than exposing the port:
 ssh -L 7070:127.0.0.1:7070 you@server
 ```
 
-If you do bind `0.0.0.0`, put TLS in front of it. `WD_ROOT` narrows the file
-service but is not a sandbox for the shell.
+On a network you actually trust — a VPN, a tailnet, a LAN behind your own
+router — the tunnel is a tax rather than a boundary, and an installed service
+can drop it. That is `configure.sh`'s job, not a hand-edited unit:
+
+```bash
+sudo /opt/finestra/current/configure.sh --bind 0.0.0.0             # answer everywhere
+sudo /opt/finestra/current/configure.sh --bind 100.83.0.4          # one address only
+sudo /opt/finestra/current/configure.sh --bind 0.0.0.0 --no-token  # and no login at all
+sudo /opt/finestra/current/configure.sh --bind local --token       # put it back
+```
+
+Neither is refused and neither is confirmed — it warns, records the choice in
+the unit, and prints what it opened. Both survive upgrades, and both show up in
+`--show`. The same flags work on `install.sh` and on the one-liner, so a machine
+can be installed open in the first place.
+
+Two things do not change: it is plain HTTP, so put TLS in front of it before it
+faces anything untrusted, and the terminal is a real shell — `WD_ROOT` narrows
+the file service but is not a sandbox for it.
+
+Binding a single VPN address is tighter than `0.0.0.0` and more fragile: the
+address does not exist until the tunnel is up, the unit is not ordered against
+it, and a service that starts first fails with `EADDRNOTAVAIL`. `configure.sh`
+warns when the address is not on the machine yet. For a tailnet, either bind
+everything and let the firewall decide (`ufw allow in on tailscale0 to any port
+7070`), or leave Finestra on loopback and put `tailscale serve --bg 7070` in
+front — that one also gets you a real certificate.
 
 ## Installing on an EC2 instance
 
@@ -210,6 +235,11 @@ sudo /opt/finestra/current/configure.sh --show   # what it is now
 sudo /opt/finestra/current/configure.sh          # ask again
 sudo /opt/finestra/current/configure.sh --as-me  # or answer directly
 ```
+
+It owns the other half of the same question — what can reach the desktop —
+through `--bind` and `--no-token`, described under "Security" above. Those two
+are flags rather than a prompt, and unlike the account they are never re-asked:
+a `configure.sh` run about something else leaves them exactly as they were.
 
 **3. Connect.** The desktop is on the instance's loopback, so forward the port
 over SSH from your own machine:

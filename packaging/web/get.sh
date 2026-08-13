@@ -118,6 +118,7 @@ DIR="$(find "$WORK" -mindepth 1 -maxdepth 1 -type d -name 'finestra-*' -print -q
 # to be able to answer it in advance —
 #
 #   curl -fsSL <base>/get.sh | sudo bash -s -- --system-account
+#   curl -fsSL <base>/get.sh | sudo bash -s -- --bind 0.0.0.0 --no-token
 #
 # install.sh prints the tunnel command and the tokened URL itself, so there is
 # deliberately nothing after this.
