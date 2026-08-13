@@ -7,6 +7,50 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.2 — 2026-08-13
+
+- **It can answer on your network, not just through a tunnel.** Until now the
+  desktop bound loopback and the only way in was `ssh -L`. On a network you
+  actually control — a VPN, a tailnet, a LAN behind your own router — that is a
+  tax rather than a boundary, so the installed service can now drop it:
+
+  ```bash
+  sudo /opt/finestra/current/configure.sh --bind 0.0.0.0             # answer everywhere
+  sudo /opt/finestra/current/configure.sh --bind 100.83.0.4          # one address only
+  sudo /opt/finestra/current/configure.sh --bind 0.0.0.0 --no-token  # and no login at all
+  sudo /opt/finestra/current/configure.sh --bind local --token       # put it back
+  ```
+
+  Neither is refused and neither asks you to confirm: it warns, writes the
+  choice into the unit, and prints what it opened. Both survive upgrades and
+  both show in `--show`. The same flags work on `install.sh` and on the
+  one-liner, so a machine can be installed open in the first place.
+
+  Nothing changes if you do nothing. Loopback and a token remain the defaults,
+  an existing install keeps binding loopback, and the tunnel works as before.
+  Two things to know if you do open it: it is plain HTTP, so put TLS in front
+  of it before it faces anything untrusted; and the terminal is a real shell,
+  with `sudo` if you chose the privileged install.
+
+- **Binding one VPN address is tighter and more fragile.** That address does
+  not exist until the tunnel is up, and a service that starts first fails with
+  `EADDRNOTAVAIL`. `configure.sh` now warns when no interface carries the
+  address yet. For a tailnet, either bind everything and let the firewall
+  decide, or leave it on loopback with `tailscale serve` in front — that also
+  gets you a real certificate.
+
+- **Updates no longer roll themselves back on an opened install.** `update.sh`
+  and `configure.sh` both prove the service came up by asking it, and both used
+  to ask loopback. Bound to one address, loopback answers nothing — so a
+  working install reported "the service did not start" and a working update
+  undid itself. Both now ask the address the service is actually on.
+
+- **A hand-written drop-in is still honoured, and now said out loud.** If you
+  set `WD_HOST` in `systemd edit` before this existed, it still wins — it is
+  merged after the unit. `configure.sh` now reads back what is really in force
+  and tells you, instead of reporting a bind you are not getting. It never
+  removes the file.
+
 ## 0.3.1 — 2026-08-13
 
 - **Windows give a band back.** An application's menus now sit behind one ☰
