@@ -50,7 +50,9 @@ export class DesktopWindow implements WindowHandle {
   /** Which server this window's app runs on; fixed for its life. */
   readonly hostId: string;
   private iconEl: HTMLElement;
-  private menubarEl: HTMLElement;
+  private menuButton: HTMLElement;
+  /** The app's menus, as given; opened from the ☰ button. */
+  private menuItems: MenuItem[] = [];
   private statusEl: HTMLElement;
   private snapPreview: HTMLElement | null = null;
   private disposers = new Disposers();
@@ -76,19 +78,30 @@ export class DesktopWindow implements WindowHandle {
     // Empty until the shell says otherwise: with one server there is nothing to
     // disambiguate, and a badge saying "this server" on every window is noise.
     this.hostEl = h('span', { class: 'window-host', attrs: { hidden: 'true' } });
-    this.menubarEl = h('div', { class: 'window-menubar', attrs: { hidden: true } });
+    this.menuButton = this.controlButton('window-menu', '☰', 'Menu', () => this.openAppMenu());
+    this.menuButton.hidden = true;
     this.statusEl = h('div', { class: 'window-status', attrs: { hidden: true } });
     this.content = h('div', { class: 'window-content' });
 
+    // The menus live behind one button in the window controls, rather than in
+    // a row of their own. That row cost 25px of every window, and a native
+    // application was the worst case: its own titlebar is inside its buffer,
+    // so the shell's title, the shell's menus and the application's own header
+    // stacked into three bands before any content. Nothing is lost — the same
+    // items, one press away, in the cluster where window affordances already
+    // are.
     const titlebar = h(
       'div',
       { class: 'window-titlebar' },
       this.iconEl,
       this.titleEl,
       this.hostEl,
+      // Takes the slack so the controls stay right whatever the title does.
+      h('div', { class: 'window-spacer' }),
       h(
         'div',
         { class: 'window-controls' },
+        this.menuButton,
         this.controlButton('minimize', '−', 'Minimize', () => this.minimize()),
         this.resizable
           ? this.controlButton('maximize', '□', 'Maximize', () => this.toggleMaximize())
@@ -104,7 +117,6 @@ export class DesktopWindow implements WindowHandle {
         attrs: { 'data-window-id': this.id, 'data-state': 'normal', role: 'dialog', tabindex: '-1' },
       },
       titlebar,
-      this.menubarEl,
       this.content,
       this.statusEl,
     );
@@ -164,34 +176,35 @@ export class DesktopWindow implements WindowHandle {
   }
 
   setMenu(items: MenuItem[]): void {
-    this.menubarEl.replaceChildren();
-    if (items.length === 0) {
-      this.menubarEl.hidden = true;
-      return;
-    }
-    this.menubarEl.hidden = false;
+    this.menuItems = items.filter(isMenuAction);
+    this.menuButton.hidden = this.menuItems.length === 0;
+  }
 
-    for (const item of items) {
-      if (!isMenuAction(item)) continue;
-      const button = h('button', { class: 'window-menubar-item', text: item.label });
-      button.addEventListener('click', () => {
-        const submenu = typeof item.submenu === 'function' ? item.submenu() : item.submenu;
-        if (submenu?.length) {
-          button.classList.add('is-open');
-          openMenu(submenu, {
-            x: 0,
-            y: 0,
-            align: 'below',
-            anchor: button,
-            minWidth: 180,
-            onClose: () => button.classList.remove('is-open'),
-          });
-        } else {
-          item.onSelect?.();
-        }
-      });
-      this.menubarEl.appendChild(button);
-    }
+  /**
+   * Everything the application offers, from the ☰ button.
+   *
+   * An application with several menus (Shell, Edit, View) gets them as
+   * submenus. One with a single menu is flattened into its own items instead:
+   * the button already says "this window's menu", so a lone "Application ›"
+   * inside it would be a level of nesting that names itself twice.
+   */
+  private openAppMenu(): void {
+    if (this.menuItems.length === 0) return;
+    const only = this.menuItems.length === 1 ? this.menuItems[0] : null;
+    const submenu = only && isMenuAction(only)
+      ? typeof only.submenu === 'function' ? only.submenu() : only.submenu
+      : null;
+    const items = submenu?.length ? submenu : this.menuItems;
+
+    this.menuButton.classList.add('is-open');
+    openMenu(items, {
+      x: 0,
+      y: 0,
+      align: 'below',
+      anchor: this.menuButton,
+      minWidth: 200,
+      onClose: () => this.menuButton.classList.remove('is-open'),
+    });
   }
 
   /**
@@ -382,17 +395,22 @@ export class DesktopWindow implements WindowHandle {
       listen(this.element, 'pointerdown', () => this.host.requestFocus(this), true),
     );
 
+    // The buttons sit on a drag surface, so pressing one must not also start a
+    // drag, and double-clicking one must not maximize.
+    const isChrome = (ev: Event) =>
+      Boolean((ev.target as HTMLElement).closest('.window-controls'));
+
     this.disposers.add(
       listen(titlebar, 'pointerdown', (ev: PointerEvent) => {
         if (ev.button !== 0) return;
-        if ((ev.target as HTMLElement).closest('.window-controls')) return;
+        if (isChrome(ev)) return;
         this.beginDrag(ev, titlebar);
       }),
     );
 
     this.disposers.add(
       listen(titlebar, 'dblclick', (ev: MouseEvent) => {
-        if ((ev.target as HTMLElement).closest('.window-controls')) return;
+        if (isChrome(ev)) return;
         this.toggleMaximize();
       }),
     );
