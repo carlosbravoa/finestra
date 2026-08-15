@@ -54,16 +54,20 @@ says "update.sh targets that unit"           packaging/update.sh "UNIT=\"${SERVI
 says "update.sh installs to that prefix"     packaging/update.sh "/opt/${SERVICE_NAME}"
 says "build.sh names the tarball"            packaging/aws/build.sh "TARBALL=\"${SERVICE_NAME}-"
 says "build.sh names the inner directory"    packaging/aws/build.sh "pkg=~/pkg/${SERVICE_NAME}-"
-says "get.sh expects that tarball"           packaging/web/get.sh "${SERVICE_NAME}-*.tar.gz"
-says "get.sh expects that inner directory"   packaging/web/get.sh "-name '${SERVICE_NAME}-*'"
 says "update.sh expects that inner directory" packaging/update.sh "-name '${SERVICE_NAME}-*'"
-says "publish.sh names the bucket"           packaging/web/publish.sh "${SERVICE_NAME}-dl-"
 # The command a person types is the product's name too, and it is a symlink
 # into the install: rename one without the other and it points nowhere.
 says "the command is named for the product"  packaging/install.sh "/usr/local/bin/${SERVICE_NAME}"
 says "and points at the current install"     packaging/install.sh "current/bin/${SERVICE_NAME}"
 says "the package carries it"                packaging/aws/build.sh "bin/${SERVICE_NAME}"
-says "publish.sh strips that prefix"         packaging/web/publish.sh "VERSION=\"\${NAME#${SERVICE_NAME}-}\""
+
+# The other half of this check is in ../finestra-web: get.sh and publish.sh
+# name the same product — the tarball it looks for, the directory inside it and
+# the download bucket — and they moved out with the site. That makes the
+# half-rename this file exists to catch *more* likely, not less, because the two
+# trees can now be edited a week apart. `web/names.test.sh` there is the twin;
+# run both after any rename. It is not invoked from here on purpose: this suite
+# must pass for someone who only has this repository.
 
 echo ""
 echo "-- the state leaf: the server and the installer must agree"

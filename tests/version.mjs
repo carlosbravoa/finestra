@@ -38,7 +38,7 @@ check(
 );
 
 // Semver build metadata, everything after the first '+'. Kept legal because
-// publish.sh has to turn that '+' into something S3 will not read as a space,
+// Publishing has to turn that '+' into something a download URL will not read
 // and anything exotic in there makes that substitution a guess.
 if (build?.version?.includes('+')) {
   const meta = build.version.slice(build.version.indexOf('+') + 1);

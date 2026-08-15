@@ -147,8 +147,15 @@ checkout (this launches a throwaway builder, so it needs AWS credentials):
 packaging/aws/build.sh          # → dist-release/finestra-<version>-linux-x64.tar.gz
 ```
 
-Or publish it to an S3 bucket and install from there in one line — see
-"Publishing a download page" below, which is what `packaging/web/` is for.
+Or skip the build and take the published release in one line:
+
+```bash
+curl -fsSL https://finestra.dev/get.sh | sudo bash
+```
+
+That resolves the current release, **checks it against its published SHA-256
+before anything inside it runs**, and hands over to the same `install.sh` a
+manual download would use.
 
 **2. Copy it to the instance and install.** From your own machine:
 
@@ -290,35 +297,6 @@ what deletes that tree:
 ```bash
 sudo ./install.sh --uninstall     # removes the service and files; keeps the state directory
 ```
-
-## Publishing a download page
-
-`packaging/web/` turns a release into the usual one-line install. It puts the
-tarball, a small page and a bootstrap script in an S3 bucket:
-
-```bash
-packaging/web/publish.sh            # bucket, page, release, checksum
-packaging/web/verify-oneliner.sh    # run the published one-liner on a bare instance
-```
-
-Installing then looks like every other project's front page:
-
-```bash
-curl -fsSL https://<bucket>.s3.<region>.amazonaws.com/get.sh | sudo bash
-```
-
-`get.sh` resolves the current release, **checks it against its published
-SHA-256 before anything inside it runs**, and hands over to the same
-`install.sh` a manual downloader would use. Two endpoints on purpose: the page
-is served from the S3 *website* endpoint, which is HTTP-only, while every URL
-inside it — `get.sh` included — points at the HTTPS REST endpoint, because
-piping plain HTTP into a root shell is not a thing to do.
-
-`verify-oneliner.sh` proves the published path rather than assuming it: on a
-pristine instance it confirms a corrupted download is refused and installs
-nothing, runs the real one-liner, checks the installed version is the published
-one, runs the full acceptance suite, and reinstalls to confirm an upgrade
-actually replaces the running process.
 
 ## What is in it
 
