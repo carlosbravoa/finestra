@@ -369,6 +369,45 @@ sudo cloud-init status --wait >/dev/null 2>&1 || true
 
 case "$family" in
   debian)
+    # Ubuntu's AMIs point apt at the in-region mirror,
+    # us-east-1.ec2.archive.ubuntu.com. It is normally the fastest thing on the
+    # network and it is occasionally, silently, broken — and when it is, every
+    # build hangs in `apt-get update` with two established HTTP sockets and
+    # empty queues, which is indistinguishable from the MTU blackhole this
+    # function already fixes. Measured on a stalled builder: the in-region
+    # mirror served 4 B/s while archive.ubuntu.com served 71 MB/s and
+    # nodejs.org 4 MB/s from the same instance, so the path was fine and only
+    # that host was not. Two builds died at the 2400s limit before it was
+    # measured rather than assumed.
+    #
+    # Probed rather than switched unconditionally: in-region is the better
+    # default when it works, and a mirror this test finds healthy is worth
+    # keeping. The probe pulls the 1.8 MB package index under a time limit
+    # rather than a small file, because the failure being guarded against is
+    # throughput, not liveness — the broken mirror still completed a handshake
+    # and still answered, it just did so at a speed that turns a two-minute
+    # apt-get into one that outlives the build's timeout. A healthy mirror
+    # finishes this in well under a second.
+    # Both the region and the release are read off the machine rather than
+    # written down here: the hostname carries the region, the path carries the
+    # codename, and hard-coding either makes this quietly stop probing the day
+    # someone builds on a different one. Debian has no such mirror, so this
+    # finds nothing there and does nothing, which is correct.
+    codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
+    mirror="$(grep -rhoE 'http://[a-z0-9.-]*ec2\.archive\.ubuntu\.com' \
+      /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null | awk 'NR==1')"
+    if [ -n "$mirror" ] && [ -n "$codename" ]; then
+      probe="${mirror}/ubuntu/dists/${codename}/main/binary-amd64/Packages.gz"
+      if curl -fsS --max-time 20 -o /dev/null "$probe" 2>/dev/null; then
+        echo "  apt mirror ${mirror} is healthy"
+      else
+        echo "  ${mirror} is too slow or not answering; falling back to archive.ubuntu.com"
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do
+          [ -f "$f" ] && sudo sed -i \
+            's|http://[a-z0-9.-]*ec2\.archive\.ubuntu\.com|http://archive.ubuntu.com|g' "$f"
+        done
+      fi
+    fi
     sudo systemctl disable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
     sudo systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service >/dev/null 2>&1 || true
     sudo pkill -f unattended-upgr >/dev/null 2>&1 || true
