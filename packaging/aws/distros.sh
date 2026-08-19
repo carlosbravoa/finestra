@@ -25,7 +25,7 @@ WD_CI_FEDORA_RELEASE="${WD_CI_FEDORA_RELEASE:-44}"
 
 # Every distribution this knows how to launch. The first is the default and is
 # also the one the release is built on.
-WD_CI_DISTROS=(ubuntu-24.04 debian-12 amazonlinux-2023 fedora rocky-9)
+WD_CI_DISTROS=(ubuntu-24.04 debian-12 amazonlinux-2023 fedora rocky-9 rocky-10)
 
 # wd_ci_use_distro <id> — sets the globals the rest of the run reads.
 #
@@ -76,6 +76,17 @@ wd_ci_use_distro() {
       # The release number is inside the glob, which is what keeps Rawhide,
       # ELN and `-45-Prerelease-` out: none of them carry a bare number here.
       WD_CI_AMI_GLOB="Fedora-Cloud-Base-*x86_64-${WD_CI_FEDORA_RELEASE}-*"
+      ;;
+    rocky-10)
+      WD_CI_PRETTY="Rocky Linux 10"
+      WD_CI_LOGIN="rocky"
+      WD_CI_FAMILY="rhel"
+      WD_CI_AMI_OWNER="792107900819"
+      # -Base-, not just Rocky-10-: the same account publishes an -LVM- variant
+      # under a name identical up to that word, and it is a different disk
+      # layout rather than a different distribution — testing it would be
+      # testing EC2, not us.
+      WD_CI_AMI_GLOB="Rocky-10-EC2-Base-*.x86_64"
       ;;
     rocky-9)
       WD_CI_PRETTY="Rocky Linux 9"
