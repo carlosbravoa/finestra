@@ -7,6 +7,39 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.3 — 2026-08-18
+
+- **It installs on Fedora, Rocky, RHEL and anything else with SELinux
+  enforcing.** It did not before, and the way it failed told you almost
+  nothing: the install finished, reported success, and the service then
+  restarted every two seconds with
+
+  ```
+  Failed to locate executable /opt/finestra/current/runtime/bin/node:
+  Permission denied            ... status=203/EXEC
+  ```
+
+  about a file that is present, executable, owned by root, and which runs
+  perfectly if you type its path yourself. The cause is that an SELinux label
+  comes from where a file was made rather than where it lives: the tarball is
+  unpacked under `/tmp`, so everything in it carried a temporary-file type into
+  `/opt`, and systemd is not permitted to execute that. The installer now runs
+  `restorecon` on what it wrote.
+
+  If you hit this on 0.3.2 there is nothing to undo — install 0.3.3 over the
+  top and it will start.
+
+- **Updates on those systems no longer roll themselves back.** `update.sh` put
+  the new version in place the same way, so an upgrade installed cleanly,
+  switched, failed its own health check and reverted — which looked like a bad
+  release rather than a file label. Note that the updater inside a package is a
+  copy taken when that package was built, so the *upgrade off* 0.3.2 on an
+  enforcing system still uses the old one; installing the 0.3.3 tarball
+  directly is the way through. Every update after this one is fine.
+
+- Nothing changes on Ubuntu or Debian, which carry no SELinux, or on Amazon
+  Linux 2023, which ships it permissive. All three worked before and work now.
+
 ## 0.3.2 — 2026-08-13
 
 - **It can answer on your network, not just through a tunnel.** Until now the
