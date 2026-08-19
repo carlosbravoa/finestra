@@ -79,7 +79,7 @@ echo "-- there is one definition of where state lives, and everyone asks it"
 says "configure.sh answers --state-dir"      packaging/configure.sh '--state-dir)      STATE_DIR_QUERY=1'
 says "install.sh asks it"                    packaging/install.sh 'configure.sh" --state-dir'
 says "update.sh asks it"                     packaging/update.sh 'configure.sh" --state-dir'
-says "verify.sh asks it"                     packaging/aws/verify.sh 'configure.sh --state-dir'
+says "the acceptance checks ask it"           packaging/aws/checks.sh 'configure.sh" --state-dir'
 says "verify-update.sh asks it"              packaging/aws/verify-update.sh 'configure.sh --state-dir'
 # Nobody re-derives it. This is the check that would have caught the five copies.
 strays=$(grep -rln "XDG_STATE_HOME=//p" packaging/ | grep -v 'packaging/configure.sh' || true)

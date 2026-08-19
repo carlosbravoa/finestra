@@ -1,0 +1,31 @@
+# Update PRs for the things an advisory would otherwise be found in by hand.
+#
+# This is the half of GitHub's offering that lives in the repository. The other
+# half — Dependabot *alerts*, which mail you the day an advisory is published
+# rather than the following Wednesday — is a repository setting, on by default
+# for public repositories, under Settings → Code security. Both are free.
+# .github/workflows/cve.yml is the third leg, and the only one that can see the
+# bundled Node runtime at all: no lockfile mentions it, so nothing here can.
+
+version: 2
+updates:
+  # One entry, not three: this is an npm workspace, so the root lockfile is
+  # where every version in client/ and server/ is actually pinned.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: wednesday
+    open-pull-requests-limit: 5
+    groups:
+      # The build-time tree churns and none of it reaches a user's machine.
+      # One PR a week for all of it, so the production ones stay visible.
+      build-tooling:
+        dependency-type: development
+
+  # The actions in cve.yml are third-party code with write access to this
+  # repository's issues, which is worth keeping current for its own sake.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

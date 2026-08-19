@@ -160,6 +160,30 @@ chown -R root:root "$PREFIX"
 chmod +x "$TARGET/configure.sh"
 [ -f "$TARGET/update.sh" ] && chmod +x "$TARGET/update.sh" || true
 
+# An SELinux label comes from where a file was created, not from where it ends
+# up. The tarball is unpacked in /tmp, so every file in it carries a tmp type,
+# and copying preserves that — after which systemd, running as init_t, is
+# refused execute on all of it. What that looks like is worth writing down,
+# because it names neither SELinux nor a label:
+#
+#   Failed to locate executable /opt/finestra/current/runtime/bin/node:
+#   Permission denied            ... status=203/EXEC
+#
+# The file is present, it is +x, root owns it, and `sudo /opt/.../node -v`
+# works — it is only the *service* that cannot start it, forever, restarting
+# every two seconds. restorecon resets each file to the type its path implies,
+# which is the whole fix.
+#
+# Found by verify-distros.sh on Fedora and Rocky. Ubuntu and Debian carry no
+# SELinux at all and Amazon Linux 2023 ships it permissive, so this was
+# invisible on three of the five distributions and on every machine it had ever
+# been tested on. Nothing here is conditional on the distribution: the check is
+# whether the tool exists, which is the thing that actually decides.
+if command -v restorecon >/dev/null 2>&1; then
+  restorecon -R "$PREFIX" >/dev/null 2>&1 || true
+  say "SELinux file contexts restored under $PREFIX"
+fi
+
 # `finestra` on PATH. Pointed at `current` rather than at this version, so it
 # follows an update instead of pinning the one that happened to install it.
 # /usr/local/bin because that is what a local install owns; /usr/bin belongs to

@@ -15,7 +15,8 @@
     "build": "npm -w client run build && npm -w server run build",
     "start": "npm -w server run start",
     "typecheck": "npm -w client run typecheck && npm -w server run typecheck",
-    "test": "bash tests/run.sh"
+    "test": "bash tests/run.sh",
+    "cve": "node packaging/cve-scan.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

@@ -1,0 +1,86 @@
+# The weekly question: has anything we ship acquired a CVE since we last looked?
+#
+# It runs here rather than on a timer on somebody's workstation for one reason:
+# a scan that only happens when a particular laptop is open is a scan that stops
+# happening, and nobody notices it stopped. This is free for a public repository
+# and needs no credentials — packaging/cve-scan.mjs talks to OSV.dev and to the
+# Node project's own feeds, both of which are public and unauthenticated.
+#
+# Wednesday rather than Monday: Node's security releases land on a Tuesday, so
+# this asks the day after the answer changes rather than five days before.
+
+name: CVE scan
+
+on:
+  schedule:
+    - cron: '17 6 * * 3'
+  # So a dependency change is checked when it is made, not the following
+  # Wednesday — which is the one moment anyone is in a position to act on it.
+  push:
+    branches: [main]
+    paths:
+      - 'package-lock.json'
+      - 'packaging/cve-scan.mjs'
+      - '.github/workflows/cve.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Only so a failing scheduled run can leave an issue behind. A scan whose
+  # only output is a red tick in a tab nobody opens has not told anyone.
+  issues: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version the release is built with, not "whatever is newest": the
+      # scanner reports on what ships, and running it on a different runtime
+      # would be a different question. Kept in step with build.sh's NODE_MAJOR.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No `npm ci`. The scanner reads package-lock.json as a file and has no
+      # dependencies of its own, so installing anything here would only widen
+      # the thing being audited.
+      # `set -o pipefail` is load-bearing. Actions runs this with `bash -e` and
+      # nothing else, so without it the pipeline's status is tee's — always
+      # zero — and the scan could report a shipped CVE while the job stayed
+      # green forever. The same failure the shell scripts in packaging/ have
+      # been bitten by twice.
+      - name: Scan
+        run: |
+          set -o pipefail
+          node packaging/cve-scan.mjs 2>&1 | tee /tmp/cve.txt
+
+      - name: Open an issue if anything is shipping with a known CVE
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/cve.txt', 'utf8');
+            const title = 'CVE scan is failing';
+            // One issue, reopened and updated, rather than a new one every
+            // Wednesday until somebody gets round to it.
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'security',
+            });
+            const existing = open.find((i) => i.title === title);
+            const text = `The weekly scan found something.\n\n\`\`\`\n${body}\n\`\`\`\n\n` +
+                         `[run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`;
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, body: text,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body: text, labels: ['security'],
+              });
+            }

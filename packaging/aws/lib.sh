@@ -22,9 +22,12 @@ WD_CI_TAG_VALUE="fleet-desktop-ci"
 WD_CI_TTL_MIN="${WD_CI_TTL_MIN:-45}"
 WD_CI_REGION="${WD_CI_REGION:-us-east-1}"
 
-# Ubuntu 24.04 is the build target: native artifacts built against its glibc run
-# on everything newer, and the reverse is not true.
-WD_CI_AMI_PARAM="/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+# Which distribution this run is against. Ubuntu 24.04 is the default and the
+# build target: native artifacts built against its glibc run on everything
+# newer, and the reverse is not true — which is exactly the claim
+# verify-distros.sh exists to test rather than assume.
+source "$(dirname "${BASH_SOURCE[0]}")/distros.sh"
+wd_ci_use_distro "${WD_CI_DISTRO:-ubuntu-24.04}"
 
 WD_CI_RUN_ID=""
 WD_CI_KEY_NAME=""
@@ -263,16 +266,33 @@ wd_ci_pick_subnet() {
   die "no subnet with a route to an internet gateway; set WD_CI_SUBNET"
 }
 
+# The image for the distribution in force. An SSM parameter where the vendor
+# publishes one, otherwise newest-first by owner and name.
+#
+# `--owners` is not decoration. A name glob on its own matches any account's
+# image, so the owner id is the only part of this that makes the answer
+# trustworthy; architecture is filtered here too rather than left to the glob,
+# because an aarch64 image resolves perfectly and then fails to boot our x86_64
+# tarball twenty minutes later.
 wd_ci_ami() {
-  aws_ ssm get-parameters --names "$WD_CI_AMI_PARAM" \
-    --query 'Parameters[0].Value' --output text
+  if [ -n "$WD_CI_AMI_SSM" ]; then
+    aws_ ssm get-parameters --names "$WD_CI_AMI_SSM" \
+      --query 'Parameters[0].Value' --output text
+    return
+  fi
+  aws_ ec2 describe-images \
+    --owners "$WD_CI_AMI_OWNER" \
+    --filters "Name=name,Values=${WD_CI_AMI_GLOB}" \
+              "Name=state,Values=available" \
+              "Name=architecture,Values=x86_64" \
+    --query 'reverse(sort_by(Images,&CreationDate))[0].ImageId' --output text
 }
 
 # wd_ci_launch <role> <instance-type> -> prints "<instance-id> <public-ip>"
 wd_ci_launch() {
   local role="$1" itype="$2" ami expires id ip
   ami=$(wd_ci_ami)
-  [ -n "$ami" ] && [ "$ami" != "None" ] || die "could not resolve the Ubuntu AMI"
+  [ -n "$ami" ] && [ "$ami" != "None" ] || die "could not resolve an AMI for ${WD_CI_DISTRO}"
   expires=$(( $(date -u +%s) + WD_CI_TTL_MIN * 60 ))
 
   # The deadman. If everything else fails — the script dies, the network drops,
@@ -291,12 +311,12 @@ wd_ci_launch() {
     --user-data "$userdata" \
     --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=12,VolumeType=gp3,DeleteOnTermination=true}' \
     --tag-specifications \
-      "ResourceType=instance,Tags=[{Key=${WD_CI_TAG_KEY},Value=${WD_CI_TAG_VALUE}},{Key=Name,Value=wd-ci-${role}},{Key=ExpiresAt,Value=${expires}},{Key=Role,Value=${role}},{Key=RunId,Value=${WD_CI_RUN_ID}}]" \
+      "ResourceType=instance,Tags=[{Key=${WD_CI_TAG_KEY},Value=${WD_CI_TAG_VALUE}},{Key=Name,Value=wd-ci-${role}-${WD_CI_DISTRO}},{Key=ExpiresAt,Value=${expires}},{Key=Role,Value=${role}},{Key=Distro,Value=${WD_CI_DISTRO}},{Key=RunId,Value=${WD_CI_RUN_ID}}]" \
       "ResourceType=volume,Tags=[{Key=${WD_CI_TAG_KEY},Value=${WD_CI_TAG_VALUE}}]" \
     --query 'Instances[0].InstanceId' --output text)
 
   WD_CI_INSTANCES+=("$id")
-  log "launched $role as $id ($itype), self-terminates in ${WD_CI_TTL_MIN}m"
+  log "launched $role as $id ($itype, ${WD_CI_PRETTY}, $ami), self-terminates in ${WD_CI_TTL_MIN}m"
 
   aws_ ec2 wait instance-running --instance-ids "$id"
   ip=$(aws_ ec2 describe-instances --instance-ids "$id" \
@@ -313,7 +333,7 @@ wd_ci_ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 wd_ci_wait_ssh() {
   local ip="$1" i
   for i in $(seq 1 60); do
-    if ssh "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" "ubuntu@${ip}" true 2>/dev/null; then
+    if ssh "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" "${WD_CI_LOGIN}@${ip}" true 2>/dev/null; then
       log "ssh up on $ip (after ${i} tries)"
       return 0
     fi
@@ -324,23 +344,67 @@ wd_ci_wait_ssh() {
 
 wd_ci_ssh() {
   local ip="$1"; shift
-  ssh "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" "ubuntu@${ip}" "$@"
+  ssh "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" "${WD_CI_LOGIN}@${ip}" "$@"
 }
 
-# A fresh Ubuntu image is busy for its first few minutes: cloud-init is still
-# going, and unattended-upgrades takes the dpkg lock and restarts services. The
-# first build here died with "Connection reset by peer" mid-apt, because one of
-# the services it restarted was sshd. Settle all of that before doing any work.
+# A fresh cloud image is busy for its first few minutes: cloud-init is still
+# going, and the distribution's own update timer takes the package lock and
+# restarts services. The first build here died with "Connection reset by peer"
+# mid-apt, because one of the services it restarted was sshd. Settle all of that
+# before doing any work.
+#
+# Two families, and the split is real: apt/unattended-upgrades on Debian and
+# Ubuntu, dnf/dnf-automatic on Fedora, Rocky and Amazon Linux. The MTU fix
+# below is deliberately *not* split that way — it detects the network manager
+# in use rather than inferring it from the distribution, because that is the
+# thing that actually decides, and Debian 12 and Ubuntu 24.04 disagree about it
+# while being the same family.
 wd_ci_prepare_host() {
   local ip="$1"
-  log "settling the host (cloud-init, apt timers, needrestart)"
-  wd_ci_ssh "$ip" 'bash -s' <<'REMOTE' || true
+  log "settling the host (cloud-init, package timers, MTU)"
+  wd_ci_ssh "$ip" "bash -s '$WD_CI_FAMILY'" <<'REMOTE' || true
 set -uo pipefail
+family="$1"
 sudo cloud-init status --wait >/dev/null 2>&1 || true
-sudo systemctl disable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
-sudo systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service >/dev/null 2>&1 || true
-sudo pkill -f unattended-upgr >/dev/null 2>&1 || true
-printf 'APT::Periodic::Unattended-Upgrade "0";\n' | sudo tee /etc/apt/apt.conf.d/99-wd-ci >/dev/null
+
+case "$family" in
+  debian)
+    sudo systemctl disable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+    sudo systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service >/dev/null 2>&1 || true
+    sudo pkill -f unattended-upgr >/dev/null 2>&1 || true
+    printf 'APT::Periodic::Unattended-Upgrade "0";\n' | sudo tee /etc/apt/apt.conf.d/99-wd-ci >/dev/null
+    # Secondary hardening, not the fix: make a fetch that goes wrong fail and
+    # retry rather than block indefinitely.
+    sudo tee /etc/apt/apt.conf.d/99-wd-ci-net >/dev/null <<'APTCONF'
+Acquire::http::Timeout "20";
+Acquire::https::Timeout "20";
+Acquire::Retries "3";
+APTCONF
+    # needrestart restarts services in the middle of an install, sshd among
+    # them. Absent on Debian's cloud image, which is why this is not fatal.
+    sudo mkdir -p /etc/needrestart/conf.d
+    printf "\$nrconf{restart} = 'a';\n\$nrconf{kernelhints} = 0;\n" \
+      | sudo tee /etc/needrestart/conf.d/99-wd-ci.conf >/dev/null
+    for _ in $(seq 1 60); do
+      sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+      sleep 5
+    done
+    ;;
+  rhel)
+    # dnf-makecache wakes up on a timer and holds the rpm lock; dnf-automatic
+    # is Fedora's answer to unattended-upgrades and will restart services under
+    # us in exactly the same way. Amazon Linux carries neither by default, so
+    # every one of these is allowed to be absent.
+    sudo systemctl disable --now dnf-makecache.timer dnf-automatic.timer \
+         dnf-automatic-install.timer packagekit >/dev/null 2>&1 || true
+    printf 'timeout=20\nretries=3\n' | sudo tee -a /etc/dnf/dnf.conf >/dev/null 2>&1 || true
+    for _ in $(seq 1 60); do
+      sudo fuser /var/lib/rpm/.rpm.lock >/dev/null 2>&1 || break
+      sleep 5
+    done
+    ;;
+esac
+
 # The interface comes up at MTU 9001 — jumbo frames, the VPC default — but the
 # path to the internet only carries 1500, and the ICMP that path-MTU discovery
 # depends on is filtered somewhere along it. The result is a connection that
@@ -355,34 +419,42 @@ printf 'APT::Periodic::Unattended-Upgrade "0";\n' | sudo tee /etc/apt/apt.conf.d
 # lease renews, at which point AWS's option set puts 9001 back and the stall
 # returns — mid-build, long after the log said the fix had been applied. That
 # cost a whole run: apt succeeded, the build succeeded, and then the 58 MB
-# artifact came home at six kilobytes a second. Netplan is where it sticks,
-# because an explicit MTU there beats whatever the lease says.
+# artifact came home at six kilobytes a second.
+#
+# Where "durably" lives is a property of the image, not of the distribution:
+# Ubuntu has netplan, Fedora/Rocky/Amazon Linux have NetworkManager, and Debian
+# 12's cloud image has neither — it is ifupdown driving dhclient, where the
+# lease is overridden with `supersede`. So this asks the machine what it is
+# running instead of looking it up by name, and applies the immediate `ip link`
+# either way so the current boot does not wait for anything to settle.
 iface=$(ip -o -4 route show to default | awk 'NR==1 { print $5 }')
 if [ -n "$iface" ]; then
-  printf 'network:\n  version: 2\n  ethernets:\n    %s:\n      mtu: 1500\n' "$iface" \
-    | sudo tee /etc/netplan/99-wd-ci-mtu.yaml >/dev/null
-  sudo chmod 600 /etc/netplan/99-wd-ci-mtu.yaml
-  sudo netplan apply 2>/dev/null || true
-  # Immediately too, so the current boot does not wait for netplan to settle.
   sudo ip link set dev "$iface" mtu 1500 2>/dev/null || true
-  echo "  $iface mtu -> $(ip -o link show "$iface" | grep -o 'mtu [0-9]*') (pinned in netplan)"
+  pinned="not pinned"
+  if [ -d /etc/netplan ]; then
+    printf 'network:\n  version: 2\n  ethernets:\n    %s:\n      mtu: 1500\n' "$iface" \
+      | sudo tee /etc/netplan/99-wd-ci-mtu.yaml >/dev/null
+    sudo chmod 600 /etc/netplan/99-wd-ci-mtu.yaml
+    sudo netplan apply 2>/dev/null || true
+    pinned="netplan"
+  elif systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    # `connection modify` writes the profile so it survives a renewal;
+    # `device set` applies it now without the down/up that would drop the SSH
+    # session we are giving this instruction over.
+    con=$(nmcli -t -f NAME connection show --active 2>/dev/null | awk 'NR==1')
+    if [ -n "$con" ]; then
+      sudo nmcli connection modify "$con" 802-3-ethernet.mtu 1500 >/dev/null 2>&1 || true
+      pinned="NetworkManager"
+    fi
+  elif [ -d /etc/dhcp ]; then
+    # `supersede` beats whatever the server offers, at every renewal. `default`
+    # would only apply when the offer omits the option, which is never here.
+    grep -q 'supersede interface-mtu' /etc/dhcp/dhclient.conf 2>/dev/null \
+      || printf 'supersede interface-mtu 1500;\n' | sudo tee -a /etc/dhcp/dhclient.conf >/dev/null
+    pinned="dhclient"
+  fi
+  echo "  $iface $(ip -o link show "$iface" | grep -o 'mtu [0-9]*') ($pinned)"
 fi
-
-# Secondary hardening, not the fix: make a fetch that goes wrong fail and retry
-# rather than block indefinitely.
-sudo tee /etc/apt/apt.conf.d/99-wd-ci-net >/dev/null <<'APTCONF'
-Acquire::http::Timeout "20";
-Acquire::https::Timeout "20";
-Acquire::Retries "3";
-APTCONF
-# needrestart restarts services in the middle of an install, sshd among them.
-sudo mkdir -p /etc/needrestart/conf.d
-printf "\$nrconf{restart} = 'a';\n\$nrconf{kernelhints} = 0;\n" \
-  | sudo tee /etc/needrestart/conf.d/99-wd-ci.conf >/dev/null
-for _ in $(seq 1 60); do
-  sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
-  sleep 5
-done
 echo "  host settled"
 REMOTE
 }
@@ -418,10 +490,10 @@ wd_ci_run_detached() {
 
 wd_ci_scp_to() {
   local src="$1" ip="$2" dst="$3"
-  scp "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" -q "$src" "ubuntu@${ip}:${dst}"
+  scp "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" -q "$src" "${WD_CI_LOGIN}@${ip}:${dst}"
 }
 
 wd_ci_scp_from() {
   local ip="$1" src="$2" dst="$3"
-  scp "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" -q "ubuntu@${ip}:${src}" "$dst"
+  scp "${wd_ci_ssh_opts[@]}" -i "$WD_CI_KEY_FILE" -q "${WD_CI_LOGIN}@${ip}:${src}" "$dst"
 }

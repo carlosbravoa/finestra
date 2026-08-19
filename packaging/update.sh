@@ -224,6 +224,16 @@ rm -rf "$TARGET"
 cp -a "$NEW_DIR" "$TARGET"
 rm -f "$TARGET/install.sh"
 chown -R root:root "$TARGET"
+# The same SELinux relabel install.sh does, and for the same reason: the new
+# version was unpacked under mktemp, so every file carries a tmp type that
+# systemd is refused execute on. Without this an update on an enforcing system
+# installs cleanly, switches, and then cannot start what it just installed —
+# which the health check below reads as a bad release and rolls back, blaming
+# the new version for the copy's label. See install.sh for the full symptom.
+if command -v restorecon >/dev/null 2>&1; then
+  restorecon -R "$TARGET" >/dev/null 2>&1 || true
+  say "SELinux file contexts restored"
+fi
 say "$TARGET"
 
 step "Switching"
