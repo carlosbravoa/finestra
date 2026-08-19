@@ -39,7 +39,7 @@ jobs:
       # The version the release is built with, not "whatever is newest": the
       # scanner reports on what ships, and running it on a different runtime
       # would be a different question. Kept in step with build.sh's NODE_MAJOR.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 
