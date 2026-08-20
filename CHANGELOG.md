@@ -7,6 +7,37 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.4 — 2026-08-20
+
+- **Copy and paste work between the desktop's own windows again.** The browser
+  only shares the clipboard with a page served over https, and this desktop is
+  plain http behind an SSH tunnel — so it refused, and every app said so and
+  dropped the text. What was easy to miss is that this took *internal* copying
+  with it: a path copied out of Files and pasted into the terminal, a command
+  line from the process list, a line copied out of a Linux application in the
+  applications window. None of that involves your own machine's clipboard, and
+  all of it was failing.
+
+  The desktop now keeps its own clipboard. Every copy is kept there whatever
+  the browser decides, and pasting anywhere in the desktop — the terminal, the
+  editor, a native application, with Ctrl+V, Ctrl+Shift+V, middle-click or a
+  menu — uses it. Nothing to enable, and nothing to change if you already run
+  it behind TLS.
+
+- **Copies now reach the machine your browser is on, too.** Over plain http
+  they never did. The desktop falls back to the pre-permissions copy path,
+  which browsers still allow without a secure context, so a path copied in the
+  desktop can be pasted into anything else on your own machine. Pasting *in*
+  from your machine works as it always did, and still wins when you copied
+  there more recently than here.
+
+  Where the desktop cannot reach your machine's clipboard at all, it says so
+  once, in one notification, rather than complaining on every copy.
+
+- Still worth putting TLS in front of this if you can — a secure origin gets
+  the browser's own clipboard with no fallbacks. This release is about the
+  desktop being usable without one.
+
 ## 0.3.3 — 2026-08-18
 
 - **It installs on Fedora, Rocky, RHEL and anything else with SELinux
