@@ -41,6 +41,27 @@
   background: linear-gradient(165deg, #e7ebf1, #cfd8e4 55%, #dde3ec);
 }
 
+/* Light, and meant for a room with other people in it: one soft wash, no
+   colour to speak of, nothing that competes with a window over it. */
+.wallpaper[data-paper='linen'] {
+  background:
+    radial-gradient(1200px 820px at 76% 4%, rgba(255, 255, 255, 0.95), transparent 60%),
+    radial-gradient(1000px 780px at 8% 100%, rgba(178, 192, 212, 0.55), transparent 64%),
+    linear-gradient(160deg, #eef2f7, #dde5ef 55%, #e8edf4);
+}
+
+/* The colourful light one. Four washes over a warm base, in the register the
+   Mac has used since Big Sur — bright, but pale enough that dark icon labels
+   stay readable anywhere on it, which is the constraint that shaped it. */
+.wallpaper[data-paper='horizon'] {
+  background:
+    radial-gradient(880px 620px at 14% 16%, rgba(255, 178, 122, 0.5), transparent 62%),
+    radial-gradient(820px 600px at 84% 20%, rgba(255, 142, 176, 0.42), transparent 62%),
+    radial-gradient(1000px 720px at 72% 94%, rgba(126, 170, 255, 0.46), transparent 65%),
+    radial-gradient(760px 560px at 22% 90%, rgba(140, 216, 205, 0.42), transparent 62%),
+    linear-gradient(150deg, #fdf4ec, #eef1fb 55%, #f7eff8);
+}
+
 .wallpaper[data-paper='aurora'] {
   background:
     radial-gradient(800px 520px at 12% 88%, rgba(60, 200, 170, 0.24), transparent 60%),
@@ -77,6 +98,32 @@
 
 .desktop-icon:hover {
   background: rgba(255, 255, 255, 0.07);
+}
+
+/* ------------------------------------------------------------------ */
+/* Icons follow the wallpaper, not the theme                           */
+/* ------------------------------------------------------------------ */
+
+/* This surface is the one part of the desktop the theme does not reach: it
+   sits on the picture. Taking the label colour from --text meant the light
+   theme over a dark wallpaper printed dark names on a dark background, and
+   nothing in the theme could have known. data-tone is set from the wallpaper
+   in core/desktop.ts. */
+.desktop[data-tone='light'] .desktop-icon {
+  color: #10141b;
+}
+
+.desktop[data-tone='light'] .desktop-icon-label {
+  /* A light halo instead of a drop shadow, for the same reason. */
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.9);
+}
+
+.desktop[data-tone='light'] .desktop-icon:hover {
+  background: rgba(16, 20, 27, 0.08);
+}
+
+.desktop[data-tone='light'] .desktop-icon.is-selected {
+  border-color: rgba(40, 90, 190, 0.5);
 }
 
 .desktop-icon.is-selected {

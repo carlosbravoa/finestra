@@ -142,6 +142,7 @@
 
 .settings-swatches {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -185,6 +186,20 @@
 
 .settings-swatch[data-paper='paper'] {
   background: linear-gradient(165deg, #e7ebf1, #cfd8e4);
+}
+
+.settings-swatch[data-paper='linen'] {
+  background:
+    radial-gradient(40px 26px at 20% 15%, rgba(255, 255, 255, 0.95), transparent 70%),
+    linear-gradient(160deg, #f6f8fb, #e8edf4);
+}
+
+.settings-swatch[data-paper='horizon'] {
+  background:
+    radial-gradient(34px 22px at 15% 20%, rgba(255, 178, 122, 0.7), transparent 70%),
+    radial-gradient(32px 22px at 85% 20%, rgba(255, 142, 176, 0.6), transparent 70%),
+    radial-gradient(36px 24px at 75% 90%, rgba(126, 170, 255, 0.65), transparent 70%),
+    linear-gradient(150deg, #fdf4ec, #f2f0fb);
 }
 
 .settings-appicon {

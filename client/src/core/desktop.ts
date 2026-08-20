@@ -41,13 +41,33 @@ import type {
 /** Long enough that dragging a window is one save, short enough to survive a crash. */
 const SESSION_SAVE_DEBOUNCE_MS = 800;
 
-export const WALLPAPERS = [
-  { id: 'nebula', name: 'Nebula' },
-  { id: 'slate', name: 'Slate' },
-  { id: 'grid', name: 'Grid' },
-  { id: 'aurora', name: 'Aurora' },
-  { id: 'paper', name: 'Paper' },
+/**
+ * The wallpapers, and which theme each belongs with.
+ *
+ * `tone` is not decoration. Desktop icons sit directly on the wallpaper rather
+ * than on any themed surface, so what makes a label legible is the picture
+ * behind it and not the theme — switching to the light theme over a dark
+ * wallpaper left every icon name unreadable. It drives both the automatic
+ * switch in applyTheme() and the icon colours in desktop.css.
+ */
+export const WALLPAPERS: Array<{ id: string; name: string; tone: WallpaperTone }> = [
+  { id: 'nebula', name: 'Nebula', tone: 'dark' },
+  { id: 'slate', name: 'Slate', tone: 'dark' },
+  { id: 'grid', name: 'Grid', tone: 'dark' },
+  { id: 'aurora', name: 'Aurora', tone: 'dark' },
+  { id: 'linen', name: 'Linen', tone: 'light' },
+  { id: 'horizon', name: 'Horizon', tone: 'light' },
+  { id: 'paper', name: 'Paper', tone: 'light' },
 ];
+
+export type WallpaperTone = 'light' | 'dark';
+
+/** What each theme falls back to when nothing has been chosen under it. */
+const DEFAULT_WALLPAPER: Record<WallpaperTone, string> = { dark: 'nebula', light: 'linen' };
+
+function wallpaperFor(id: string | undefined, tone: WallpaperTone = 'dark') {
+  return WALLPAPERS.find((w) => w.id === id) ?? WALLPAPERS.find((w) => w.id === DEFAULT_WALLPAPER[tone])!;
+}
 
 /** Where desktop drops land unless the user changes it in Settings. */
 export const DEFAULT_UPLOADS_DIR = '~/Uploads';
@@ -134,13 +154,14 @@ export class Desktop implements DesktopAPI {
 
     this.notifications = new NotificationCenter(this.rootEl);
 
-    this.applyWallpaper(this.settings.get('desktop.wallpaper', 'nebula'));
+    this.applyWallpaper(this.settings.get('desktop.wallpaper', DEFAULT_WALLPAPER.dark));
+    // After the wallpaper, not before: a theme that disagrees with the picture
+    // it was left on corrects it here, which is what an install that switched
+    // to light before this existed comes back to.
     this.applyTheme(this.settings.get('desktop.theme', 'dark'));
     // Settings (the app) writes these keys; the watchers make them take
     // effect immediately without it having to reach into shell internals.
-    this.settings.watch<string>('desktop.wallpaper', (v) => {
-      this.wallpaperEl.dataset.paper = v ?? 'nebula';
-    });
+    this.settings.watch<string>('desktop.wallpaper', (v) => this.showWallpaper(v));
     this.settings.watch<string>('desktop.theme', (v) => this.applyTheme(v ?? 'dark'));
 
     this.wireManagerEvents();
@@ -646,7 +667,11 @@ export class Desktop implements DesktopAPI {
   private backgroundMenu(): MenuItem[] {
     const launchable = this.registry
       .all()
-      .filter((a) => a.showInLauncher !== false)
+      // Singletons are left out: launching one again focuses the window that
+      // is already open, so "New Settings" offers something that cannot
+      // happen — and it put a second Settings entry in a menu that already
+      // has one further down.
+      .filter((a) => a.showInLauncher !== false && !a.singleton)
       .sort((a, b) => a.name.localeCompare(b.name));
 
     return [
@@ -662,7 +687,7 @@ export class Desktop implements DesktopAPI {
         submenu: () =>
           WALLPAPERS.map((paper) => ({
             label: paper.name,
-            checked: this.settings.get('desktop.wallpaper', 'nebula') === paper.id,
+            checked: this.settings.get('desktop.wallpaper', DEFAULT_WALLPAPER.dark) === paper.id,
             onSelect: () => this.applyWallpaper(paper.id),
           })),
       },
@@ -727,17 +752,39 @@ export class Desktop implements DesktopAPI {
   }
 
   private applyTheme(theme: string): void {
-    const resolved = theme === 'light' ? 'light' : 'dark';
+    const resolved: WallpaperTone = theme === 'light' ? 'light' : 'dark';
     // Tokens key off this attribute; color-scheme fixes form controls and
     // scrollbars that the tokens do not reach.
     document.documentElement.dataset.theme = resolved;
     document.documentElement.style.colorScheme = resolved;
+
+    // And the wallpaper follows, because the icon surface is the one part of
+    // the desktop the theme cannot reach: it sits on the picture. Choosing the
+    // light theme over Nebula used to leave the icon names dark on dark. The
+    // choice made under each theme is remembered, so switching back and forth
+    // returns to the wallpaper that was there rather than to a default.
+    const current = wallpaperFor(this.settings.get<string>('desktop.wallpaper', ''), resolved);
+    if (current.tone === resolved) return;
+    this.applyWallpaper(this.settings.get(`desktop.wallpaper.${resolved}`, DEFAULT_WALLPAPER[resolved]));
   }
 
   private applyWallpaper(id: string): void {
-    this.wallpaperEl.dataset.paper = id;
-    this.settings.set('desktop.wallpaper', id);
+    const paper = this.showWallpaper(id);
+    this.settings.set('desktop.wallpaper', paper.id);
     closeAllMenus();
+  }
+
+  /** Puts a wallpaper on screen without deciding that it is now the choice. */
+  private showWallpaper(id: string | undefined) {
+    const paper = wallpaperFor(id);
+    this.wallpaperEl.dataset.paper = paper.id;
+    // Icon labels and hover states read this: legibility follows the picture,
+    // not the theme.
+    this.rootEl.dataset.tone = paper.tone;
+    // Remembered here rather than in applyWallpaper so that a change made in
+    // Settings — which writes the key directly — is remembered too.
+    this.settings.set(`desktop.wallpaper.${paper.tone}`, paper.id);
+    return paper;
   }
 
   private showShortcuts(): void {
