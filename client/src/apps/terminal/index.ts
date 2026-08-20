@@ -268,14 +268,23 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
   }
 
   // Ctrl+Shift+C/V, since Ctrl+C must keep reaching the shell as SIGINT.
+  //
+  // Both must preventDefault, and Ctrl+Shift+V is why: the browser reads it as
+  // paste-as-plain-text and fires a `paste` event of its own. Returning false
+  // only tells xterm to keep its hands off the key, so the text arrived twice
+  // — once from the handler below servicing that event, and once from paste()
+  // here. The same reasoning as the middle-click handler, which has always had
+  // to stop the X11 primary-selection paste that comes with it.
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown' || !ev.ctrlKey || !ev.shiftKey) return true;
     const key = ev.key.toLowerCase();
     if (key === 'c') {
+      ev.preventDefault();
       void copySelection();
       return false;
     }
     if (key === 'v') {
+      ev.preventDefault();
       void paste();
       return false;
     }
@@ -308,9 +317,14 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
     await desktop.clipboard.write(selection);
   }
 
+  // term.paste rather than writing the bytes ourselves: it is what performs
+  // the transformations pasted text needs — newlines, and the brackets around
+  // it when the program running has asked for bracketed paste. Without that,
+  // pasting several lines into an editor is indistinguishable from typing
+  // them, which is how a paste arrives auto-indented into a staircase.
   async function paste(): Promise<void> {
     const text = await desktop.clipboard.read();
-    if (text) channel?.sendBinary(encoder.encode(text));
+    if (text) term.paste(text);
     else desktop.notify({ message: 'There is nothing to paste.', kind: 'info', timeout: 2000 });
   }
 
@@ -327,7 +341,7 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
       if (!text || text === event.clipboardData?.getData('text/plain')) return;
       event.preventDefault();
       event.stopPropagation();
-      channel?.sendBinary(encoder.encode(text));
+      term.paste(text);
     },
     true,
   );
