@@ -7,6 +7,38 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.5 — 2026-08-20
+
+- **Ctrl+Shift+V in the terminal pasted everything twice.** New in 0.3.4, and
+  the reason is that the browser reads that combination as its own
+  paste-as-plain-text: the terminal pasted what you asked for, and the browser
+  pasted it again underneath. Once now.
+
+- **Pasting into the terminal is a paste, not typing.** Both the desktop
+  clipboard and the browser's own now go through the terminal's paste path, so
+  the text carries the brackets a program asks for when it wants to tell the
+  two apart. In practice that means a block of YAML pasted into `vim` or
+  `nano` arrives as it left, rather than auto-indented into a staircase.
+
+- **Switching to the light theme no longer leaves the desktop icons
+  unreadable.** The icons sit on the wallpaper rather than on anything the
+  theme controls, so choosing Light over a dark wallpaper printed dark names
+  on a dark picture. Two changes: the theme now moves the wallpaper with it,
+  remembering separately what you chose under each, and icon labels take their
+  colour from the wallpaper instead of the theme — so a light wallpaper under
+  the dark theme, which was equally broken, is readable too. An install
+  already sitting in that state fixes itself when the page reloads.
+
+- **Two more light wallpapers**, since "light" used to mean one grey wash.
+  *Linen* is quiet and neutral; *Horizon* is a colourful one in the style
+  current Macs use, kept pale so dark labels stay readable across it.
+
+- **The desktop's right-click menu offered Settings twice.** The shortcuts at
+  the top are the first three apps by name, and Settings sorted into them
+  right above the menu's own Settings entry. Apps that only ever have one
+  window are no longer offered as "New …", which is true of Settings and the
+  System Manager both.
+
 ## 0.3.4 — 2026-08-20
 
 - **Copy and paste work between the desktop's own windows again.** The browser
