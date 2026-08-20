@@ -26,6 +26,9 @@
 # subshell that dies, or a Ctrl-C in the middle, still cleans all five up.
 
 set -euo pipefail
+# Before the cd, so a relative path on the command line still means what it
+# meant in the shell that typed it. See wd_ci_abs.
+WD_CI_CALLER_PWD="$PWD"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 REPO="$PWD"
 source packaging/aws/lib.sh
@@ -54,7 +57,7 @@ for d in "${TARGETS[@]}"; do
   ( wd_ci_use_distro "$d" ) >/dev/null || die "not a distribution this knows: $d"
 done
 
-TARBALL="${TARBALL:-$(ls -1t "$REPO"/dist-release/finestra-*-linux-x64.tar.gz 2>/dev/null | awk 'NR==1')}"
+TARBALL="$(wd_ci_abs "${TARBALL:-$(ls -1t "$REPO"/dist-release/finestra-*-linux-x64.tar.gz 2>/dev/null | awk 'NR==1')}")"
 [ -n "$TARBALL" ] && [ -f "$TARBALL" ] || die "no tarball; run packaging/aws/build.sh first"
 VERIFY_TYPE="${VERIFY_TYPE:-t3.micro}"
 

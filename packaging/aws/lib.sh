@@ -21,6 +21,18 @@ WD_CI_TAG_KEY="Project"
 WD_CI_TAG_VALUE="fleet-desktop-ci"
 WD_CI_TTL_MIN="${WD_CI_TTL_MIN:-45}"
 WD_CI_REGION="${WD_CI_REGION:-us-east-1}"
+# How old a leftover key pair or security group must be before the sweep will
+# take it. See wd_ci_sweepable for why this exists at all.
+WD_CI_SWEEP_GRACE_MIN="${WD_CI_SWEEP_GRACE_MIN:-20}"
+
+# Where the person who typed the command was standing.
+#
+# Every script here cds to the repository root before doing anything, so a
+# relative path on the command line silently changes meaning on the way in:
+# `verify-distros.sh dist-release/x.tar.gz` typed from dist-release/ resolves
+# against the repository root and is simply not there. Scripts set this before
+# their own cd; the fallback is for anything that sources this directly.
+WD_CI_CALLER_PWD="${WD_CI_CALLER_PWD:-$PWD}"
 
 # Which distribution this run is against. Ubuntu 24.04 is the default and the
 # build target: native artifacts built against its glibc run on everything
@@ -45,6 +57,48 @@ die() { log "FATAL: $*"; exit 1; }
 # ---------------------------------------------------------------------------
 # Sweeping: the backstop that runs even when nothing else did
 # ---------------------------------------------------------------------------
+
+# Resolves a path the way the person typing it meant it, before any cd.
+wd_ci_abs() {
+  case "$1" in
+    ''| /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "${WD_CI_CALLER_PWD%/}" "$1" ;;
+  esac
+}
+
+# How many minutes ago the run named `wd-ci-<YYYYMMDD>-<HHMMSS>-<pid>` started,
+# or -1 when the name carries no timestamp we can read.
+#
+# The name is the only clock available: a security group reports no creation
+# time at all, and the key pair's is absent from the API version in use here.
+wd_ci_name_age_min() {
+  local stamp epoch
+  stamp="${1#wd-ci-}"     # 20260820-143858-3414025
+  stamp="${stamp%-*}"     # 20260820-143858
+  case "$stamp" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+    *) printf '%s\n' -1; return 0 ;;
+  esac
+  epoch=$(date -u -d \
+    "${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:9:2}:${stamp:11:2}:${stamp:13:2} UTC" \
+    +%s 2>/dev/null) || { printf '%s\n' -1; return 0; }
+  printf '%s\n' $(( ($(date -u +%s) - epoch) / 60 ))
+}
+
+# Whether a leftover is old enough that no live run can still be using it.
+#
+# It was not, and that cost four of six verifiers in one run: they died at
+# RunInstances with `InvalidKeyPair.NotFound` about a key pair created eleven
+# seconds earlier, because a *different* script's cleanup swept everything not
+# named by its own run while those instances were still launching. Skipping the
+# young ones is the fix; skipping the unreadable ones too is deliberate, since
+# a key pair or an empty security group left behind costs nothing and deleting
+# something we cannot date costs a run.
+wd_ci_sweepable() {
+  local age
+  age=$(wd_ci_name_age_min "$1")
+  [ "$age" -ge "$WD_CI_SWEEP_GRACE_MIN" ]
+}
 
 # Terminates every instance carrying our tag whose ExpiresAt has passed. Safe to
 # run at any time, including before a run starts — that is the point.
@@ -99,18 +153,23 @@ wd_ci_sweep_leftovers() {
       --query 'KeyPairs[?starts_with(KeyName, `wd-ci-`)].KeyName' \
       --output text 2>/dev/null); do
     if [ "$name" = "$WD_CI_KEY_NAME" ]; then continue; fi
+    # Another run's, and possibly one still launching instances with it.
+    if ! wd_ci_sweepable "$name"; then continue; fi
     aws_ ec2 delete-key-pair --key-name "$name" 2>/dev/null \
       && log "swept key pair $name" || true
   done
 
-  for id in $(aws_ ec2 describe-security-groups \
-      --query 'SecurityGroups[?starts_with(GroupName, `wd-ci-`)].GroupId' \
-      --output text 2>/dev/null); do
+  # The name, not just the id: it is what carries the age.
+  while read -r id name; do
+    [ -n "${id:-}" ] || continue
     if [ "$id" = "$WD_CI_SG_ID" ]; then continue; fi
+    if ! wd_ci_sweepable "${name:-}"; then continue; fi
     # Fails while an instance still holds it; the next run gets it.
     aws_ ec2 delete-security-group --group-id "$id" 2>/dev/null \
       && log "swept security group $id" || true
-  done
+  done < <(aws_ ec2 describe-security-groups \
+      --query 'SecurityGroups[?starts_with(GroupName, `wd-ci-`)].[GroupId,GroupName]' \
+      --output text 2>/dev/null)
   return 0
 }
 

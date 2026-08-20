@@ -12,11 +12,14 @@
 #   packaging/aws/build.sh [output-dir]
 
 set -euo pipefail
+# Before the cd, so a relative path on the command line still means what it
+# meant in the shell that typed it. See wd_ci_abs.
+WD_CI_CALLER_PWD="$PWD"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 REPO="$PWD"
 source packaging/aws/lib.sh
 
-OUT_DIR="${1:-$REPO/dist-release}"
+OUT_DIR="$(wd_ci_abs "${1:-$REPO/dist-release}")"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 BUILDER_TYPE="${BUILDER_TYPE:-t3.small}"   # 1GB is too little for vite + node-gyp
 

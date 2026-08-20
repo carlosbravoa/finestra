@@ -153,6 +153,9 @@ run "the desktop clipboard"       npx tsx tests/clipboard.test.ts
 # Reads files rather than running anything: the product's name where it is
 # load-bearing, and the internals that deliberately are not the product's name.
 run "packaging names"             bash tests/packaging-names.sh
+# The CI sweep's age rule and how it reads a path — pure functions out of
+# packaging/aws/lib.sh, so this needs no AWS and no credentials.
+run "ci sweep and paths"          bash tests/ci-sweep.test.sh
 # Runs the real configure.sh as root against a fabricated machine, inside a user
 # namespace. Needs unshare, like the compositor suite needs a compiler.
 if unshare -rm true 2>/dev/null; then

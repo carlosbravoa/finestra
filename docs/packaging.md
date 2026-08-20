@@ -325,7 +325,7 @@ Nothing is ever terminated by instance id alone: every destructive call filters
 on the CI tag and re-checks the tag on the instance itself, so a machine we did
 not create cannot be caught by it.
 
-### Four things that went wrong while building this, and what they cost
+### Five things that went wrong while building this, and what they cost
 
 Worth writing down, because both are ordinary mistakes with unusually
 sharp consequences.
@@ -396,6 +396,29 @@ theory. The next build stalled in the same place. The apt timeouts and retries
 from that attempt are still there because a fetch should fail rather than block
 forever — but they are hardening, not the fix, and the comment in `lib.sh` says
 so.
+
+**The cleanup swept a live run's key pair.** Every script starts by clearing
+leftovers, and "leftover" meant *any* `wd-ci-` key pair or security group that
+was not this run's own. Two of these scripts overlapping is therefore fatal to
+the younger one: a release build finished and swept while a verifier launched
+six instances, and four of them died at `RunInstances` with
+`InvalidKeyPair.NotFound` about a key created eleven seconds earlier. The run
+reported four distributions failing, which is exactly what a bad tarball looks
+like, and the tarball was fine.
+
+The names carry the run's UTC timestamp, and that is the only clock available —
+a security group reports no creation time at all. So the sweep now skips
+anything younger than `WD_CI_SWEEP_GRACE_MIN` (20 minutes), and skips anything
+whose name it cannot date: an abandoned key pair or an empty security group
+costs nothing to leave, and deleting one of someone else's costs a run.
+`tests/ci-sweep.test.sh` pins the rule, and needs no AWS to do it.
+
+The same run lost twenty minutes to a second, smaller thing. Every script here
+`cd`s to the repository root before reading its arguments, so a relative path
+typed on the command line quietly changed meaning between the shell that typed
+it and the script that used it. `wd_ci_abs` captures the caller's directory
+before the `cd` and resolves against it, which is what the person typing meant
+in every case.
 
 ## Updating
 
