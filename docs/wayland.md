@@ -451,6 +451,78 @@ The `OnlyShowIn`/`NotShowIn` filtering landed alongside, for the same reason:
 an entry that cannot work here should not be offered. The Chromium snap ships
 one whose body is `OnlyShowIn=UbuntuFrame` and `Exec=/usr/bin/false`.
 
+## Troubleshooting an application that will not open
+
+Almost everything needed is already collected — the difficulty was never
+getting the output, it was that the output was thrown away or printed somewhere
+nobody looks. These are in the order that pays off, and the first two rungs
+answer most of it.
+
+**1. Read the sentence the window gives you.** A session that exits without
+mapping a window closes with `explainSilentExit()`, which quotes the
+application: `lastComplaint()` takes the 4 kB stderr tail, drops the lines that
+are always there and never the reason (ours, the bus, Chromium's
+GPU/telemetry/crashpad grumbles), skips warnings — a warning is the toolkit
+saying it carried on — prefers a fatal-sounding line over a merely loud one,
+strips the `[pid:tid:date:LEVEL:file(line)]` stamp, and shows what is left. It
+also says when the application is already open in another window of this
+desktop, and asserts a desktop-session handoff only when logind reports a
+session that could have taken the window. When there is a quoted sentence, it
+is usually the whole answer. Its *absence* is a signal too: official Chrome
+builds strip the message out of a failed CHECK, so a SIGTRAP death genuinely has
+nothing to quote, and that case goes to rung 4.
+
+**2. Open the browser console, at Verbose.** Every line the compositor and the
+application write to stderr — the client inherits `wdcomp`'s — is forwarded as a
+`log` message and printed as `console.debug('[wayland]', …)`. `console.debug` is
+hidden at devtools' default level, which is why this looks like nothing was
+captured; turn Verbose on, filter on `[wayland]`, and launch again. This is the
+whole stream rather than the one line rung 1 picked.
+
+**3. `WD_DEV=1`, to get the tail on the server instead.** The tail is discarded
+when the session closes unless it is set — deliberately, since it is per-session
+noise on a machine serving several. With it, the tail goes to the server's own
+stderr, which on an installed service means `journalctl -u finestra -f` after an
+`Environment=WD_DEV=1` in the unit.
+
+**4. Take the browser out of it.** `compositor/smoke.sh <command>` runs the
+application against a freshly built `wdcomp`, waits for a frame, and prints the
+log if none came. By hand, when the argv matters:
+
+```bash
+dbus-run-session -- ./compositor/build/wdcomp \
+    -s wayland-99 -g 1920x1080 -o /tmp/wd -v -- <command> 2>&1 | tee /tmp/wd.log
+```
+
+Three details in that line are each a fault someone has already spent an
+afternoon on. **Pass a real `-g`**: `0x0` means "each window picks its own
+size" and advertises a zero-pixel screen, which GTK shrugs at and Chrome
+CHECK-crashes on — and a replica run with a real size is precisely why every
+out-of-product reproduction of that bug "worked". **Name the socket
+`wayland-<digits>`**, or AppArmor will not let a snap or a confined deb open it.
+**Keep `dbus-run-session`**: on the ambient bus a single-instance application
+hands its window to the copy already running and exits 0. Reproduce the argv the
+service really spawns, too — `withLaunchQuirks()` appends
+`--ozone-platform=wayland` for Chromium, and `force_shm` is on unless
+`--no-force-shm` is passed.
+
+**5. `WAYLAND_DEBUG=client`, when it died saying nothing.** The protocol trace
+is what named the 0×0 output: it ends at `wl_output.mode(…, 0, 0, …)`, three
+lines before the trap. For a silent death with nothing in the trace either,
+`coredumpctl` and `strace -f -e signal=all` are what is left.
+
+**6. Check it is not a class that cannot work here.** The tables above are the
+list — X11-only toolkits (no Xwayland), anything that commits dmabuf (a window
+that never paints, or an EGL abort), no portals, no audio, single-instance
+handoff. And slow is not broken: Deja Dup takes about a minute to first paint
+waiting out a D-Bus activation timeout for a secrets service a private bus does
+not have.
+
+If the application starts and the *frames* are the problem, none of this is the
+place to look: `make -C compositor check-ipc` exercises the fd 3 channel on its
+own, with no Wayland and no display, which is where the partial-write class of
+failure lives.
+
 ## The parts that are genuinely fiddly
 
 **Keyboard.** *Built, with one gap left.* `wl_keyboard` carries *evdev
