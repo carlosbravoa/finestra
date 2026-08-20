@@ -607,18 +607,10 @@ function createJournal(ctx: SectionContext, params: JournalParams): Section {
   }
 
   async function copy(text: string, what: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(text);
-      desktop.notify({ kind: 'success', message: `${what} copied.`, timeout: 2000 });
-    } catch {
-      // Clipboard access needs a secure context; over plain http it is refused.
-      desktop.notify({
-        kind: 'error',
-        title: 'Could not copy',
-        message: 'The browser refused clipboard access. This needs an https connection.',
-        timeout: 0,
-      });
-    }
+    // The desktop's clipboard always takes it, and says for itself when the
+    // browser would not pass it on to the machine as well.
+    await desktop.clipboard.write(text);
+    desktop.notify({ kind: 'success', message: `${what} copied.`, timeout: 2000 });
   }
 
   function copyEntry(fields: Record<string, string>): Promise<void> {

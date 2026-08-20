@@ -259,6 +259,12 @@ export interface DesktopAPI {
   /** Persists server-side when the server supports it. */
   setAppEnabled(appId: string, enabled: boolean): Promise<void>;
 
+  /**
+   * Copy and paste. Prefer this to `navigator.clipboard`: the browser refuses
+   * that outside a secure context, and this desktop is usually plain http.
+   */
+  clipboard: ClipboardAPI;
+
   session: SessionControls;
   settings: SettingsStore;
   events: Emitter<DesktopEvents>;
@@ -277,6 +283,31 @@ export interface UploadSummary {
   dir: string;
   ok: UploadedFile[];
   failed: Array<{ name: string; error: string }>;
+}
+
+/** Where a copy landed: the machine's own clipboard, or only this desktop's. */
+export type ClipboardScope = 'system' | 'local';
+
+/**
+ * The desktop's clipboard, which is the system's when the browser allows it
+ * and its own otherwise. See `core/clipboard.ts` for why both exist.
+ */
+export interface ClipboardAPI {
+  /** Copies text, and says where it reached. Never rejects. */
+  write(text: string): Promise<ClipboardScope>;
+  /** The text to paste — the system clipboard when readable, ours otherwise. */
+  read(): Promise<string>;
+  /** The same answer without asking the browser, for a synchronous path. */
+  readonly text: string;
+  /** True once the browser has refused the system clipboard this session. */
+  readonly blocked: boolean;
+  /**
+   * What a real `paste` event should paste. The event's own text is the
+   * system clipboard, which may be older than what this desktop last copied.
+   */
+  fromEvent(ev: ClipboardEvent): string;
+  /** Fires when the desktop's own copy changes. */
+  watch(fn: (text: string) => void): () => void;
 }
 
 /** Session-restore controls, surfaced so a settings UI can manage them. */

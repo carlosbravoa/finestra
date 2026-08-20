@@ -149,6 +149,7 @@ run "standalone stays standalone" npx tsx tests/standalone.test.ts
 run "session deadman"             npx tsx tests/deadman.test.ts
 run "session store"               npx tsx tests/session-store.test.ts
 run "file associations"           npx tsx tests/assoc.test.ts
+run "the desktop clipboard"       npx tsx tests/clipboard.test.ts
 # Reads files rather than running anything: the product's name where it is
 # load-bearing, and the internals that deliberately are not the product's name.
 run "packaging names"             bash tests/packaging-names.sh

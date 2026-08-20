@@ -282,7 +282,7 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
     return true;
   });
 
-  // Middle-click paste, the X11 habit, from the regular clipboard.
+  // Middle-click paste, the X11 habit.
   surface.addEventListener('auxclick', (ev) => {
     if (ev.button === 1) {
       ev.preventDefault();
@@ -299,30 +299,38 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
   /* Clipboard                                                         */
   /* ---------------------------------------------------------------- */
 
+  // Both sides go through the desktop's clipboard rather than the browser's:
+  // over plain http the browser hands nothing over, and a selection copied
+  // here has to reach the editor in the next window regardless.
   async function copySelection(): Promise<void> {
     const selection = term.getSelection();
     if (!selection) return;
-    try {
-      await navigator.clipboard.writeText(selection);
-    } catch {
-      desktop.notify({
-        message: 'The browser refused clipboard access. Use Ctrl+Shift+C from a secure origin.',
-        kind: 'warning',
-      });
-    }
+    await desktop.clipboard.write(selection);
   }
 
   async function paste(): Promise<void> {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) channel?.sendBinary(encoder.encode(text));
-    } catch {
-      desktop.notify({
-        message: 'The browser refused clipboard access. Try Ctrl+Shift+V, or grant clipboard permission.',
-        kind: 'warning',
-      });
-    }
+    const text = await desktop.clipboard.read();
+    if (text) channel?.sendBinary(encoder.encode(text));
+    else desktop.notify({ message: 'There is nothing to paste.', kind: 'info', timeout: 2000 });
   }
+
+  // A plain Ctrl+V, and the browser's right-click Paste, go through xterm's
+  // own hidden textarea and paste what the *browser* holds. That is the stale
+  // copy whenever the last one was made in another window of this desktop and
+  // never reached the system clipboard, so it is substituted here — in the
+  // capture phase, which is what keeps xterm from also pasting its version.
+  surface.addEventListener(
+    'paste',
+    (ev) => {
+      const event = ev as ClipboardEvent;
+      const text = desktop.clipboard.fromEvent(event);
+      if (!text || text === event.clipboardData?.getData('text/plain')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      channel?.sendBinary(encoder.encode(text));
+    },
+    true,
+  );
 
   /* ---------------------------------------------------------------- */
   /* Font size                                                         */

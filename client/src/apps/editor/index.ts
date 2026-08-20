@@ -928,35 +928,32 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
   /* Clipboard                                                         */
   /* ---------------------------------------------------------------- */
 
-  function refuseClipboard(): void {
-    desktop.notify({
-      message: 'The browser refused clipboard access. The usual Ctrl+C/Ctrl+V still work.',
-      kind: 'warning',
-    });
-  }
-
+  // The desktop's clipboard, not the browser's: over plain http the browser
+  // refuses, and the cut text still has to reach the terminal next door.
   async function copySelection(cut: boolean): Promise<void> {
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
     if (start === end) return;
-    try {
-      await navigator.clipboard.writeText(textarea.value.slice(start, end));
-    } catch {
-      refuseClipboard();
-      return;
-    }
+    await desktop.clipboard.write(textarea.value.slice(start, end));
     if (cut && !readOnly && !disposed) replaceRange(start, end, '');
   }
 
   async function pasteClipboard(): Promise<void> {
     if (readOnly) return;
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text && !disposed) insert(text);
-    } catch {
-      refuseClipboard();
-    }
+    const text = await desktop.clipboard.read();
+    if (text && !disposed) insert(text);
   }
+
+  // A plain Ctrl+V inserts whatever the *browser* holds, which is the stale
+  // copy whenever the last one was made in another window of this desktop and
+  // the browser would not take it. Substitute, and leave the event alone when
+  // the two agree so the browser's own undo entry is kept.
+  textarea.addEventListener('paste', (ev) => {
+    const text = desktop.clipboard.fromEvent(ev);
+    if (readOnly || !text || text === ev.clipboardData?.getData('text/plain')) return;
+    ev.preventDefault();
+    insert(text);
+  });
 
   /* ---------------------------------------------------------------- */
   /* Keyboard                                                          */

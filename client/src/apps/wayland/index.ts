@@ -211,6 +211,8 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
   let zoom = desktop.settings.get<number>(ZOOM_KEY, 1);
   /** The application's last copy, for the status line and for diagnostics. */
   let remoteClipboard = '';
+  /** True while the clipboard has the focus; see the `copy` message below. */
+  let borrowedFocus = false;
   /** The xkb layout the compositor loads; see keymap.ts for why it matters. */
   let layout = desktop.settings.get<string>('wayland.layout', '');
   /** Name of whatever is running, for the menu and its notifications. */
@@ -649,13 +651,18 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         break;
 
       case 'copy':
-        // The application copied something. Push it at the system clipboard
-        // if the browser allows it unprompted; keep it either way, because
-        // the `copy` event below can still serve it without permission.
+        // The application copied something. The desktop's clipboard keeps it
+        // whatever the browser decides, so it can be pasted into another
+        // window here even when the system clipboard is out of reach.
+        //
+        // Reaching the machine's clipboard over plain http costs one borrowed
+        // focus (see core/clipboard.ts), and the compositor must not hear
+        // about that one: it reads a blur as "every key was let go", and this
+        // happens with Ctrl still held down.
         remoteClipboard = message.text ?? '';
-        void navigator.clipboard?.writeText(remoteClipboard).catch(() => {
-          // Firefox wants a user gesture, and a denied permission is not an
-          // error worth showing: Ctrl+C still works through the copy event.
+        borrowedFocus = true;
+        void desktop.clipboard.write(remoteClipboard).finally(() => {
+          borrowedFocus = false;
         });
         break;
 
@@ -865,8 +872,14 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
 
       // Losing focus with a key held would leave the application with a stuck
       // modifier, so the compositor is told and releases everything.
-      listen(canvas, 'blur', () => channel?.ctl('focus', { id: surface.id, focused: false })),
-      listen(canvas, 'focus', () => channel?.ctl('focus', { id: surface.id, focused: true })),
+      listen(canvas, 'blur', () => {
+        if (borrowedFocus) return;
+        channel?.ctl('focus', { id: surface.id, focused: false });
+      }),
+      listen(canvas, 'focus', () => {
+        if (borrowedFocus) return;
+        channel?.ctl('focus', { id: surface.id, focused: true });
+      }),
     );
   }
 
@@ -887,6 +900,15 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
      */
     if (pressed && isPasteCombo(ev)) {
       pendingPaste = surface;
+      // …but a browser that will not give up the clipboard also does not
+      // always fire `paste`, and a swallowed Ctrl+V is worse than a paste of
+      // the desktop's own copy. If no event arrives, do it from here.
+      window.clearTimeout(pasteTimer);
+      pasteTimer = window.setTimeout(() => {
+        const target = pendingPaste;
+        pendingPaste = null;
+        if (target) sendPaste(target, desktop.clipboard.text);
+      }, PASTE_EVENT_GRACE);
       return;
     }
 
@@ -904,6 +926,9 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
 
   /** Which surface asked to paste, so the key can be replayed to it. */
   let pendingPaste: Surface | null = null;
+  let pasteTimer = 0;
+  /** How long to wait for the browser's `paste` before pasting our own copy. */
+  const PASTE_EVENT_GRACE = 120;
 
   function isPasteCombo(ev: KeyboardEvent): boolean {
     if (ev.code !== 'KeyV' || !(ev.ctrlKey || ev.metaKey)) return false;
@@ -918,10 +943,19 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
   function onPaste(ev: ClipboardEvent): void {
     const surface = pendingPaste;
     pendingPaste = null;
+    window.clearTimeout(pasteTimer);
     if (!surface || !channel) return;
 
-    const text = ev.clipboardData?.getData('text/plain') ?? '';
     ev.preventDefault();
+    // Not the event's own text: what it carries is the system clipboard,
+    // which is stale whenever the last copy was made inside this desktop and
+    // the browser refused to pass it on.
+    sendPaste(surface, desktop.clipboard.fromEvent(ev));
+  }
+
+  /** Offer the text as a selection, then replay the key that asked for it. */
+  function sendPaste(surface: Surface, text: string): void {
+    if (!channel) return;
     channel.ctl('paste', { text });
 
     const keycode = EVDEV_BY_CODE.KeyV;
@@ -934,8 +968,8 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
    * forwarded to the application, so the browser never fires `copy` — and
    * serving it from the last known value would quietly put stale text on the
    * clipboard, which is worse than not answering. Copying out goes through
-   * writeText above instead, inside the activation window the keystroke just
-   * opened.
+   * the desktop clipboard above instead, inside the activation window the
+   * keystroke just opened.
    */
   cleanups.push(listen(root, 'paste', onPaste as (ev: Event) => void));
 
@@ -1270,6 +1304,7 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     destroy: () => {
       disposed = true;
       window.clearTimeout(resizeTimer);
+      window.clearTimeout(pasteTimer);
       for (const off of cleanups) off();
       reset();
       channel?.close();

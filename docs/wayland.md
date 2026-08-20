@@ -626,6 +626,43 @@ no matching `copy` handler: `Ctrl+C` is forwarded, so the browser never fires
 `copy`, and answering it from the last known value would quietly put stale
 text on the clipboard.
 
+What the paste event carries, though, is the *machine's* clipboard, and on a
+plain-http install that is not where this desktop's last copy went — see
+"The clipboard the desktop keeps" below. So the handler pastes
+`desktop.clipboard.fromEvent(ev)` rather than the event's own text, and a
+`Ctrl+V` that produces no paste event at all (a browser that will not hand the
+clipboard over sometimes does not fire one either) falls back after 120 ms to
+the desktop's own copy, rather than swallowing the keystroke.
+
+### The clipboard the desktop keeps
+
+`navigator.clipboard` needs a secure origin, and this server is http behind an
+SSH tunnel. Losing the browser machine's clipboard is tolerable; losing copy
+and paste *between windows of this desktop* is not, and that is what it also
+took — a path from Files, a command line from the process list, a line out of
+a GTK application — none of which involves the host's clipboard at all.
+
+`client/src/core/clipboard.ts` is the answer, and every app goes through it
+instead of `navigator.clipboard`. It keeps each copy itself, unconditionally,
+and then tries the system clipboard on top: `writeText` where it is allowed,
+and `document.execCommand('copy')` — deprecated, and the only writer that
+still works outside a secure context — where it is not. That second path needs
+the text *selected*, so it borrows the focus for one synchronous call and
+gives it straight back; the application window suppresses its own
+focus/blur forwarding for the length of that borrow, because the compositor
+reads a blur as "the user let go of every key" and this happens with `Ctrl`
+still held.
+
+Reading is the harder half, since nothing lets a page read the system
+clipboard without permission. The two sources are therefore dated rather than
+ranked: the desktop's own copy wins unless the machine's clipboard has been
+seen to *change* since. The first value the page ever sees is dated to the
+beginning of time on purpose — it was already there before anyone looked, so
+it must not beat the path someone copied in the terminal a moment ago. Every
+later change did happen while the page was watching, so it wins, which is what
+keeps pasting from another browser tab working. `tests/clipboard.test.ts`
+pins the rule.
+
 ### The clipboard gap
 
 Copying **out** of an application works completely: the compositor asks the

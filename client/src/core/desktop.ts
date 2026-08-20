@@ -18,6 +18,7 @@ import {
   resolveHandler,
 } from './associations';
 import { SessionStore } from './session-store';
+import { ClipboardStore } from './clipboard';
 import { LocalSettings } from './settings';
 import { Shortcuts } from './shortcuts';
 import { downloadFile as triggerDownload, uploadTo } from './transfer';
@@ -70,6 +71,9 @@ export class Desktop implements DesktopAPI {
   readonly events = new Emitter<DesktopEvents>();
   readonly shortcuts = new Shortcuts();
   readonly session = new SessionStore(this.settings);
+  // Notifies through the shell, so the reason the system clipboard is out of
+  // the picture is said once rather than per copy.
+  readonly clipboard = new ClipboardStore((options) => this.notify(options));
 
   private rootEl: HTMLElement;
   private wallpaperEl: HTMLElement;

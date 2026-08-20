@@ -416,10 +416,9 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
       {
         label: 'Copy path',
         onSelect: () => {
-          void navigator.clipboard
-            .writeText(entry.path)
-            .then(() => desktop.notify({ message: 'Path copied.', kind: 'success', timeout: 2000 }))
-            .catch(() => desktop.notify({ message: 'The browser refused clipboard access.', kind: 'warning' }));
+          void desktop.clipboard
+            .write(entry.path)
+            .then(() => desktop.notify({ message: 'Path copied.', kind: 'success', timeout: 2000 }));
         },
       },
     ];

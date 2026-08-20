@@ -432,16 +432,11 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
   }
 
   async function copy(text: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(text);
-      desktop.notify({ kind: 'success', message: 'Copied to the clipboard.', timeout: 1800 });
-    } catch {
-      // Refused outside a secure context; say so rather than failing silently.
-      desktop.notify({
-        kind: 'warning',
-        message: 'The browser refused clipboard access. Copy it from the details panel instead.',
-      });
-    }
+    // A command line copied here is usually on its way to the terminal in the
+    // next window, which the desktop's own clipboard serves whatever the
+    // browser decides about the machine's.
+    await desktop.clipboard.write(text);
+    desktop.notify({ kind: 'success', message: 'Copied to the clipboard.', timeout: 1800 });
   }
 
   void loadDetail(null, false);
