@@ -279,6 +279,12 @@ if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))
   const fds = (birthReport ?? '').split('\n').filter((l) => /^\d+$/.test(l)).map(Number);
   check('and with no file descriptors that are not its own',
     fds.length > 0 && fds.every((fd) => fd <= 4), fds.join(',') || 'none listed');
+  // Electron's door to Wayland. Argv only opens it for browsers we can name;
+  // the environment covers every Electron app without naming any — VS Code
+  // died of its absence, X11-aborting before the compositor saw a client.
+  check('and holding the hint Electron needs to pick Wayland',
+    /ELECTRON_OZONE_PLATFORM_HINT=auto/.test(birthReport ?? ''),
+    birthReport?.split('\n').find((l) => l.includes('ELECTRON')) ?? 'not in the environment');
 
   // Closing a session must reach the application as a request it can act on,
   // not as an unannounced SIGKILL four seconds later.

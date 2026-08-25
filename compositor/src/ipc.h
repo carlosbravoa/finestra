@@ -28,6 +28,7 @@
 #define IPC_CURSOR  'R' /* shape u32 — a cursor-shape-v1 value, 0 for hidden */
 #define IPC_COPY    'Y' /* utf-8 — the application put this on the clipboard */
 #define IPC_LOG     'L' /* utf-8 message                                    */
+#define IPC_CLIENT  'E' /* count u32 — connected Wayland clients, on change */
 
 /* node -> wdcomp */
 #define IPC_CONFIGURE 'C' /* id u32, w u32, h u32                            */

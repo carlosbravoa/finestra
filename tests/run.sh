@@ -61,6 +61,7 @@ export WD_TEST_BIRTH="$XDG_STATE_HOME/birth"
 cat > "$BIN_DIR/wd-birth" <<EOF
 #!/bin/sh
 grep SigBlk /proc/self/status > "$WD_TEST_BIRTH"
+env | grep ELECTRON_OZONE_PLATFORM_HINT >> "$WD_TEST_BIRTH"
 ls /proc/self/fd >> "$WD_TEST_BIRTH"
 exit 0
 EOF
@@ -143,6 +144,9 @@ if command -v cc >/dev/null 2>&1; then
 else
   echo ""; echo "=== compositor frame channel ==="; echo "SKIP — no C compiler"
 fi
+# The compositor's lifetime rule: clients keep a session alive, not the child.
+# Needs the built compositor and nothing else; skips itself without it.
+run "compositor client lifetime"  node tests/wdcomp-lifetime.mjs
 run "outbound session + relay"    node tests/outbound.mjs
 run "host registry"               npx tsx tests/hosts.test.ts
 run "standalone stays standalone" npx tsx tests/standalone.test.ts

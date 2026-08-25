@@ -30,6 +30,7 @@ const MSG_CURSOR = 'R'.charCodeAt(0);
 const MSG_COPY = 'Y'.charCodeAt(0);
 const MSG_RESIZE = 'Z'.charCodeAt(0);
 const MSG_LOG = 'L'.charCodeAt(0);
+const MSG_CLIENT = 'E'.charCodeAt(0);
 
 const MSG_CONFIGURE = 'C';
 const MSG_ACK = 'A';
@@ -215,9 +216,13 @@ function isChromium(argv: string[]): boolean {
  * compositor never seeing a client. Nothing about the GPU is involved — with no
  * dmabuf global to bind it picks shm by itself and renders perfectly.
  *
- * It has to be argv. `OZONE_PLATFORM` in the environment is read by nothing, so
+ * It has to be argv. `OZONE_PLATFORM` in the environment is read by nothing —
  * the trick `force_shm` uses for GTK (`GDK_BACKEND`) and Qt (`QT_QPA_PLATFORM`)
- * has no equivalent, and this is the only place left to put it.
+ * has no equivalent for Chrome itself — so this is the only place left to put
+ * it. Electron apps are the exception: they read
+ * `ELECTRON_OZONE_PLATFORM_HINT`, which the compositor sets for every launch
+ * alongside the GTK and Qt variables, so they need no entry in the list above
+ * and no identifying at all.
  *
  * Here, and never in a file: writing the flag into a `.desktop` entry would fix
  * this machine and charge one with a real desktop session for it — a duplicate
@@ -1035,6 +1040,11 @@ export const waylandService: Service = {
       let stopping = false;
       /** Whether anything was ever put on screen. See explainSilentExit. */
       let sawWindow = false;
+      /** Whether anything ever reached the display. Distinguishes "died on
+       *  the way to the compositor" from "connected and then died", which
+       *  point in opposite directions — at the environment and at the
+       *  application respectively. */
+      let sawClient = false;
       /** Toplevels currently mapped, so a stop can ask before killing. */
       const liveWindows = new Set<number>();
       /** The client already asked, and the application refused or ignored it. */
@@ -1206,6 +1216,10 @@ export const waylandService: Service = {
             ctx.send({ t: 'log', message: body.toString('utf8') });
             break;
 
+          case MSG_CLIENT:
+            if (body.length >= 4 && body.readUInt32BE(0) > 0) sawClient = true;
+            break;
+
           default:
             break;
         }
@@ -1329,6 +1343,15 @@ export const waylandService: Service = {
         // Its own words beat our guess whenever there are any: the guess is
         // what sent the last reader looking at desktop services for an hour.
         if (quoted) return `${opening}${quoted}`;
+        // After the handover guesses, deliberately: a single-instance app can
+        // touch the display before handing its window to a copy elsewhere, so
+        // this only speaks when nothing better explains the silence.
+        if (sawClient) {
+          return (
+            `${opening} It reached the display and closed before showing anything, ` +
+            `so it started here and then decided to stop on its own.`
+          );
+        }
         return `${opening} That usually means it wanted a desktop service this session does not provide.`;
       };
 

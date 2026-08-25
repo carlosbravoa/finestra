@@ -164,6 +164,23 @@ struct wdc_server {
 	bool running;
 	pid_t child;
 
+	/*
+	 * The session's lifetime is keyed on connected Wayland clients, not on
+	 * the child: VS Code's `codium` is a shell script that starts the editor
+	 * in the background and exits 0 — treating that as "the application is
+	 * finished" tore the session down under the editor while it was still
+	 * connecting, and reported it to the browser as a clean exit. The child
+	 * exiting only ends the session when no client is connected; a client
+	 * having been here and gone is what "finished" actually means.
+	 */
+	struct wl_list clients; /* everyone connected to the display */
+	int client_count;
+	bool had_client;
+	/* A deadline for a session with no clients — waiting out a launcher that
+	 * forked and returned, or debouncing the last disconnect. 0 is unset. */
+	uint32_t quit_at;
+	struct wl_listener client_created;
+
 	uint32_t serial;
 	uint32_t next_window_id;
 	struct wl_list windows; /* every xdg_surface, whatever its role */
@@ -2812,6 +2829,84 @@ static int handle_signal(int sig, void *data) {
 	return 0;
 }
 
+/*
+ * How long a session with no clients gets to acquire one. The measured case
+ * (VS Code's shim launching Electron from a snap) connects *before* the shim
+ * exits — the snap mount happens inside the shim's own lifetime — so this
+ * only has to cover an application whose startup outlives its launcher, and
+ * it is also how long a single-instance handoff (exit 0, window given to a
+ * copy running elsewhere) takes to be reported. The disconnect debounce only
+ * has to outlast a client that drops its connection and immediately opens
+ * another.
+ */
+#define WDC_LAUNCH_GRACE_MS 5000
+#define WDC_REJOIN_GRACE_MS 1000
+
+/* One connected wl_client, remembered so the session can key its lifetime on
+ * clients rather than the child, and so teardown can signal the process that
+ * actually owns the windows — a launcher's setsid'd grandchild is outside the
+ * process group and unreachable any other way. */
+struct wdc_client {
+	struct wdc_server *server;
+	struct wl_client *client;
+	pid_t pid;
+	struct wl_list link;
+	struct wl_listener destroy;
+};
+
+static void announce_clients(struct wdc_server *server) {
+	if (!server->ipc) return;
+	uint8_t msg[4];
+	ipc_put_u32(msg, (uint32_t)server->client_count);
+	if (ipc_send(server->ipc, IPC_CLIENT, msg, sizeof msg, NULL, 0) != 0)
+		server->running = false;
+}
+
+static void client_gone(struct wl_listener *listener, void *data) {
+	struct wdc_client *tracked = wl_container_of(listener, tracked, destroy);
+	struct wdc_server *server = tracked->server;
+	(void)data;
+
+	wl_list_remove(&tracked->link);
+	wl_list_remove(&tracked->destroy.link);
+	server->client_count--;
+	logmsg("client disconnected (pid %d), %d connected", (int)tracked->pid,
+		server->client_count);
+	free(tracked);
+
+	if (server->running) announce_clients(server);
+	if (server->client_count > 0 || !server->running) return;
+	/*
+	 * The child still running means the application is still the child —
+	 * the exec'd, normal shape — and its exit decides. With no child left,
+	 * whoever just left was the application; the debounce is only there so
+	 * a client that reconnects at once does not take the session with it.
+	 */
+	if (server->child <= 0) server->quit_at = now_ms() + WDC_REJOIN_GRACE_MS;
+}
+
+static void client_arrived(struct wl_listener *listener, void *data) {
+	struct wdc_server *server =
+		wl_container_of(listener, server, client_created);
+	struct wl_client *client = data;
+
+	struct wdc_client *tracked = calloc(1, sizeof(*tracked));
+	if (!tracked) return; /* untracked, and lifetime errs toward staying up */
+	tracked->server = server;
+	tracked->client = client;
+	uid_t uid; gid_t gid;
+	wl_client_get_credentials(client, &tracked->pid, &uid, &gid);
+	tracked->destroy.notify = client_gone;
+	wl_client_add_destroy_listener(client, &tracked->destroy);
+	wl_list_insert(&server->clients, &tracked->link);
+	server->client_count++;
+	server->had_client = true;
+	server->quit_at = 0;
+	logmsg("client connected (pid %d), %d connected", (int)tracked->pid,
+		server->client_count);
+	announce_clients(server);
+}
+
 static void spawn_client(struct wdc_server *server, const char *socket_name,
 		char **argv, bool force_shm) {
 	pid_t pid = fork();
@@ -2850,6 +2945,17 @@ static void spawn_client(struct wdc_server *server, const char *socket_name,
 	unsetenv("DISPLAY");
 	setenv("GDK_BACKEND", "wayland", 1);
 	setenv("QT_QPA_PLATFORM", "wayland", 1);
+	/*
+	 * Electron's door to the same choice. It defaults to the X11 Ozone
+	 * platform and aborts on a machine with no display — VS Code, and
+	 * every app built the same way. Chrome itself ignores this variable
+	 * (its flag has to be argv, which the node server adds by name), but
+	 * Electron ≥20 reads it, and `auto` resolves to wayland exactly when
+	 * WAYLAND_DISPLAY is the only display on offer — so it is inert
+	 * everywhere it is not needed, and an explicit --ozone-platform in an
+	 * app's own argv still outranks it.
+	 */
+	setenv("ELECTRON_OZONE_PLATFORM_HINT", "auto", 1);
 	if (force_shm) {
 		/* Stage 1 can only read shm buffers; push the toolkits off the GPU. */
 		setenv("GSK_RENDERER", "cairo", 1);
@@ -2986,6 +3092,9 @@ int main(int argc, char **argv) {
 	server.loop = wl_display_get_event_loop(server.display);
 	wl_list_init(&server.windows);
 	wl_list_init(&server.popups);
+	wl_list_init(&server.clients);
+	server.client_created.notify = client_arrived;
+	wl_display_add_client_created_listener(server.display, &server.client_created);
 
 	/*
 	 * Clients translate keycodes themselves, so the layout we advertise has to
@@ -3079,29 +3188,58 @@ int main(int argc, char **argv) {
 			int status;
 			pid_t done = waitpid(server.child, &status, WNOHANG);
 			if (done == server.child) {
-				logmsg("client exited (status %d)",
-					WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+				int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 				server.child = 0;
-				server.running = false;
+				if (server.client_count > 0) {
+					/* A launcher that forked and returned; the
+					 * application it started is on the display. */
+					logmsg("child exited (status %d), %d client(s) "
+						"connected", code, server.client_count);
+				} else if (server.had_client || code != 0) {
+					/* Been and gone is finished; a failure already
+					 * said what it had to say in its status. */
+					logmsg("client exited (status %d)", code);
+					server.running = false;
+				} else {
+					logmsg("child exited (status 0) before "
+						"connecting; waiting for a client");
+					server.quit_at = now_ms() + WDC_LAUNCH_GRACE_MS;
+				}
 			}
+		}
+		if (server.quit_at && now_ms() >= server.quit_at) {
+			logmsg(server.had_client
+				? "last client disconnected, stopping"
+				: "no client ever connected, stopping");
+			server.quit_at = 0;
+			server.running = false;
 		}
 	}
 
 	/*
-	 * Ask the client to go, then insist. A toolkit that ignores SIGTERM —
+	 * Ask the clients to go, then insist. A toolkit that ignores SIGTERM —
 	 * several do, to run their own shutdown — would otherwise hang us here
 	 * forever, and stage 2 has the node server reaping these.
+	 *
+	 * The connected clients are signalled by pid, not only the child: a
+	 * launcher's setsid'd grandchild is outside our process group, so it is
+	 * unreachable through the child or through the group kill upstairs, and
+	 * it is the one holding the windows.
 	 */
-	if (server.child > 0) {
-		kill(server.child, SIGTERM);
+	if (server.child > 0 || server.client_count > 0) {
+		if (server.child > 0) kill(server.child, SIGTERM);
+		struct wdc_client *tracked;
+		wl_list_for_each(tracked, &server.clients, link)
+			if (tracked->pid > 0 && tracked->pid != server.child)
+				kill(tracked->pid, SIGTERM);
 		/* A clock, not a counter: a hot fd makes dispatch return at once,
 		 * and thirty instant iterations put SIGKILL on SIGTERM's heels. */
 		uint32_t give_up = now_ms() + 3000;
-		while (server.child > 0 && now_ms() < give_up) {
-			if (waitpid(server.child, NULL, WNOHANG) == server.child) {
+		while ((server.child > 0 || server.client_count > 0) &&
+				now_ms() < give_up) {
+			if (server.child > 0 &&
+					waitpid(server.child, NULL, WNOHANG) == server.child)
 				server.child = 0;
-				break;
-			}
 			/* Keep answering while it dies. A client shutting down still
 			 * round-trips the display; sleeping here instead turned a
 			 * clean exit into an abort — Chrome quits in ~1s when the
@@ -3110,8 +3248,14 @@ int main(int argc, char **argv) {
 			wl_event_loop_dispatch(server.loop, 100);
 			nanosleep(&(struct timespec){0, 10 * 1000 * 1000}, NULL);
 		}
-		if (server.child > 0) {
+		if (server.child > 0 || server.client_count > 0)
 			logmsg("client ignored SIGTERM, killing it");
+		/* Not our children, so there is nothing to wait on — disconnection
+		 * above was the observable part. */
+		wl_list_for_each(tracked, &server.clients, link)
+			if (tracked->pid > 0 && tracked->pid != server.child)
+				kill(tracked->pid, SIGKILL);
+		if (server.child > 0) {
 			kill(server.child, SIGKILL);
 			waitpid(server.child, NULL, 0);
 		}
