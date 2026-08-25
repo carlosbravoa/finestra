@@ -7,6 +7,37 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.6 — 2026-08-24
+
+- **VS Code — and Electron apps generally — now start.** Two faults, either
+  one fatal. VS Code's `codium` command is a script that starts the editor in
+  the background and exits at once, and the compositor read that exit as "the
+  application closed" — tearing the session down under an editor that was
+  still starting, and calling it a clean exit. Sessions now live as long as
+  something is connected to the display, not as long as the first process.
+  Separately, Electron apps look for X11 and give up on a machine that has
+  none; every launch now carries the environment hint that points them at
+  Wayland instead. No app is named anywhere — anything shaped like either
+  problem is covered.
+
+- **Pasting text copied outside this desktop into the terminal works
+  again.** Broken by 0.3.5's double-paste fix, which suppressed the browser's
+  own paste — the only channel outside text has into a plain-http page. If
+  Ctrl+Shift+V answered "there is nothing to paste" to a full clipboard, this
+  is that. The double paste stays fixed.
+
+- **An app that fails right after starting is reported for what it did.**
+  "Reached the display and closed before showing anything" now, when that is
+  what happened — previously every silent exit read as the application never
+  arriving, which pointed at the environment when the app itself had decided
+  to stop.
+
+- **Closing a window cannot leave the app running behind it.** Applications
+  started through a launcher ended up outside the compositor's reach; closing
+  the session killed the launcher's remains and missed the app. They are now
+  asked to stop by the identity their display connection carries, however
+  they were started.
+
 ## 0.3.5 — 2026-08-20
 
 - **Ctrl+Shift+V in the terminal pasted everything twice.** New in 0.3.4, and

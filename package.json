@@ -1,6 +1,6 @@
 {
   "name": "finestra",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "type": "module",
   "description": "A desktop environment that runs in a browser and drives a headless Linux server",
