@@ -269,12 +269,16 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
 
   // Ctrl+Shift+C/V, since Ctrl+C must keep reaching the shell as SIGINT.
   //
-  // Both must preventDefault, and Ctrl+Shift+V is why: the browser reads it as
-  // paste-as-plain-text and fires a `paste` event of its own. Returning false
-  // only tells xterm to keep its hands off the key, so the text arrived twice
-  // — once from the handler below servicing that event, and once from paste()
-  // here. The same reasoning as the middle-click handler, which has always had
-  // to stop the X11 primary-selection paste that comes with it.
+  // Ctrl+Shift+C must preventDefault — the browser reads it as "open
+  // devtools". Ctrl+Shift+V must NOT: the browser reads it as paste and fires
+  // a `paste` event, and that event is the one look at the system clipboard
+  // this http origin ever gets. Suppressing it to fix the double paste cut
+  // the outside world off from the terminal — a copy made in another
+  // application resolved to the desktop's own (empty) clipboard and "nothing
+  // to paste". So the browser's paste is left to happen and *it* is the
+  // paste; ours runs only if no event follows, which is what a browser that
+  // does not map the gesture to paste does. The double paste stays fixed
+  // because only one of the two ever runs.
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown' || !ev.ctrlKey || !ev.shiftKey) return true;
     const key = ev.key.toLowerCase();
@@ -284,19 +288,18 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
       return false;
     }
     if (key === 'v') {
-      ev.preventDefault();
-      void paste();
+      pasteUnlessTheBrowserDoes();
       return false;
     }
     return true;
   });
 
-  // Middle-click paste, the X11 habit.
+  // Middle-click paste, the X11 habit. Same deal as Ctrl+Shift+V: on X11 the
+  // browser answers it with a paste event carrying the primary selection,
+  // which is both the free look and the paste; elsewhere no event comes and
+  // the fallback pastes the desktop's clipboard.
   surface.addEventListener('auxclick', (ev) => {
-    if (ev.button === 1) {
-      ev.preventDefault();
-      void paste();
-    }
+    if (ev.button === 1) pasteUnlessTheBrowserDoes();
   });
 
   surface.addEventListener('contextmenu', (ev) => {
@@ -328,6 +331,20 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
     else desktop.notify({ message: 'There is nothing to paste.', kind: 'info', timeout: 2000 });
   }
 
+  // Whether the gesture the user just made will produce a browser paste event
+  // is a property of the browser and the platform, and there is no way to ask
+  // — so ask by waiting. The event, when it comes, comes in the same input
+  // task as the gesture, well inside this deadline; when it does not, the
+  // desktop's own clipboard was the only source anyway and paste() serves it.
+  let expectedPaste: number | null = null;
+  function pasteUnlessTheBrowserDoes(): void {
+    if (expectedPaste !== null) return;
+    expectedPaste = window.setTimeout(() => {
+      expectedPaste = null;
+      void paste();
+    }, 150);
+  }
+
   // A plain Ctrl+V, and the browser's right-click Paste, go through xterm's
   // own hidden textarea and paste what the *browser* holds. That is the stale
   // copy whenever the last one was made in another window of this desktop and
@@ -336,6 +353,11 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
   surface.addEventListener(
     'paste',
     (ev) => {
+      // The browser did answer the gesture; the fallback stands down.
+      if (expectedPaste !== null) {
+        clearTimeout(expectedPaste);
+        expectedPaste = null;
+      }
       const event = ev as ClipboardEvent;
       const text = desktop.clipboard.fromEvent(event);
       if (!text || text === event.clipboardData?.getData('text/plain')) return;
