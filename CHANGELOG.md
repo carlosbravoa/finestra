@@ -7,7 +7,7 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
-## Unreleased
+## 0.3.7 — 2026-09-07
 
 - **A terminal survives losing its browser.** Close the tab, shut the laptop,
   drop off the VPN: the shell keeps running and the terminal that comes back
@@ -24,6 +24,12 @@ it: what now works that did not, and what to expect if it bites.
   brings up a terminal onto every shell still running that no window is
   showing; *Shell → Pick up a terminal* lists the rest, with what each is
   running and how long it has been alone.
+
+- **The terminal is drawn by xterm.js 6.** Under the hood only; it should
+  look and behave exactly as before. If something in the terminal renders
+  differently than it did in 0.3.6, this is the change to suspect. The
+  build tooling moved to TypeScript 7 and Vite 8 at the same time, which
+  changes nothing that ships.
 
 ## 0.3.6 — 2026-08-24
 
