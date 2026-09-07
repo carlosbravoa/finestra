@@ -7,6 +7,24 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## Unreleased
+
+- **A terminal survives losing its browser.** Close the tab, shut the laptop,
+  drop off the VPN: the shell keeps running and the terminal that comes back
+  — the same page reconnecting, or a reload restoring the session — picks it
+  up where it was, showing what it missed. Before, every disconnect hung the
+  shell up and killed whatever was in it, the way a dropped SSH session does.
+  A shell nobody comes back for is hung up after an hour; `WD_TERMINAL_GRACE`
+  changes that, and `0` restores the old behaviour. Closing the window still
+  ends the shell, and so does restarting the service.
+
+- **A terminal can be kept for as long as it takes.** *Shell → Keep running
+  while I am away* exempts a shell from that hour — for the training run
+  that finishes tomorrow. Opening the desktop later, from any browser,
+  brings up a terminal onto every shell still running that no window is
+  showing; *Shell → Pick up a terminal* lists the rest, with what each is
+  running and how long it has been alone.
+
 ## 0.3.6 — 2026-08-24
 
 - **VS Code — and Electron apps generally — now start.** Two faults, either

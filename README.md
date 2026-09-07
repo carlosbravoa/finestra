@@ -80,6 +80,7 @@ serving the last production build.
 | `WD_DIAL_TICKET` | unset | Presented to the relay when dialling. |
 | `WD_SESSION_TTL` | unlimited | Seconds from start, then the server exits whatever else is happening. |
 | `WD_SESSION_IDLE` | unlimited | Seconds without a message from the far side, then exit. |
+| `WD_TERMINAL_GRACE` | `3600` | Seconds a terminal's shell keeps running after its browser disappears, waiting to be picked up again. `0` hangs up at once. |
 
 The last four matter for a desktop opened *by instruction* rather than by hand.
 `WD_DIAL` inverts the connection so the machine needs no open port at all, and
@@ -302,7 +303,7 @@ sudo ./install.sh --uninstall     # removes the service and files; keeps the sta
 
 | App | What it does |
 | --- | --- |
-| **Terminal** | A real PTY on the host, xterm.js in front. Reopens in the directory you left it in, and only asks before closing when something is actually running. |
+| **Terminal** | A real PTY on the host, xterm.js in front. Survives a reload or a dropped connection with whatever was running in it, and only asks before closing when something is actually running. |
 | **Files** | Browse, rename, delete, download, upload. Double-click routes to whichever app handles that file. |
 | **Text Editor** | Edit files on the server. Claims `.txt`, `.md`, `.conf` and friends by file association. |
 | **System Manager** | Overview, processes, services, journal, disk usage, network and certificates — see below. |
@@ -499,6 +500,40 @@ immediately, and a busy one names what it would kill ("vim" will be
 terminated). Background jobs count too, since they die with the shell. Turn the
 prompt off entirely under **Shell → Ask before closing**.
 
+### A terminal outlives its window
+
+Losing the connection is not closing the window. When the socket drops — the
+tab closed, the laptop lid shut, the VPN gone — the server keeps the shell
+running and banks its output, and the terminal that comes back picks it up by
+id: a reconnect on the same page is shown only what it missed, and a reload
+(session restore keeps the id) or a browser that had drawn nothing is shown
+the last megabyte. Full-screen programs repaint on the resize that follows.
+So a build, a download or a `vim` session carries on through a dropped
+connection exactly as it would under `tmux`, with nothing to type.
+
+What ends the shell is the same as before: closing its window, `exit`, or
+nobody coming back. The last is `WD_TERMINAL_GRACE`, an hour by default —
+after that an unclaimed shell gets the SIGHUP a closed window would have
+sent. A restart of the service ends every shell too, as it always did; the
+terminal is a child of the server, and only `tmux` or `screen` inside it
+survives an update.
+
+For a job that has to outlast the hour — a model training overnight —
+**Shell → Keep running while I am away** marks the shell to wait as long as
+it takes. The status bar says *kept while away*, and the mark travels with
+the shell, not the window. Come back the next day, from any browser, and the
+desktop opens a terminal onto it: at startup, after the saved session is
+restored, every shell on the server that no window is showing gets one.
+**Shell → Pick up a terminal** lists the rest — what each is running, how
+long it has been alone, whether another window has it — for taking one over
+by hand.
+
+If two windows claim the same shell the newest wins, as with
+`tmux attach -d`, and the other is told it was displaced rather than left
+guessing. The list is open to any connection, deliberately: it exists for
+the browser that has never seen the shell, and reaching this server at all
+already means holding the account these shells run as.
+
 Set `restorable: false` on a manifest to opt a window out. Users can turn the
 whole feature off under **Apps → Reopen windows on reload**, which also clears
 what was stored. Sessions older than 14 days are discarded.
@@ -632,8 +667,11 @@ One WebSocket carries everything, defined in `shared/protocol.ts`.
   xterm.js reassembles UTF-8 sequences split across writes itself.
 
 The client reconnects with backoff. Channels are deliberately *not* restored
-across a reconnect — a PTY that died with the socket is genuinely gone — so
-apps are told via `onClose` and decide whether to reopen.
+across a reconnect — the server cannot know what a stream meant to the app
+— so apps are told via `onClose` and decide whether to reopen. The server
+side of a channel is told whether the connection was *lost* or the client
+asked, which is how a terminal's shell is kept for a window that will be
+back and hung up for one that was closed.
 
 ## Keyboard shortcuts
 

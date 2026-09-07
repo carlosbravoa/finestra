@@ -94,8 +94,9 @@ const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 15000];
  * The single connection to the server, multiplexing every request and stream.
  *
  * Reconnects on its own with backoff. Channels are *not* re-established across
- * a reconnect — a PTY that died with the socket is genuinely gone — so apps are
- * told via `onClose` and decide for themselves whether to reopen.
+ * a reconnect — only the app knows what a stream meant — so apps are told via
+ * `onClose` and decide for themselves whether to reopen. The terminal reopens
+ * onto the shell it had, which the server keeps for a while for exactly this.
  */
 export class RpcClient {
   readonly events = new Emitter<RpcEvents>();
@@ -205,7 +206,7 @@ export class RpcClient {
   }
 
   /** @internal */
-  sendRaw(bytes: Uint8Array): void {
+  sendRaw(bytes: Uint8Array<ArrayBuffer>): void {
     if (!this.isOpen()) return;
     this.ws!.send(bytes);
   }

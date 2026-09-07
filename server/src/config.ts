@@ -27,6 +27,11 @@ export interface Config {
   dial: string | null;
   /** Presented to the relay when dialling. Nothing verifies it yet. */
   dialTicket: string | null;
+  /**
+   * Seconds a terminal's shell keeps running after the browser that owns it
+   * disappears, waiting to be picked up again. Zero hangs it up at once.
+   */
+  terminalGrace: number;
 }
 
 /**
@@ -115,5 +120,6 @@ export function loadConfig(): Config {
     stateDir: dir,
     dial: process.env.WD_DIAL || null,
     dialTicket: process.env.WD_DIAL_TICKET || null,
+    terminalGrace: Math.max(0, Number(process.env.WD_TERMINAL_GRACE ?? 3600) || 0),
   };
 }

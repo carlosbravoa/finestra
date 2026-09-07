@@ -60,8 +60,15 @@ export interface OpenedChannel {
   onData?(data: unknown): void;
   /** Client sent out-of-band control, e.g. a terminal resize. */
   onCtl?(method: string, args: unknown): void;
-  /** The channel is going away, for any reason. Always runs exactly once. */
-  onClose?(): void;
+  /**
+   * The channel is going away, for any reason. Always runs exactly once.
+   *
+   * `lost` is true when the connection vanished without the client asking —
+   * a closed tab, a laptop lid, a dropped VPN. It is the one distinction a
+   * terminal needs: a shell whose window was closed should die, and a shell
+   * whose window merely lost its socket should wait to be picked up again.
+   */
+  onClose?(lost?: boolean): void;
 }
 
 /** Thrown by services to send a specific error code to the client. */

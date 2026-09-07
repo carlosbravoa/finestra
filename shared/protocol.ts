@@ -177,8 +177,10 @@ export const BIN_CHANNEL_DATA = 0x01;
 export const BIN_HEADER_BYTES = 5;
 
 /** Prefix `payload` with the 5-byte channel header. */
-export function encodeBinaryFrame(channelId: number, payload: Uint8Array): Uint8Array {
-  const out = new Uint8Array(BIN_HEADER_BYTES + payload.length);
+// Typed as a Uint8Array over a plain ArrayBuffer, not ArrayBufferLike: the
+// browser's WebSocket.send refuses the wider type under TypeScript 7's lib.
+export function encodeBinaryFrame(channelId: number, payload: Uint8Array): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(new ArrayBuffer(BIN_HEADER_BYTES + payload.length));
   out[0] = BIN_CHANNEL_DATA;
   // Big-endian channel id.
   out[1] = (channelId >>> 24) & 0xff;

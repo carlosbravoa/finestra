@@ -104,6 +104,8 @@ printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\n' \
 
 export WD_TOKEN="test-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
 TOKEN="$WD_TOKEN"
+# Short enough that "nobody came back for it" can be checked in a test.
+export WD_TERMINAL_GRACE=3
 
 if [ ! -f "$SERVER" ]; then
   echo "Server is not built. Run: npm run build" >&2
@@ -132,6 +134,7 @@ run "end-to-end (auth, fs, pty)"  node tests/e2e.mjs "$TOKEN" "$PORT"
 run "the host names its build"    node tests/version.mjs "$TOKEN" "$PORT"
 run "pty.cwd"                     node tests/pty-cwd.mjs "$TOKEN" "$PORT"
 run "pty.status"                  node tests/pty-status.mjs "$TOKEN" "$PORT"
+run "pty.attach"                  node tests/pty-attach.mjs "$TOKEN" "$PORT"
 run "transfer + apps service"     node tests/transfer.mjs "$TOKEN" "$PORT"
 run "system-manager services"     node tests/sysman.mjs "$TOKEN" "$PORT"
 run "wayland service"             node tests/wayland.mjs "$TOKEN" "$PORT"

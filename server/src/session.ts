@@ -152,9 +152,11 @@ export class Session {
         close: (e) => this.closeChannel(id, e),
       });
 
-      // The socket may have dropped while the opener was awaiting.
+      // The socket may have dropped while the opener was awaiting. That is a
+      // lost connection, and the channel is told so: a terminal being picked
+      // up must not be hung up because the reload raced its own handshake.
       if (this.closed || this.channels.get(id) !== placeholder) {
-        channel.onClose?.();
+        channel.onClose?.(this.closed);
         return;
       }
       this.channels.set(id, channel);
@@ -166,12 +168,12 @@ export class Session {
   }
 
   /** Idempotent: safe to call from the client, the service, or teardown. */
-  private closeChannel(id: number, error?: string): void {
+  private closeChannel(id: number, error?: string, lost = false): void {
     const channel = this.channels.get(id);
     if (!channel) return;
     this.channels.delete(id);
     try {
-      channel.onClose?.();
+      channel.onClose?.(lost);
     } catch {
       // A failing teardown must not take the session with it.
     }
@@ -205,7 +207,7 @@ export class Session {
     if (this.closed) return;
     this.closed = true;
     liveSessions.delete(this);
-    for (const id of [...this.channels.keys()]) this.closeChannel(id);
+    for (const id of [...this.channels.keys()]) this.closeChannel(id, undefined, true);
   }
 }
 

@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { h } from '../../core/dom';
 import type { Channel } from '../../core/rpc';
-import type { AppContext, AppInstance, AppManifest, MenuItem } from '../../core/types';
+import type { AppContext, AppInstance, AppManifest, DesktopAPI, MenuItem } from '../../core/types';
 import './terminal.css';
 
 const TERMINAL_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -44,6 +44,32 @@ const THEME = {
 interface TerminalParams {
   cwd?: string;
   shell?: string;
+  /** A shell still running on the server, to pick up instead of starting one. */
+  attach?: string;
+}
+
+interface TerminalInfo {
+  id?: string;
+  pid?: number;
+  shell?: string;
+  cwd?: string;
+  keep?: boolean;
+  /** Whether what follows continues the output already drawn, or replaces it. */
+  replay?: 'partial' | 'full';
+  /** Stream offset of the first byte about to arrive. */
+  offset?: number;
+}
+
+/** One shell on the server, as `pty.list` describes it. */
+interface RunningTerminal {
+  id: string;
+  pid: number;
+  shell: string;
+  cwd: string;
+  keep: boolean;
+  attached: boolean;
+  detachedAt: number | null;
+  running: string | null;
 }
 
 interface TerminalStatus {
@@ -65,6 +91,53 @@ function describeRunning(status: TerminalStatus): string {
   const names = status.jobs.map((job) => `"${job.command}"`);
   if (names.length === 1) return `The background job ${names[0]}`;
   return `${names.length} background jobs (${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''})`;
+}
+
+/** "bash — ~/src (running make, alone 3 h)": enough to tell them apart. */
+function describeTerminal(t: RunningTerminal, home: string | undefined): string {
+  const shell = t.shell.split('/').pop() ?? t.shell;
+  const cwd = home && t.cwd.startsWith(home) ? `~${t.cwd.slice(home.length)}` : t.cwd;
+  const notes: string[] = [];
+  if (t.running) notes.push(`running ${t.running}`);
+  if (t.attached) notes.push('open in another window');
+  else if (t.detachedAt) notes.push(`alone ${describeAge(Date.now() - t.detachedAt)}`);
+  if (t.keep) notes.push('kept');
+  return `${shell} — ${cwd}${notes.length ? ` (${notes.join(', ')})` : ''}`;
+}
+
+function describeAge(ms: number): string {
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 2) return 'a moment';
+  if (minutes < 90) return `${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 36) return `${hours} h`;
+  return `${Math.round(hours / 24)} d`;
+}
+
+/**
+ * Opens a window onto every shell on this server that no window is showing.
+ *
+ * Run once at startup, after session restore. The same browser gets its
+ * terminals back from the saved session; this is for the other cases — a
+ * different machine, a cleared session — where the job left running
+ * yesterday would otherwise sit unseen until its window found it by
+ * accident. Returns how many were picked up.
+ */
+export async function pickUpRunningTerminals(desktop: DesktopAPI): Promise<number> {
+  if (!desktop.rpc.hasService('pty') || !desktop.isAppEnabled('terminal')) return 0;
+  let terminals: RunningTerminal[];
+  try {
+    terminals = await desktop.rpc.call<RunningTerminal[]>('pty', 'list');
+  } catch {
+    return 0;
+  }
+  let opened = 0;
+  for (const t of terminals) {
+    if (t.attached) continue;
+    const win = await desktop.launch('terminal', { params: { attach: t.id, cwd: t.cwd, shell: t.shell } });
+    if (win) opened++;
+  }
+  return opened;
 }
 
 async function mount(ctx: AppContext): Promise<AppInstance> {
@@ -101,7 +174,22 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
   let disposed = false;
   let resizeFrame = 0;
   let pid: number | null = null;
-  /** Set when the shell died with the socket, so it is respawned on reconnect. */
+  /**
+   * The server's name for this shell. Set once it is running and kept across
+   * a lost connection, so reconnecting picks the same shell up — and saved
+   * with the session, so a reload does too.
+   */
+  let termId: string | null = options.attach ?? null;
+  /**
+   * Bytes of output drawn so far, as a stream offset the server shares. A
+   * reconnect asks for what came after, so nothing is drawn twice.
+   */
+  let received = 0;
+  /** Whether the server holds this shell indefinitely for us, or only for the grace period. */
+  let keep = false;
+  /** Other shells on the server, for the menu that picks one up. Refreshed on focus. */
+  let others: RunningTerminal[] = [];
+  /** Set when the socket went away under a live shell, to reattach on reconnect. */
   let awaitingReconnect = false;
   /** Last directory the shell was seen in, for session restore. */
   let lastCwd: string | undefined = options.cwd;
@@ -155,80 +243,133 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
     scheduleFit();
   };
 
+  const showStatus = () => {
+    win.setStatus(`${shellPath || 'shell'} · pid ${pid ?? '?'}${keep ? ' · kept while away' : ''}`);
+  };
+
+  async function setKeep(next: boolean): Promise<void> {
+    if (!termId) return;
+    try {
+      const result = await desktop.rpc.call<{ keep: boolean }>('pty', 'keep', { id: termId, keep: next });
+      keep = result.keep;
+      showStatus();
+    } catch (err) {
+      desktop.notify({ message: `Could not change that: ${(err as Error).message}`, kind: 'error' });
+    }
+  }
+
+  // The menu is built synchronously, so what it lists is whatever the last
+  // refresh saw — on focus, and each time the Shell menu opens for next time.
+  async function refreshOthers(): Promise<void> {
+    try {
+      const all = await desktop.rpc.call<RunningTerminal[]>('pty', 'list');
+      if (!disposed) others = all.filter((t) => t.id !== termId);
+    } catch {
+      // Older server, or offline: the submenu simply stays empty.
+    }
+  }
+
   const connect = () => {
     if (disposed) return;
     setBanner(null);
-    win.setStatus('Starting shell…');
+    const resuming = termId;
+    let opened = false;
+    win.setStatus(resuming ? 'Picking the shell back up…' : 'Starting shell…');
 
-    channel = desktop.rpc.openChannel(
-      'pty',
-      'spawn',
-      {
-        // Restarting a shell reuses the directory the last one ended in.
-        cwd: lastCwd,
-        // Explicit param first, then the Settings default, then the server's pick.
-        shell: options.shell ?? (desktop.settings.get('terminal.defaultShell', '') || undefined),
-        cols: term.cols,
-        rows: term.rows,
+    const handlers = {
+      onOpen: (info: unknown) => {
+        opened = true;
+        const got = (info ?? {}) as TerminalInfo;
+        const shell = got.shell;
+        termId = got.id ?? null;
+        pid = got.pid ?? null;
+        shellPath = shell ?? '';
+        lastCwd = got.cwd ?? lastCwd;
+        // What the server is about to replay starts at `offset`; on a full
+        // replay it replaces what is drawn, which a reload has none of and a
+        // long absence has too much of.
+        if (got.replay === 'full') term.reset();
+        received = got.offset ?? 0;
+        keep = Boolean(got.keep);
+        showStatus();
+        win.setTitle(titleFor(shell, lastCwd));
+        // Resize unconditionally rather than waiting for `onResize`: if the
+        // geometry settled before the channel existed, that event has
+        // already fired and the PTY would keep the size spawn was given.
+        channel?.ctl('resize', { cols: term.cols, rows: term.rows });
+        scheduleFit();
+        term.focus();
       },
-      {
-        onOpen: (info) => {
-          const opened = (info ?? {}) as { pid?: number; shell?: string; cwd?: string };
-          const shell = opened.shell;
-          pid = opened.pid ?? null;
-          shellPath = shell ?? '';
-          lastCwd = opened.cwd ?? lastCwd;
-          win.setStatus(`${shell ?? 'shell'} · pid ${opened.pid ?? '?'}`);
-          win.setTitle(titleFor(shell, lastCwd));
-          // Resize unconditionally rather than waiting for `onResize`: if the
-          // geometry settled before the channel existed, that event has
-          // already fired and the PTY would keep the size spawn was given.
-          channel?.ctl('resize', { cols: term.cols, rows: term.rows });
-          scheduleFit();
-          term.focus();
-        },
 
-        onBinary: (bytes) => term.write(bytes),
-
-        onClose: (error) => {
-          channel = null;
-          pid = null;
-          stopTrackingCwd();
-          if (disposed) return;
-
-          // A shell that died with the socket is a connectivity problem, not a
-          // shell that exited. Retrying by hand would just fail again, so wait
-          // for the client to reconnect and respawn then.
-          if (!desktop.rpc.isOpen()) {
-            awaitingReconnect = true;
-            win.setStatus('Disconnected — waiting for the server');
-            setBanner('Connection to the server was lost. Reconnecting…');
-            return;
-          }
-
-          win.setStatus(error ?? 'Shell exited');
-          term.write('\r\n');
-          setBanner(error ?? 'The shell exited.', {
-            label: 'Start a new shell',
-            run: () => {
-              term.reset();
-              connect();
-            },
-          });
-        },
+      onBinary: (bytes: Uint8Array) => {
+        received += bytes.length;
+        term.write(bytes);
       },
-    );
+
+      onClose: (error?: string) => {
+        channel = null;
+        pid = null;
+        stopTrackingCwd();
+        if (disposed) return;
+
+        // The socket went, not the shell: the server keeps it for a while,
+        // so wait for the client to reconnect and pick it up then.
+        if (!desktop.rpc.isOpen()) {
+          awaitingReconnect = true;
+          win.setStatus('Disconnected — the shell keeps running until you are back');
+          setBanner('Connection to the server was lost. Reconnecting…');
+          return;
+        }
+
+        // The shell we meant to pick up is gone — it exited, or the grace
+        // period ran out. Start afresh where it was, and say so.
+        if (resuming && !opened) {
+          termId = null;
+          term.write('\r\n\x1b[2m── the previous shell is gone; starting a new one ──\x1b[0m\r\n');
+          connect();
+          return;
+        }
+
+        termId = null;
+        win.setStatus(error ?? 'Shell exited');
+        term.write('\r\n');
+        setBanner(error ?? 'The shell exited.', {
+          label: 'Start a new shell',
+          run: () => {
+            term.reset();
+            connect();
+          },
+        });
+      },
+    };
+
+    channel = resuming
+      ? desktop.rpc.openChannel('pty', 'attach', { id: resuming, since: received }, handlers)
+      : desktop.rpc.openChannel(
+          'pty',
+          'spawn',
+          {
+            // Restarting a shell reuses the directory the last one ended in.
+            cwd: lastCwd,
+            // Explicit param first, then the Settings default, then the server's pick.
+            shell: options.shell ?? (desktop.settings.get('terminal.defaultShell', '') || undefined),
+            cols: term.cols,
+            rows: term.rows,
+          },
+          handlers,
+        );
   };
 
   term.onData((data) => channel?.sendBinary(encoder.encode(data)));
 
-  // Respawn once the client is back, so a dropped connection heals itself.
-  // Scrollback is deliberately kept: the new shell prints a fresh prompt under
-  // whatever the old one left behind.
+  // Pick the shell back up once the client is back, so a dropped connection
+  // heals itself with nothing lost: the server replays what was missed.
+  // Only when the shell is known to be gone does a new one start, and then
+  // the scrollback is kept so the new prompt appears under the old output.
   const offRpcState = desktop.rpc.events.on('state', (state) => {
     if (state !== 'open' || disposed || !awaitingReconnect || channel) return;
     awaitingReconnect = false;
-    term.write('\r\n\x1b[2m── reconnected, starting a new shell ──\x1b[0m\r\n');
+    if (!termId) term.write('\r\n\x1b[2m── reconnected, starting a new shell ──\x1b[0m\r\n');
     connect();
   });
 
@@ -414,7 +555,7 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
   const menu: MenuItem[] = [
     {
       label: 'Shell',
-      submenu: () => [
+      submenu: () => (void refreshOthers(), [
         {
           label: 'New terminal',
           accelerator: 'Ctrl+Alt+T',
@@ -436,6 +577,23 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
         },
         { type: 'separator' },
         {
+          label: 'Keep running while I am away',
+          checked: keep,
+          disabled: !termId,
+          onSelect: () => void setKeep(!keep),
+        },
+        {
+          label: 'Pick up a terminal',
+          disabled: others.length === 0,
+          submenu: () =>
+            others.map((t) => ({
+              label: describeTerminal(t, desktop.host?.home),
+              onSelect: () =>
+                void desktop.launch('terminal', { params: { attach: t.id, cwd: t.cwd, shell: t.shell } }),
+            })),
+        },
+        { type: 'separator' },
+        {
           label: 'Ask before closing',
           checked: desktop.settings.get('terminal.confirmClose', true),
           onSelect: () =>
@@ -445,7 +603,7 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
             ),
         },
         { label: 'Close', accelerator: 'Alt+F4', danger: true, onSelect: () => win.close() },
-      ],
+      ]),
     },
     { label: 'Edit', submenu: () => contextMenuItems() },
     {
@@ -480,6 +638,7 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
       scheduleFit();
       term.focus();
       startTrackingCwd();
+      void refreshOthers();
     },
 
     onBlur: () => {
@@ -488,7 +647,7 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
       stopTrackingCwd();
     },
 
-    saveState: () => ({ cwd: lastCwd, shell: shellPath || options.shell }),
+    saveState: () => ({ cwd: lastCwd, shell: shellPath || options.shell, attach: termId ?? undefined }),
 
     onClose: async () => {
       // Nothing to lose: the shell already exited, or never started.

@@ -156,7 +156,8 @@ sendToPty('exit\r');
 await new Promise((r) => setTimeout(r, 700));
 check('channel closes when the shell exits', ptyClosed !== null, ptyClosed ?? '');
 
-// Closing the socket must not leave the PTY process behind.
+// The shell has exited; closing the socket must not find it lingering.
+// (A shell still running when its socket drops is *kept* — see pty-attach.)
 const pid = ptyChannel.pid;
 ws.close();
 await new Promise((r) => setTimeout(r, 500));

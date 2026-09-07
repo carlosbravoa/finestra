@@ -37,9 +37,10 @@ const MAX_WINDOWS = 40;
  * Remembers which windows were open so a reload puts them back.
  *
  * Only the window's identity, geometry and whatever the app volunteered from
- * `saveState()` are stored. Live things — a PTY, a socket, scrollback — are
- * gone by definition, so a restored app starts fresh and merely reopens in the
- * right place.
+ * `saveState()` are stored. Nothing live crosses a reload — a socket, a
+ * scrollback buffer — so a restored app starts fresh in the right place, and
+ * anything it wants back it has to name: the terminal saves the id of its
+ * shell, which the server keeps running for a while for that reason.
  */
 export class SessionStore {
   constructor(private settings: SettingsStore) {}

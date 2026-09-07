@@ -1,5 +1,5 @@
 import { editorApp } from './apps/editor';
-import { terminalApp } from './apps/terminal';
+import { pickUpRunningTerminals, terminalApp } from './apps/terminal';
 import { filesApp } from './apps/files';
 import { settingsApp } from './apps/settings';
 import { sysmanApp } from './apps/sysman';
@@ -156,9 +156,14 @@ async function boot(): Promise<void> {
   // connected, so a restored terminal can spawn its shell immediately.
   const restored = await desktop.restoreSession();
 
+  // Shells still running on the server that no window here is showing — a
+  // job left going from another machine, or before the session was cleared.
+  // After restore, so the windows it reopened have claimed theirs first.
+  const pickedUp = await pickUpRunningTerminals(desktop);
+
   // Only greet a genuinely first-time visitor. Someone who closed every window
   // and reloaded meant to have an empty desktop.
-  if (restored === 0 && !desktop.settings.get('desktop.hasLaunched', false)) {
+  if (restored + pickedUp === 0 && !desktop.settings.get('desktop.hasLaunched', false)) {
     desktop.settings.set('desktop.hasLaunched', true);
     void desktop.launch('terminal');
   }
