@@ -19,8 +19,8 @@
     "cve": "node packaging/cve-scan.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2",
-    "typescript": "^5.7.3"
+    "concurrently": "^10.0.5",
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=20"
