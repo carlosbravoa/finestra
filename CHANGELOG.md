@@ -7,6 +7,24 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.8 — 2026-09-25
+
+- **Runs on 64-bit ARM.** There is now an arm64 build beside the x86_64 one,
+  and the one-line installer picks whichever fits the machine: Graviton and
+  other ARM servers, and a Raspberry Pi 4 or 5 running the **64-bit**
+  Raspberry Pi OS. It is checked on the same six distributions as x86_64. A
+  32-bit Raspberry Pi OS is refused with a sentence saying so, including the
+  common case of a 64-bit kernel under a 32-bit system. Applications you
+  launch in it are another matter: many closed-source ones have no ARM build
+  for Linux at all.
+
+- **Native applications start on Debian 12, Rocky 9 and Amazon Linux 2023.**
+  They never did: the compositor needed a newer C library than those
+  releases have, and failed to start without saying why, while everything
+  else worked. The one-line installer accordingly accepted only Ubuntu
+  24.04 and newer; it now accepts glibc 2.34 and newer, which covers all
+  three and Raspberry Pi OS.
+
 ## 0.3.7 — 2026-09-07
 
 - **A terminal survives losing its browser.** Close the tab, shut the laptop,

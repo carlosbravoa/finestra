@@ -137,9 +137,10 @@ only systemd, which Ubuntu already has. The whole security model is the SSH you
 already use to reach the box, so **you never open port 7070**; the instance's
 security group needs nothing but SSH (22).
 
-Use **Ubuntu 24.04 or newer**. The native pieces are built against 24.04's
-glibc, and an older release would fail to start with a `GLIBC_… not found` — see
-`docs/packaging.md`.
+Any systemd distribution with **glibc 2.34 or newer**, on x86_64 or 64-bit ARM:
+Ubuntu 24.04, Debian 12, Rocky 9 and 10, Amazon Linux 2023 and Fedora are each
+checked on every release, and a Raspberry Pi 4 or 5 on the 64-bit Raspberry Pi
+OS is the same arm64 build. See `docs/packaging.md`.
 
 **1. Get a release tarball.** If you do not already have one, build it from a
 checkout (this launches a throwaway builder, so it needs AWS credentials):
