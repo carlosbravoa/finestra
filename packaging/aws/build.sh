@@ -130,6 +130,7 @@ npm ci --no-audit --no-fund --loglevel=error
 npm run build --silent
 make -C compositor >/dev/null
 test -x compositor/build/wdcomp
+make -s -C compositor check-glibc
 echo "   ok"
 
 echo "== production dependencies, compiled against the shipped runtime"

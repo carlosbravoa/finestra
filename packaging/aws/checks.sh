@@ -123,6 +123,14 @@ sed 's/^/    /' "$INSTALL_LOG"
 t "it does not tell the operator to ssh in as root" \
   bash -c '! grep -q "ssh .*root@" /tmp/wd-install.log'
 
+# Nothing else here ever starts the compositor: a bare machine has no
+# libwayland, so the wayland service answers "unavailable" and that is a pass.
+# That hid a wdcomp needing glibc 2.38 on every distribution older than that.
+# Missing libraries are expected; a missing glibc *version* is a build fault,
+# and the dynamic linker says which in so many words.
+t "the compositor asks for no glibc newer than this one" \
+  bash -c '! ldd "'"${PREFIX}"'/current/libexec/wdcomp" 2>&1 | grep -q "version .GLIBC_"'
+
 # ---------------------------------------------------------------------------
 section "the service it left behind"
 # ---------------------------------------------------------------------------

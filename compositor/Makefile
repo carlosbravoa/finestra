@@ -39,7 +39,7 @@ GEN_C := $(BUILD)/xdg-shell-protocol.c \
 GEN_O := $(GEN_C:.c=.o)
 OBJS  := $(BUILD)/wdcomp.o $(BUILD)/png.o $(BUILD)/ipc.o $(GEN_O)
 
-.PHONY: all clean check check-ipc
+.PHONY: all clean check check-ipc check-glibc
 all: $(BIN)
 
 $(BUILD):
@@ -89,6 +89,23 @@ check:
 		test -f "$$xml" || { echo "missing: $$xml"; exit 1; }; \
 	done
 	@echo "ok"
+
+# The newest glibc symbol version the binary asks for, which is the oldest
+# glibc it can start on. 2.34 is the floor the release is verified against
+# (Rocky 9, Amazon Linux 2023). A newer header on the builder can raise it
+# without a line of our code changing — glibc 2.38 renamed strtol and sscanf
+# under _GNU_SOURCE, and the only symptom was a compositor that would not start
+# on Debian 12 — so the release build runs this rather than trusting it.
+GLIBC_FLOOR := 2.34
+
+check-glibc: $(BIN)
+	@need=$$(objdump -T $(BIN) | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -n 1); \
+	if [ "$$(printf '%s\n%s\n' "$$need" "$(GLIBC_FLOOR)" | sort -V | tail -n 1)" != "$(GLIBC_FLOOR)" ]; then \
+		echo "wdcomp needs glibc $$need, past the $(GLIBC_FLOOR) floor:"; \
+		objdump -T $(BIN) | grep "GLIBC_$$need" | awk '{ print "  ", $$NF }'; \
+		exit 1; \
+	fi; \
+	echo "wdcomp needs glibc $$need (floor $(GLIBC_FLOOR))"
 
 clean:
 	rm -rf $(BUILD)

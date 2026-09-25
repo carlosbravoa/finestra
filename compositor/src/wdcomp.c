@@ -2991,6 +2991,28 @@ static void usage(FILE *out) {
 		"  wdcomp -n 1 -- gnome-calculator\n");
 }
 
+/* Unsigned decimal, returning where the digits stopped, or NULL when there
+ * were none or the value will not fit an int32_t.
+ *
+ * Hand-rolled on purpose. Under _GNU_SOURCE, glibc 2.38's headers quietly
+ * rename strtol, atoi and sscanf to their C23 versions (__isoc23_*), and those
+ * two symbols alone made a wdcomp built on 24.04 refuse to start on every
+ * older glibc — Debian 12 and Raspberry Pi OS (2.36), Rocky 9 and Amazon
+ * Linux 2023 (2.34) — while node and node-pty ran fine beside it. Nothing
+ * else in the binary needs past 2.34; `make check-glibc` holds it there. */
+static const char *parse_dec(const char *s, long *out) {
+	long v = 0;
+	if (*s < '0' || *s > '9')
+		return NULL;
+	for (; *s >= '0' && *s <= '9'; s++) {
+		if (v > (INT32_MAX - (*s - '0')) / 10)
+			return NULL;
+		v = v * 10 + (*s - '0');
+	}
+	*out = v;
+	return s;
+}
+
 int main(int argc, char **argv) {
 	struct wdc_server server = {
 		.width = 800,
@@ -3029,8 +3051,8 @@ int main(int argc, char **argv) {
 			socket_name = optarg;
 			break;
 		case 'C': {
-			char *end = NULL;
-			long v = strtol(optarg, &end, 10);
+			long v = 0;
+			const char *end = parse_dec(optarg, &v);
 			/* wl_output's scale is an integer by protocol, and past 3 the
 			 * buffer costs more than the sharpness is worth. */
 			if (!end || *end || v < 1 || v > 3) {
@@ -3040,19 +3062,34 @@ int main(int argc, char **argv) {
 			server.scale = (int32_t)v;
 			break;
 		}
-		case 'g':
-			if (sscanf(optarg, "%dx%d", &server.width, &server.height) != 2 ||
-					server.width < 0 || server.height < 0) {
+		case 'g': {
+			long w = 0, h = 0;
+			const char *p = parse_dec(optarg, &w);
+			if (p && *p == 'x')
+				p = parse_dec(p + 1, &h);
+			else
+				p = NULL;
+			if (!p || *p) {
 				logmsg("bad size '%s', expected WxH", optarg);
 				return 1;
 			}
+			server.width = (int)w;
+			server.height = (int)h;
 			break;
+		}
 		case 'o':
 			server.outdir = optarg;
 			break;
-		case 'n':
-			server.max_frames = atoi(optarg);
+		case 'n': {
+			long v = 0;
+			const char *end = parse_dec(optarg, &v);
+			if (!end || *end) {
+				logmsg("bad frame count '%s'", optarg);
+				return 1;
+			}
+			server.max_frames = (int)v;
 			break;
+		}
 		case 'i':
 			ipc_mode = true;
 			break;
