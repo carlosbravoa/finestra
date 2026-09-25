@@ -145,7 +145,8 @@ glibc, and an older release would fail to start with a `GLIBC_… not found` —
 checkout (this launches a throwaway builder, so it needs AWS credentials):
 
 ```bash
-packaging/aws/build.sh          # → dist-release/finestra-<version>-linux-x64.tar.gz
+packaging/aws/build.sh                  # → dist-release/finestra-<version>-linux-x64.tar.gz
+WD_CI_ARCH=arm64 packaging/aws/build.sh # → …-linux-arm64.tar.gz, for Graviton or a 64-bit Pi
 ```
 
 Or skip the build and take the published release in one line:
@@ -161,14 +162,14 @@ manual download would use.
 **2. Copy it to the instance and install.** From your own machine:
 
 ```bash
-scp finestra-<version>-linux-x64.tar.gz ubuntu@<instance>:
+scp finestra-<version>-linux-<arch>.tar.gz ubuntu@<instance>:
 ssh ubuntu@<instance>
 ```
 
 then, on the instance:
 
 ```bash
-tar xzf finestra-<version>-linux-x64.tar.gz
+tar xzf finestra-<version>-linux-<arch>.tar.gz
 cd finestra-<version>
 sudo ./install.sh
 ```

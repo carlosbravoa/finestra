@@ -24,8 +24,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 REPO="$PWD"
 source packaging/aws/lib.sh
 
-TARBALL="$(wd_ci_abs "${1:-$(ls -1t "$REPO"/dist-release/finestra-*-linux-x64.tar.gz 2>/dev/null | awk 'NR==1')}")"
+TARBALL="$(wd_ci_abs "${1:-$(wd_ci_newest_tarball)}")"
 [ -n "$TARBALL" ] && [ -f "$TARBALL" ] || die "no tarball; run packaging/aws/build.sh first"
+wd_ci_follow_tarball "$TARBALL"
+# The previous product was only ever published for x86_64 — its get script
+# refuses anything else — so no arm64 machine has an install to take over, and
+# running this there would only test that refusal.
+[ "$WD_CI_ARCH" = x64 ] || die "there is no ${WD_CI_ARCH} web-desktop install to migrate from; this check is x64 only"
 
 # Where the previous product still lives. publish.sh no longer touches this
 # bucket; it is kept serving on purpose, both as an escape hatch for anyone
@@ -52,7 +57,7 @@ migrate_pass() {
   local id ip rc old_token
 
   log "=== ${label} ==="
-  read -r id ip <<<"$(wd_ci_launch migrate "${VERIFY_TYPE:-t3.micro}")"
+  read -r id ip <<<"$(wd_ci_launch migrate "${VERIFY_TYPE:-${WD_CI_FAMILY_T}.micro}")"
   wd_ci_prepare_host "$ip"
   wd_ci_scp_to "$TARBALL" "$ip" "/tmp/$(basename "$TARBALL")"
   wd_ci_scp_to "$REPO/packaging/aws/acceptance.mjs" "$ip" /tmp/acceptance.mjs
@@ -77,7 +82,7 @@ set -uo pipefail
 ${CHECK_HELPER}
 cd /tmp
 tar xzf "\$1"
-cd "\${1%-linux-x64.tar.gz}"
+cd "\${1%-linux-*.tar.gz}"
 if ! sudo ./install.sh > /tmp/install.log 2>&1; then
   echo "FAIL  the installer ran"; tail -30 /tmp/install.log; exit 1
 fi

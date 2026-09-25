@@ -50,6 +50,7 @@ section "what this machine is, before we touch it"
 
 note "distro:   $(. /etc/os-release && echo "$PRETTY_NAME")"
 note "kernel:   $(uname -r)"
+note "arch:     $(uname -m), $(getconf PAGESIZE 2>/dev/null || echo '?')-byte pages"
 note "glibc:    $(ldd --version 2>/dev/null | awk 'NR==1 { print $NF }')"
 note "selinux:  $(getenforce 2>/dev/null || echo 'not present')"
 note "login:    ${LOGIN} (home $(getent passwd "$LOGIN" | cut -d: -f6))"
@@ -92,7 +93,12 @@ section "installing"
 
 cd /tmp
 tar xzf "$TARBALL" || { echo "FAIL  the tarball unpacks"; exit $((fails + 1)); }
-dir="${TARBALL%-linux-x64.tar.gz}"
+dir="${TARBALL%-linux-*.tar.gz}"
+# The name on the tarball and the machine it was built on are separate claims,
+# and only the MANIFEST records the second. A mismatch would otherwise surface
+# as install.sh failing to run its own runtime, which reads like a broken build.
+t "the package was built for this architecture" \
+  bash -c '[ "$(sed -n "s/^arch=//p" "$1/MANIFEST")" = "$(uname -m)" ]' _ "$dir"
 INSTALL_LOG=/tmp/wd-install.log
 if (cd "$dir" && sudo ./install.sh) >"$INSTALL_LOG" 2>&1; then
   echo "PASS  install.sh succeeds on a bare machine"

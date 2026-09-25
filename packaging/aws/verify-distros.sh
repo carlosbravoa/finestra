@@ -57,9 +57,10 @@ for d in "${TARGETS[@]}"; do
   ( wd_ci_use_distro "$d" ) >/dev/null || die "not a distribution this knows: $d"
 done
 
-TARBALL="$(wd_ci_abs "${TARBALL:-$(ls -1t "$REPO"/dist-release/finestra-*-linux-x64.tar.gz 2>/dev/null | awk 'NR==1')}")"
+TARBALL="$(wd_ci_abs "${TARBALL:-$(wd_ci_newest_tarball)}")"
 [ -n "$TARBALL" ] && [ -f "$TARBALL" ] || die "no tarball; run packaging/aws/build.sh first"
-VERIFY_TYPE="${VERIFY_TYPE:-t3.micro}"
+wd_ci_follow_tarball "$TARBALL"
+VERIFY_TYPE="${VERIFY_TYPE:-${WD_CI_FAMILY_T}.micro}"
 
 LOGDIR="$(mktemp -d -t wd-distros-XXXXXX)"
 log "verifying $(basename "$TARBALL") on: ${TARGETS[*]}"

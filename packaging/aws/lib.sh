@@ -34,11 +34,45 @@ WD_CI_SWEEP_GRACE_MIN="${WD_CI_SWEEP_GRACE_MIN:-20}"
 # their own cd; the fallback is for anything that sources this directly.
 WD_CI_CALLER_PWD="${WD_CI_CALLER_PWD:-$PWD}"
 
+# Which architecture this run builds or verifies. The tarball is named for it
+# in Node's own vocabulary (x64, arm64), because the runtime inside is Node's
+# binary for exactly that; everything else here needs the same fact spelled
+# four other ways, and they are all derived in one place.
+#
+# arm64 is built natively on Graviton rather than cross-compiled: node-pty and
+# wdcomp are compiled on the builder, and a native build is the one whose
+# output the checks can then run on the same kind of machine. Graviton and a
+# Raspberry Pi share the ISA, not the kernel — a Pi 5 runs 16K pages — so a
+# pass here says nothing about that; only a real Pi does.
+#
+#   WD_CI_ARCH       x64 | arm64 — the tarball suffix, and Node's name for it
+#   WD_CI_EC2_ARCH   x86_64 | arm64 — what describe-images filters on
+#   WD_CI_DEB_ARCH   amd64 | arm64 — Canonical's and Debian's SSM paths
+#   WD_CI_UNAME      x86_64 | aarch64 — uname -m, and the RPM image names
+#   WD_CI_FAMILY_T   t3 | t4g — burstable instances of that architecture
+wd_ci_use_arch() {
+  case "$1" in
+    x64)
+      WD_CI_ARCH=x64 WD_CI_EC2_ARCH=x86_64 WD_CI_DEB_ARCH=amd64
+      WD_CI_UNAME=x86_64 WD_CI_FAMILY_T=t3 ;;
+    arm64)
+      WD_CI_ARCH=arm64 WD_CI_EC2_ARCH=arm64 WD_CI_DEB_ARCH=arm64
+      WD_CI_UNAME=aarch64 WD_CI_FAMILY_T=t4g ;;
+    *)
+      echo "unknown architecture: $1 (known: x64 arm64)" >&2
+      return 1 ;;
+  esac
+  # The image names depend on this, so a distribution already chosen has to be
+  # resolved again rather than keep the other architecture's AMI.
+  if [ -n "${WD_CI_DISTRO:-}" ]; then wd_ci_use_distro "$WD_CI_DISTRO"; fi
+}
+
 # Which distribution this run is against. Ubuntu 24.04 is the default and the
 # build target: native artifacts built against its glibc run on everything
 # newer, and the reverse is not true — which is exactly the claim
 # verify-distros.sh exists to test rather than assume.
 source "$(dirname "${BASH_SOURCE[0]}")/distros.sh"
+wd_ci_use_arch "${WD_CI_ARCH:-x64}" || exit 1
 wd_ci_use_distro "${WD_CI_DISTRO:-ubuntu-24.04}"
 
 WD_CI_RUN_ID=""
@@ -53,6 +87,28 @@ aws_() { aws --region "$WD_CI_REGION" "$@"; }
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
+
+# The newest tarball built for the architecture in force, or nothing.
+wd_ci_newest_tarball() {
+  ls -1t "$REPO"/dist-release/finestra-*-linux-"$WD_CI_ARCH".tar.gz 2>/dev/null | awk 'NR==1'
+}
+
+# The verifiers take their architecture from the tarball they were handed, not
+# from WD_CI_ARCH: the tarball is the thing under test, and launching an x86
+# box for an arm64 build fails twenty minutes later as "the runtime does not
+# run on this machine", which reads like a packaging fault rather than a typo.
+wd_ci_follow_tarball() {
+  local arch
+  case "$(basename "$1")" in
+    *-linux-x64.tar.gz)   arch=x64 ;;
+    *-linux-arm64.tar.gz) arch=arm64 ;;
+    *) die "cannot tell which architecture $(basename "$1") is for" ;;
+  esac
+  if [ "$arch" != "$WD_CI_ARCH" ]; then
+    log "$(basename "$1") is ${arch}; verifying on ${arch}, not ${WD_CI_ARCH}"
+  fi
+  wd_ci_use_arch "$arch"
+}
 
 # ---------------------------------------------------------------------------
 # Sweeping: the backstop that runs even when nothing else did
@@ -331,8 +387,8 @@ wd_ci_pick_subnet() {
 # `--owners` is not decoration. A name glob on its own matches any account's
 # image, so the owner id is the only part of this that makes the answer
 # trustworthy; architecture is filtered here too rather than left to the glob,
-# because an aarch64 image resolves perfectly and then fails to boot our x86_64
-# tarball twenty minutes later.
+# because an image of the other architecture resolves perfectly and then fails
+# to run our tarball twenty minutes later.
 wd_ci_ami() {
   if [ -n "$WD_CI_AMI_SSM" ]; then
     aws_ ssm get-parameters --names "$WD_CI_AMI_SSM" \
@@ -343,7 +399,7 @@ wd_ci_ami() {
     --owners "$WD_CI_AMI_OWNER" \
     --filters "Name=name,Values=${WD_CI_AMI_GLOB}" \
               "Name=state,Values=available" \
-              "Name=architecture,Values=x86_64" \
+              "Name=architecture,Values=${WD_CI_EC2_ARCH}" \
     --query 'reverse(sort_by(Images,&CreationDate))[0].ImageId' --output text
 }
 
@@ -375,7 +431,7 @@ wd_ci_launch() {
     --query 'Instances[0].InstanceId' --output text)
 
   WD_CI_INSTANCES+=("$id")
-  log "launched $role as $id ($itype, ${WD_CI_PRETTY}, $ami), self-terminates in ${WD_CI_TTL_MIN}m"
+  log "launched $role as $id ($itype, ${WD_CI_PRETTY} ${WD_CI_ARCH}, $ami), self-terminates in ${WD_CI_TTL_MIN}m"
 
   aws_ ec2 wait instance-running --instance-ids "$id"
   ip=$(aws_ ec2 describe-instances --instance-ids "$id" \

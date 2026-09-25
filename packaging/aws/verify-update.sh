@@ -18,8 +18,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 REPO="$PWD"
 source packaging/aws/lib.sh
 
-TARBALL="$(wd_ci_abs "${1:-$(ls -1t "$REPO"/dist-release/finestra-*-linux-x64.tar.gz 2>/dev/null | awk 'NR==1')}")"
+TARBALL="$(wd_ci_abs "${1:-$(wd_ci_newest_tarball)}")"
 [ -n "$TARBALL" ] && [ -f "$TARBALL" ] || die "no tarball; run packaging/aws/build.sh first"
+wd_ci_follow_tarball "$TARBALL"
 
 # The tarball is the thing under test, and the updater inside it is a *copy*
 # taken at build time. Editing packaging/update.sh and re-running this verifies
@@ -31,7 +32,7 @@ fi
 
 log "verifying the updater with $(basename "$TARBALL")"
 wd_ci_init
-read -r ID IP <<<"$(wd_ci_launch update "${VERIFY_TYPE:-t3.micro}")"
+read -r ID IP <<<"$(wd_ci_launch update "${VERIFY_TYPE:-${WD_CI_FAMILY_T}.micro}")"
 wd_ci_prepare_host "$IP"
 
 wd_ci_scp_to "$TARBALL" "$IP" "/tmp/$(basename "$TARBALL")"

@@ -21,9 +21,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 REPO="$PWD"
 source packaging/aws/lib.sh
 
-TARBALL="$(wd_ci_abs "${1:-$(ls -1t "$REPO"/dist-release/finestra-*-linux-x64.tar.gz 2>/dev/null | awk 'NR==1')}")"
+TARBALL="$(wd_ci_abs "${1:-$(wd_ci_newest_tarball)}")"
 [ -n "$TARBALL" ] && [ -f "$TARBALL" ] || die "no tarball; run packaging/aws/build.sh first"
-VERIFY_TYPE="${VERIFY_TYPE:-t3.micro}"
+wd_ci_follow_tarball "$TARBALL"
+VERIFY_TYPE="${VERIFY_TYPE:-${WD_CI_FAMILY_T}.micro}"
 
 log "verifying $(basename "$TARBALL") on a pristine ${WD_CI_PRETTY} (${VERIFY_TYPE})"
 wd_ci_init

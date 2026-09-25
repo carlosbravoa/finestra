@@ -10,6 +10,10 @@
 # reverse is not true.
 #
 #   packaging/aws/build.sh [output-dir]
+#   WD_CI_ARCH=arm64 packaging/aws/build.sh
+#
+# WD_CI_ARCH picks the architecture (x64 by default), and the builder is a
+# machine of that architecture: nothing here cross-compiles. See lib.sh.
 
 set -euo pipefail
 # Before the cd, so a relative path on the command line still means what it
@@ -21,7 +25,7 @@ source packaging/aws/lib.sh
 
 OUT_DIR="$(wd_ci_abs "${1:-$REPO/dist-release}")"
 NODE_MAJOR="${NODE_MAJOR:-22}"
-BUILDER_TYPE="${BUILDER_TYPE:-t3.small}"   # 1GB is too little for vite + node-gyp
+BUILDER_TYPE="${BUILDER_TYPE:-${WD_CI_FAMILY_T}.small}"   # 1GB is too little for vite + node-gyp
 
 # Versioning, in one place. package.json holds the number a human chose;
 # `git describe` says how far the working tree is from the tag that claims it.
@@ -59,9 +63,9 @@ else
   git diff --quiet 2>/dev/null || SHA="${SHA}.dirty"
   FULL_VERSION="${VERSION}+g${SHA}"
 fi
-TARBALL="finestra-${FULL_VERSION}-linux-x64.tar.gz"
+TARBALL="finestra-${FULL_VERSION}-linux-${WD_CI_ARCH}.tar.gz"
 
-log "building finestra ${FULL_VERSION} on ${BUILDER_TYPE} (Ubuntu 24.04)"
+log "building finestra ${FULL_VERSION} for ${WD_CI_ARCH} on ${BUILDER_TYPE} (Ubuntu 24.04)"
 wd_ci_init
 read -r BUILDER_ID BUILDER_IP <<<"$(wd_ci_launch builder "$BUILDER_TYPE")"
 wd_ci_prepare_host "$BUILDER_IP"
@@ -85,6 +89,11 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 version="${FULL_VERSION}"
 major="${NODE_MAJOR}"
+arch="${WD_CI_ARCH}"
+# The tarball's name is a claim about what is inside it, and the builder is the
+# only thing that decides that. Refuse rather than ship a mislabelled runtime.
+[ "\$(uname -m)" = "${WD_CI_UNAME}" ] \\
+  || { echo "the builder is \$(uname -m), not ${WD_CI_UNAME}"; exit 1; }
 # Vite bakes this into the bundle, so the shell and the server name the same
 # build rather than each guessing from what it can see.
 export WD_VERSION="${FULL_VERSION}"
@@ -109,7 +118,7 @@ rows=[r for r in json.load(sys.stdin)
 print(rows[0]['version'] if rows else '')")
 [ -n "\$ver" ] || { echo 'could not resolve a Node LTS release'; exit 1; }
 echo "   \$ver"
-curl -fsSL "https://nodejs.org/dist/\${ver}/node-\${ver}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+curl -fsSL "https://nodejs.org/dist/\${ver}/node-\${ver}-linux-\${arch}.tar.xz" -o /tmp/node.tar.xz
 sudo rm -rf /opt/node && sudo mkdir -p /opt/node
 sudo tar xJf /tmp/node.tar.xz -C /opt/node --strip-components=1
 export PATH=/opt/node/bin:\$PATH

@@ -41,7 +41,7 @@ particular workstation setup.
 ## What ships
 
 ```
-finestra-<version>-linux-x64.tar.gz
+finestra-<version>-linux-<arch>.tar.gz      arch: x64 | arm64
 └── finestra-<version>/
     ├── MANIFEST            version, node, distro it was built on, glibc, arch, date
     ├── install.sh
@@ -56,6 +56,30 @@ finestra-<version>-linux-x64.tar.gz
 
 Roughly 70–90 MB compressed, most of which is the Node runtime. That is the
 price of not needing a compiler on the target, and it is worth paying.
+
+## Architectures
+
+Two: `x64` and `arm64`, named as Node names them, because the runtime inside is
+Node's own binary for exactly that. `WD_CI_ARCH` picks one for every script in
+`packaging/aws/` (x64 when unset), and `lib.sh` derives the four other
+spellings the vendors use — `amd64`, `x86_64`, `aarch64`, `t3`/`t4g`.
+
+arm64 is **built natively on Graviton**, not cross-compiled. `node-pty` and
+`wdcomp` are compiled on the builder, and a native build is one whose output
+the same checks then run on the same kind of machine. The builder refuses to
+start if `uname -m` disagrees with the name the tarball is about to carry.
+
+The verifiers take the architecture from the tarball they are handed, not
+from `WD_CI_ARCH`, so an arm64 build is always verified on arm64. `checks.sh`
+compares `MANIFEST`'s `arch=` with the machine's and reports the page size.
+`verify-migrate.sh` is x64 only: the previous product never shipped anything
+else, so there is no arm64 install to take over.
+
+**What Graviton does not prove: a Raspberry Pi.** Same instruction set, different
+kernel. A Pi 5 runs 16 KB pages by default, which is where arm64 native code
+that assumes 4 KB breaks, and nothing on EC2 runs that kernel. A 64-bit
+Raspberry Pi OS on a Pi 4 or 5 is the expected target; 32-bit Raspberry Pi OS
+is `armhf` and is not built at all.
 
 ## Versions
 
@@ -99,7 +123,7 @@ Six places, all from the same string:
 | The startup banner | `Finestra 0.2.0 · user@host (linux/x64)`, on both the listening and the dialling paths |
 | `MANIFEST` | In the install tree. What `install.sh` and `update.sh` compare |
 | `hello` | `host.build` on every connection, so the shell learns it without asking |
-| The tarball name | `finestra-<version>-linux-x64.tar.gz` |
+| The tarball name | `finestra-<version>-linux-<arch>.tar.gz`, `x64` or `arm64` |
 
 The About dialog shows two numbers on purpose. The shell is whatever the browser
 loaded and the server is whatever that machine has installed, and after an
@@ -117,7 +141,7 @@ looking for each in turn.
 ## Installing
 
 ```bash
-tar xzf finestra-<version>-linux-x64.tar.gz
+tar xzf finestra-<version>-linux-<arch>.tar.gz
 cd finestra-<version>
 sudo ./install.sh
 ```
@@ -293,6 +317,7 @@ install made with `--no-token` simply has no token file until it is turned on.
 
 ```bash
 packaging/aws/build.sh          # → dist-release/finestra-<version>-linux-x64.tar.gz
+WD_CI_ARCH=arm64 packaging/aws/build.sh   # the same, built on Graviton
 packaging/aws/verify.sh         # installs it on a bare instance and checks it
 ```
 

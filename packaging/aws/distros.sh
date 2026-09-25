@@ -16,6 +16,11 @@
 # what stops a name glob matching some stranger's image that happens to be
 # called the right thing.
 #
+# Each image is chosen for the architecture in force (wd_ci_use_arch in
+# lib.sh), and every vendor spells it differently: amd64/arm64 for Canonical
+# and Debian, x86_64/arm64 for Amazon, x86_64/aarch64 in the Fedora and Rocky
+# image names. Hence the several variables rather than one.
+#
 # The Fedora release is pinned rather than "whatever is newest", because that
 # account also publishes Rawhide, ELN and prereleases under names one careless
 # glob away from the stable one. Bumping it is meant to be an edit somebody
@@ -45,13 +50,15 @@ wd_ci_use_distro() {
       WD_CI_PRETTY="Ubuntu 24.04 LTS"
       WD_CI_LOGIN="ubuntu"
       WD_CI_FAMILY="debian"
-      WD_CI_AMI_SSM="/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+      WD_CI_AMI_SSM="/aws/service/canonical/ubuntu/server/24.04/stable/current/${WD_CI_DEB_ARCH}/hvm/ebs-gp3/ami-id"
       ;;
     ubuntu-22.04)
       WD_CI_PRETTY="Ubuntu 22.04 LTS"
       WD_CI_LOGIN="ubuntu"
       WD_CI_FAMILY="debian"
-      WD_CI_AMI_SSM="/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+      # gp2, not gp3: Canonical never published a gp3 parameter for 22.04, on
+      # either architecture, and asking for one resolves to "None".
+      WD_CI_AMI_SSM="/aws/service/canonical/ubuntu/server/22.04/stable/current/${WD_CI_DEB_ARCH}/hvm/ebs-gp2/ami-id"
       ;;
     debian-12)
       WD_CI_PRETTY="Debian 12 (bookworm)"
@@ -60,13 +67,13 @@ wd_ci_use_distro() {
       # to find out.
       WD_CI_LOGIN="admin"
       WD_CI_FAMILY="debian"
-      WD_CI_AMI_SSM="/aws/service/debian/release/12/latest/amd64"
+      WD_CI_AMI_SSM="/aws/service/debian/release/12/latest/${WD_CI_DEB_ARCH}"
       ;;
     amazonlinux-2023)
       WD_CI_PRETTY="Amazon Linux 2023"
       WD_CI_LOGIN="ec2-user"
       WD_CI_FAMILY="rhel"
-      WD_CI_AMI_SSM="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+      WD_CI_AMI_SSM="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-${WD_CI_EC2_ARCH}"
       ;;
     fedora)
       WD_CI_PRETTY="Fedora ${WD_CI_FEDORA_RELEASE}"
@@ -75,7 +82,7 @@ wd_ci_use_distro() {
       WD_CI_AMI_OWNER="125523088429"
       # The release number is inside the glob, which is what keeps Rawhide,
       # ELN and `-45-Prerelease-` out: none of them carry a bare number here.
-      WD_CI_AMI_GLOB="Fedora-Cloud-Base-*x86_64-${WD_CI_FEDORA_RELEASE}-*"
+      WD_CI_AMI_GLOB="Fedora-Cloud-Base-*${WD_CI_UNAME}-${WD_CI_FEDORA_RELEASE}-*"
       ;;
     rocky-10)
       WD_CI_PRETTY="Rocky Linux 10"
@@ -86,16 +93,16 @@ wd_ci_use_distro() {
       # under a name identical up to that word, and it is a different disk
       # layout rather than a different distribution — testing it would be
       # testing EC2, not us.
-      WD_CI_AMI_GLOB="Rocky-10-EC2-Base-*.x86_64"
+      WD_CI_AMI_GLOB="Rocky-10-EC2-Base-*.${WD_CI_UNAME}"
       ;;
     rocky-9)
       WD_CI_PRETTY="Rocky Linux 9"
       WD_CI_LOGIN="rocky"
       WD_CI_FAMILY="rhel"
       WD_CI_AMI_OWNER="792107900819"
-      # Ends in .x86_64 rather than containing it: the aarch64 images sit in
-      # the same account under names identical up to that suffix.
-      WD_CI_AMI_GLOB="Rocky-9-EC2-Base-*.x86_64"
+      # Ends in the architecture rather than containing it: both sit in the
+      # same account under names identical up to that suffix.
+      WD_CI_AMI_GLOB="Rocky-9-EC2-Base-*.${WD_CI_UNAME}"
       ;;
     *)
       echo "unknown distribution: $WD_CI_DISTRO" >&2

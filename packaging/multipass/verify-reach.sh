@@ -42,6 +42,13 @@ NODE_MAJOR="${NODE_MAJOR:-22}"
 # needs a second, higher one to update *to*.
 VERSION="${VERSION:-0.0.0+reach}"
 NEXT_VERSION="0.0.1+reach"
+# Multipass runs guests of the host's own architecture, so the VM is whatever
+# this workstation is and the package has to match it.
+case "$(uname -m)" in
+  x86_64)        ARCH=x64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+  *) printf 'error: no Node build for %s\n' "$(uname -m)" >&2; exit 1 ;;
+esac
 
 fails=0
 check() { if [ "$2" = 0 ]; then printf 'PASS  %s%s\n' "$1" "${3:+  — $3}"
@@ -121,7 +128,7 @@ rows=[r for r in json.load(sys.stdin)
 print(rows[0]['version'] if rows else '')")
 [ -n "\$ver" ] || { echo 'could not resolve a Node LTS release'; exit 1; }
 echo "   \$ver"
-curl -fsSL "https://nodejs.org/dist/\${ver}/node-\${ver}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+curl -fsSL "https://nodejs.org/dist/\${ver}/node-\${ver}-linux-${ARCH}.tar.xz" -o /tmp/node.tar.xz
 sudo rm -rf /opt/node && sudo mkdir -p /opt/node
 sudo tar xJf /tmp/node.tar.xz -C /opt/node --strip-components=1
 export PATH=/opt/node/bin:\$PATH
@@ -180,7 +187,7 @@ cat "\$pkg/MANIFEST"
 rm -rf ~/pkg2 && mkdir -p ~/pkg2
 cp -a "\$pkg" ~/pkg2/finestra-${NEXT_VERSION}
 sed -i 's/^version=.*/version=${NEXT_VERSION}/' ~/pkg2/finestra-${NEXT_VERSION}/MANIFEST
-cd ~/pkg2 && tar czf finestra-${NEXT_VERSION}-linux-x64.tar.gz finestra-${NEXT_VERSION}
+cd ~/pkg2 && tar czf finestra-${NEXT_VERSION}-linux-${ARCH}.tar.gz finestra-${NEXT_VERSION}
 echo "== build done"
 REMOTE
 fi
@@ -270,7 +277,7 @@ check "and accepted with one" "$(yn "$([ "$c" = 200 ] && echo 0 || echo 1)")" "h
 head1 "5. update.sh, while bound to that address"
 # The health check's other caller, with the same trap and a worse consequence:
 # an update that worked, rolled back because loopback did not answer.
-vm "sudo /opt/finestra/current/update.sh ~/pkg2/finestra-${NEXT_VERSION}-linux-x64.tar.gz" \
+vm "sudo /opt/finestra/current/update.sh ~/pkg2/finestra-${NEXT_VERSION}-linux-${ARCH}.tar.gz" \
   > /tmp/wd-reach-update.log 2>&1
 check "update.sh succeeds against a non-loopback bind" "$(yn $?)" \
   "$(grep -iE 'rolled back|did not|^error' /tmp/wd-reach-update.log | head -1)"
