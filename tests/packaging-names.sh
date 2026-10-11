@@ -88,7 +88,9 @@ check "nobody re-derives it from the unit" "$([ -z "$strays" ] && echo 0 || echo
 echo ""
 echo "-- the internals are NOT the product name, and must not be renamed with it"
 says "the localStorage prefix"               client/src/core/settings.ts "const PREFIX = 'wd:'"
-says "the token key"                         client/src/main.ts "const TOKEN_KEY = 'wd:token'"
+# The page no longer keeps the token, but it removes the copy an earlier version
+# left behind, and that only works if the key keeps its old name.
+says "the old token key, still removed"      client/src/main.ts "localStorage.removeItem('wd:token')"
 says "the session cookie"                    server/src/auth.ts "TOKEN_COOKIE = 'wd_token'"
 says "the PTY environment marker"            server/src/services/pty.ts "WEB_DESKTOP: '1'"
 says "the compositor binary"                 compositor/Makefile '$(BUILD)/wdcomp'

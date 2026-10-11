@@ -1,4 +1,4 @@
-import type { HostInfo } from '../../../shared/protocol';
+import { CLOSE_REVOKED, type HostInfo } from '../../../shared/protocol';
 import { confirmDialog, promptDialog } from '../ui/dialog';
 import { DesktopIcons } from '../ui/icons';
 import { closeAllMenus, openMenu } from '../ui/menu';
@@ -9,6 +9,7 @@ import { h } from './dom';
 import { Emitter } from './events';
 import { AppRegistry } from './registry';
 import { RpcClient } from './rpc';
+import { adoptAccessToken, probeAccess } from './access';
 import { HostRegistry, LOCAL_HOST_ID, toWebsocketUrl } from './hosts';
 import { hostView } from './host-view';
 import {
@@ -590,6 +591,19 @@ export class Desktop implements DesktopAPI {
       }
     });
 
+    // A refused upgrade and a server that is down look identical from here:
+    // a close with no status. Ask over HTTP, where a 401 is a 401, so a
+    // desktop whose token was changed while it was away is told so instead
+    // of retrying for ever under a "reconnecting" badge.
+    this.rpc.events.on('dropped', ({ code }) => {
+      if (code === CLOSE_REVOKED) return;
+      void probeAccess().then((answer) => {
+        if (answer === 'refused' && this.rpc.state === 'reconnecting') {
+          this.rpc.revoke('The access token was changed while this desktop was disconnected');
+        }
+      });
+    });
+
     this.rpc.events.on('hello', ({ host }) => {
       this.taskbar.setHost(`${host.user}@${host.hostname}`);
       document.title = `${host.user}@${host.hostname} — Finestra`;
@@ -599,6 +613,26 @@ export class Desktop implements DesktopAPI {
     // window and no display to draw into — every native application here gets
     // its own compositor, which lives exactly as long as its window — so the
     // command asks, and this is the answering half.
+    // The token was changed from another desktop, and that desktop chose to
+    // keep this one: the new token arrives over the socket that was already
+    // in, and becomes this page's cookie. Every link saved before is dead;
+    // the desktop itself does not even blink.
+    this.rpc.events.on('event', ({ svc, e, d }) => {
+      if (svc !== 'auth' || e !== 'rotated') return;
+      const token = (d as { token?: unknown } | null)?.token;
+      if (typeof token !== 'string' || !token) return;
+      void adoptAccessToken(token).then((ok) => {
+        this.notify({
+          kind: ok ? 'info' : 'warning',
+          title: 'The access token was changed',
+          message: ok
+            ? 'Another desktop changed it. This one has the new token already; links you saved before no longer open it.'
+            : 'Another desktop changed it, and this one could not pick up the new one. It will stop working on reload — the new link is in Settings on that desktop.',
+          timeout: ok ? 8000 : 0,
+        });
+      });
+    });
+
     this.rpc.events.on('event', ({ svc, e, d }) => {
       if (svc !== 'shell' || e !== 'open') return;
       const req = (d ?? {}) as { app?: string; name?: string; file?: string };

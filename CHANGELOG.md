@@ -7,6 +7,30 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.10 — 2026-10-11
+
+- **The access token can be changed from Settings.** Settings → Access lists
+  every desktop connected right now — which browser, from where, since when —
+  and a button mints a new token. Every link saved before stops working at
+  once. The desktops connected at that moment carry on: the new token reaches
+  them over the connection they already have, so a laptop, a phone and a tab
+  you forgot all stay in, while an old bookmark, a link pasted somewhere, or a
+  copy an app made off-box are all cut off. A second button signs the other
+  desktops out as well, for when the list shows one you did not open; they are
+  told why, and their windows come back when the new link is opened. The new
+  link is shown once, and the token file on the server holds it too. Changing
+  it used to mean deleting that file and restarting the service. A token set
+  with `WD_TOKEN` stays with the environment that set it, and Settings says so.
+- **The token no longer lives in the page.** The browser kept a copy in
+  `localStorage` for its socket, where any script in the page could read it —
+  the one thing a stolen token needs. It is now exchanged for an HttpOnly
+  cookie on the first load and never stored again; a copy left by an earlier
+  version is removed. A browser that blocks cookies for the address is told
+  so, instead of the desktop looking offline.
+- **A desktop whose token was changed while it was away is told.** It used to
+  retry for ever under a "reconnecting" badge. It now says what happened and
+  what to open.
+
 ## 0.3.9 — 2026-10-11
 
 - **Maintenance only.** The server's WebSocket library moves to ws 8.22.0, and

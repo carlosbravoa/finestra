@@ -79,7 +79,7 @@ export function dialOut(opts: OutboundOptions): { stop: () => void } {
       opts.onState?.('connected', opts.url);
       // From here it is an ordinary session. Nothing below this line knows
       // which way the connection was opened.
-      new Session(ws, opts.services, opts.config, opts.host);
+      new Session(ws, opts.services, opts.config, opts.host, { viaRelay: true });
     });
 
     const reconnect = (why: string) => {

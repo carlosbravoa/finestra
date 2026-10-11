@@ -12,6 +12,12 @@ export interface Config {
   clientPort: number;
   /** Empty string means authentication is disabled. */
   token: string;
+  /**
+   * Where it came from. Only a token the server read from its own file can
+   * be changed from the desktop: one set by WD_TOKEN belongs to whoever set
+   * the environment, and writing the file would change nothing.
+   */
+  tokenSource: 'file' | 'env' | 'none';
   authDisabled: boolean;
   /** When set, the fs service refuses to look outside this directory. */
   root: string | null;
@@ -63,21 +69,43 @@ export function stateDir(): string {
   return fs.existsSync(previous) ? previous : current;
 }
 
+export function tokenFile(dir: string): string {
+  return path.join(dir, 'token');
+}
+
+export function mintToken(): string {
+  return randomBytes(24).toString('base64url');
+}
+
+/**
+ * Writes the token so that no reader ever sees half of one. The `auth` service
+ * changes it while the server is running and the `finestra` command reads it
+ * whenever it is run, so a plain write would leave a window in which the file
+ * is empty and the CLI is refused for a reason nothing explains. A rename is
+ * atomic; the temporary file gets the mode before it has any content.
+ */
+export function writeToken(dir: string, token: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = tokenFile(dir);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, token + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
 /**
  * The token is persisted so that restarting the server does not invalidate
- * every open tab and bookmarked URL. Deleting the file rotates it.
+ * every open tab and bookmarked URL. Deleting the file rotates it on the next
+ * start; Settings rotates it without one.
  */
 function loadOrCreateToken(dir: string): string {
-  const file = path.join(dir, 'token');
   try {
-    const existing = fs.readFileSync(file, 'utf8').trim();
+    const existing = fs.readFileSync(tokenFile(dir), 'utf8').trim();
     if (existing.length >= 16) return existing;
   } catch {
     // Falls through to minting a new one.
   }
-  const token = randomBytes(24).toString('base64url');
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, token + '\n', { mode: 0o600 });
+  const token = mintToken();
+  writeToken(dir, token);
   return token;
 }
 
@@ -107,6 +135,7 @@ export function loadConfig(): Config {
   const dir = stateDir();
   const authDisabled = process.env.WD_NO_AUTH === '1';
   const token = authDisabled ? '' : process.env.WD_TOKEN || loadOrCreateToken(dir);
+  const tokenSource = authDisabled ? 'none' : process.env.WD_TOKEN ? 'env' : 'file';
 
   return {
     host: process.env.WD_HOST || '127.0.0.1',
@@ -114,6 +143,7 @@ export function loadConfig(): Config {
     dev: process.env.WD_DEV === '1',
     clientPort: Number(process.env.WD_CLIENT_PORT || 5173),
     token,
+    tokenSource,
     authDisabled,
     root: process.env.WD_ROOT ? path.resolve(process.env.WD_ROOT) : null,
     staticDir: findStaticDir(),

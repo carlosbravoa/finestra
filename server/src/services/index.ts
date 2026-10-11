@@ -1,5 +1,6 @@
 import type { Service } from '../service.js';
 import { appsService } from './apps.js';
+import { authService } from './auth.js';
 import { certsService } from './certs.js';
 import { fsService } from './fs.js';
 import { journalService } from './journal.js';
@@ -28,6 +29,7 @@ export const services: Service[] = [
   certsService,
   waylandService,
   shellService,
+  authService,
 ];
 
 export function buildServiceMap(extra: Service[] = []): Map<string, Service> {

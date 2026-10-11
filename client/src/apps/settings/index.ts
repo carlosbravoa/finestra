@@ -1,3 +1,5 @@
+import type { AccessStatus } from '../../../../shared/protocol';
+import { accessLink, adoptAccessToken, describeSession } from '../../core/access';
 import { DEFAULT_UPLOADS_DIR, WALLPAPERS } from '../../core/desktop';
 import { h, iconEl } from '../../core/dom';
 import type { AppContext, AppInstance, AppManifest } from '../../core/types';
@@ -33,6 +35,10 @@ async function mount({ root, desktop }: AppContext): Promise<AppInstance> {
       shells = [];
     }
   }
+
+  let access: AccessStatus | null = null;
+  /** The link for the token this desktop just minted. Shown once, never stored. */
+  let newLink: string | null = null;
 
   const body = h('div', { class: 'settings-app' });
   root.replaceChildren(body);
@@ -329,24 +335,220 @@ async function mount({ root, desktop }: AppContext): Promise<AppInstance> {
     );
   }
 
+  /* ---------------------------------------------------------------- */
+  /* Access — the token, and who is in with it                          */
+  /* ---------------------------------------------------------------- */
+
+  async function refreshAccess(): Promise<void> {
+    if (!desktop.rpc.hasService('auth')) return;
+    try {
+      const next = await desktop.rpc.call<AccessStatus>('auth', 'status');
+      if (disposed) return;
+      const changed = JSON.stringify(next) !== JSON.stringify(access);
+      access = next;
+      if (changed) render();
+    } catch {
+      // The section is simply absent, as it is on a server without the service.
+    }
+  }
+
+  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
+  /**
+   * Who is cut off is the whole decision, so the dialog says it in terms of
+   * the desktops connected right now. The new link is shown once: the token
+   * is never kept anywhere the page can read it back from.
+   */
+  async function rotate(keepOthers: boolean): Promise<void> {
+    if (!access) return;
+    const others = access.sessions.filter((s) => !s.self).length;
+    const stayOrGo = others === 0
+      ? 'No other desktop is connected right now.'
+      : keepOthers
+        ? `The ${plural(others, 'other desktop')} connected right now ${others === 1 ? 'stays' : 'stay'} connected and ${others === 1 ? 'picks' : 'pick'} up the new token.`
+        : `The ${plural(others, 'other desktop')} connected right now ${others === 1 ? 'is' : 'are'} signed out at once.`;
+    const ok = await desktop.confirm({
+      title: 'Change the access token?',
+      message: `Every link saved before stops working. ${stayOrGo} The new link is shown once, here, and kept in the token file on the server.`,
+      confirmLabel: keepOthers ? 'Change token' : 'Change and sign the others out',
+      danger: !keepOthers,
+    });
+    if (!ok || disposed) return;
+    try {
+      const result = await desktop.rpc.call<{ token: string; kept: number; disconnected: number }>(
+        'auth',
+        'rotate',
+        { keepOthers },
+      );
+      // This page's own cookie is the first thing to replace: the socket is
+      // still up, but the next reload would be refused.
+      const adopted = await adoptAccessToken(result.token);
+      if (disposed) return;
+      newLink = accessLink(window.location.origin, result.token);
+      if (adopted) {
+        desktop.notify({
+          kind: 'success',
+          title: 'The access token was changed',
+          message:
+            `This desktop has the new one. ${result.kept > 0 ? `${plural(result.kept, 'other desktop')} picked it up. ` : ''}` +
+            `${result.disconnected > 0 ? `${plural(result.disconnected, 'other desktop')} signed out. ` : ''}` +
+            'Links saved before no longer open this desktop.',
+          timeout: 8000,
+        });
+      } else {
+        desktop.notify({
+          kind: 'error',
+          title: 'This desktop could not pick up the new token',
+          message: 'It stops working on reload. Copy the new link from Settings before that.',
+          timeout: 0,
+        });
+      }
+      await refreshAccess();
+      render();
+    } catch (err) {
+      desktop.notify({
+        kind: 'error',
+        title: 'The token was not changed',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  function accessSection(): HTMLElement | null {
+    // Dialling out, nothing listens and the relay decides who joins; there
+    // is no token to speak of and saying so would only confuse.
+    if (!access || access.source === 'relay') return null;
+
+    const others = access.sessions.filter((s) => !s.self).length;
+    const changeable = access.source === 'file';
+
+    let hint: string;
+    let warning = false;
+    switch (access.source) {
+      case 'file':
+        hint = `Required to open this desktop. Kept in ${access.file} on the server.`;
+        break;
+      case 'env':
+        hint = 'Set by WD_TOKEN in the server\'s environment, so it can only be changed there.';
+        break;
+      default:
+        hint = 'None. Anyone who can open this address gets a terminal as the account the desktop runs as. ' +
+          'configure.sh --token puts one back.';
+        warning = true;
+    }
+
+    const change = h('button', {
+      class: 'settings-button',
+      text: 'Change…',
+      title: 'Mint a new token; the desktops connected now keep working',
+      on: { click: () => void rotate(true) },
+    });
+    change.disabled = !changeable;
+    const changeAndDrop = h('button', {
+      class: 'settings-button is-danger',
+      text: 'Change and sign the others out…',
+      title: 'Mint a new token and disconnect every other desktop',
+      on: { click: () => void rotate(false) },
+    });
+    changeAndDrop.disabled = !changeable;
+
+    const tokenRow = h(
+      'div',
+      { class: 'settings-row' },
+      h(
+        'div',
+        { class: 'settings-row-text' },
+        h('div', { class: 'settings-row-label', text: 'Access token' }),
+        h('div', { class: `settings-row-hint${warning ? ' is-warning' : ''}`, text: hint }),
+      ),
+      access.enabled
+        ? h('div', { class: 'settings-actions' }, change, others > 0 ? changeAndDrop : null)
+        : null,
+    );
+
+    const link = newLink
+      ? h(
+          'div',
+          { class: 'settings-link' },
+          h('div', { class: 'settings-link-title', text: 'The new link — shown once' }),
+          h('div', { class: 'settings-link-url', text: newLink }),
+          h('div', {
+            class: 'settings-link-note',
+            text: `Open it where you want this desktop. It is also in ${access.file} on the server. Closing Settings forgets it here.`,
+          }),
+          h(
+            'div',
+            { class: 'settings-link-actions' },
+            h('button', {
+              class: 'settings-button',
+              text: 'Copy link',
+              on: {
+                click: () => {
+                  void desktop.clipboard.write(newLink ?? '').then((where) => {
+                    desktop.notify({
+                      kind: 'success',
+                      message: where === 'system' ? 'Link copied.' : 'Link copied to the desktop clipboard — the browser kept the system one back.',
+                      timeout: 3000,
+                    });
+                  });
+                },
+              },
+            }),
+          ),
+        )
+      : null;
+
+    const now = Date.now();
+    const sessions = access.sessions.map((s) => {
+      const { title, detail } = describeSession(s, now);
+      return h(
+        'div',
+        { class: `settings-session${s.self ? ' is-self' : ''}` },
+        h('span', { class: 'settings-session-title', text: title }),
+        h('span', { class: 'settings-session-detail', text: detail }),
+      );
+    });
+
+    return section(
+      'Access',
+      tokenRow,
+      link,
+      h('div', {
+        class: 'settings-note',
+        text: access.enabled
+          ? `Connected with this token right now — ${plural(access.sessions.length, 'desktop')}. One you do not recognise is the reason to sign the others out.`
+          : `Connected right now — ${plural(access.sessions.length, 'desktop')}.`,
+      }),
+      ...sessions,
+    );
+  }
+
   function render(): void {
     if (disposed) return;
     body.replaceChildren(
-      appearance(),
-      terminal(),
-      filesAndUploads(),
-      apps(),
-      associations(),
-      sessionSection(),
+      ...[
+        appearance(),
+        terminal(),
+        filesAndUploads(),
+        apps(),
+        associations(),
+        accessSection(),
+        sessionSection(),
+      ].filter((el): el is HTMLElement => el !== null),
     );
   }
 
   render();
+  void refreshAccess();
 
   return {
-    onFocus: () => render(),
+    onFocus: () => {
+      render();
+      void refreshAccess();
+    },
     destroy: () => {
       disposed = true;
+      newLink = null;
     },
   };
 }

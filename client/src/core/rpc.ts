@@ -1,4 +1,5 @@
 import {
+  CLOSE_REVOKED,
   decodeBinaryFrame,
   encodeBinaryFrame,
   type ClientMessage,
@@ -35,6 +36,13 @@ export interface RpcEvents {
   hello: { services: ServiceDescriptor[]; host: HostInfo };
   /** Unsolicited server push. */
   event: { svc: string; e: string; d: unknown };
+  /** The socket closed, for any reason; fires before the state changes. */
+  dropped: { code: number; reason: string };
+  /**
+   * The server will not have this connection back: its credential was
+   * revoked. Reconnecting stops, and the reason is the one to show.
+   */
+  revoked: string;
 }
 
 /** A live stream to a server-side channel. */
@@ -114,7 +122,12 @@ export class RpcClient {
   private readyResolve: (() => void) | null = null;
   private stopped = false;
 
-  constructor(private readonly url: string) {}
+  constructor(private url: string) {}
+
+  /** Where the next connection goes — a token in the URL can change under us. */
+  setUrl(url: string): void {
+    this.url = url;
+  }
 
   /** Resolves once the server's `hello` has arrived. */
   ready(): Promise<void> {
@@ -139,7 +152,7 @@ export class RpcClient {
     this.ws = ws;
 
     ws.onmessage = (ev) => this.onMessage(ev);
-    ws.onclose = () => this.onDisconnect();
+    ws.onclose = (ev) => this.onDisconnect(ev.code, ev.reason);
     ws.onerror = () => {
       // `onclose` always follows, so recovery is handled in one place.
     };
@@ -152,6 +165,18 @@ export class RpcClient {
       this.reconnectTimer = null;
     }
     this.ws?.close();
+  }
+
+  /**
+   * Give up for good and say why. The server does this with a close code
+   * when it hangs up; the shell does it when a reconnect is refused outright,
+   * because a refused upgrade reaches the browser as a plain close and would
+   * otherwise be retried forever as if the server were merely down.
+   */
+  revoke(reason: string): void {
+    this.disconnect();
+    this.setState('closed');
+    this.events.emit('revoked', reason);
   }
 
   /** Request/response. Rejects with an RpcError carrying the server's code. */
@@ -268,8 +293,10 @@ export class RpcClient {
     }
   }
 
-  private onDisconnect(): void {
+  private onDisconnect(code = 1006, why = ''): void {
     this.ws = null;
+    this.events.emit('dropped', { code, reason: why });
+    if (code === CLOSE_REVOKED) this.stopped = true;
 
     const reason = 'Connection to the server was lost';
     for (const pending of this.pending.values()) {
@@ -286,6 +313,7 @@ export class RpcClient {
 
     if (this.stopped) {
       this.setState('closed');
+      if (code === CLOSE_REVOKED) this.events.emit('revoked', why || 'The access token was changed');
       return;
     }
 

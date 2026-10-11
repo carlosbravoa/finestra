@@ -219,3 +219,84 @@
   width: 15px;
   height: 15px;
 }
+
+/* ------------------------------------------------------------------ */
+/* Access — the token and who is connected with it                     */
+/* ------------------------------------------------------------------ */
+
+.settings-row-hint.is-warning {
+  color: var(--warning);
+}
+
+.settings-button.is-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.settings-button.is-danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.settings-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.settings-session {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 2px 4px 12px;
+  font-size: 12.5px;
+}
+
+.settings-session.is-self .settings-session-title {
+  color: var(--accent-strong);
+}
+
+.settings-session-detail {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* The new link, shown once. Monospace so it can be read back, wrapping so it
+   is never clipped — a token with the end cut off is worse than none. */
+.settings-link {
+  margin: 6px 0 4px;
+  padding: 10px 12px;
+  background: var(--surface-0);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.settings-link-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.settings-link-url {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+  user-select: all;
+}
+
+.settings-link-note {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.settings-link-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}

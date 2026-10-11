@@ -108,6 +108,33 @@ check('the fs service lists a directory', Array.isArray(listing.entries));
 const sys = await call('sys', 'info', {});
 check('the sys service reports the host', Boolean(sys && (sys.hostname || sys.platform)));
 
+/* --- changing the token, on a real install --------------------------- */
+// Settings → Access rewrites the token file as the service account, inside
+// the state directory the unit whitelists. Whether it can is a packaging fact
+// — ReadWritePaths, the account, an SELinux label — that only a real install
+// answers. checks.sh reads the file again before every later run, so the
+// token this leaves behind is the one they use.
+
+const access = await call('auth', 'status', {}).catch((e) => ({ error: e.message }));
+check('the access service says a token is in force, from its file',
+  access?.enabled === true && access?.source === 'file',
+  access?.error ?? `${access?.source} ${access?.file}`);
+check('and lists this connection',
+  Array.isArray(access?.sessions) && access.sessions.some((s) => s.self));
+const rotated = await call('auth', 'rotate', {}).catch((e) => ({ error: e.message }));
+check('the token can be changed from the desktop', typeof rotated?.token === 'string', rotated?.error ?? 'minted');
+if (rotated?.token) {
+  check('the old token is refused from then on', (await fetch(`${BASE}/api/session?t=${TOKEN}`)).status === 401);
+  check('and the new one accepted', (await fetch(`${BASE}/api/session?t=${rotated.token}`)).status === 200);
+  // The file is the service account's and 0600; as a different account this
+  // cannot read it, and that is the right answer too.
+  let onDisk = null;
+  try { onDisk = readFileSync(access.file, 'utf8').trim(); } catch { /* not ours to read */ }
+  check('the file the next restart reads holds it',
+    onDisk === null || onDisk === rotated.token,
+    onDisk === null ? `${access.file} is not readable as this account` : access.file);
+}
+
 /* --- the account it runs as ------------------------------------------ */
 // Everything below is about the one decision install.sh asks: who this runs as.
 // A desktop that cannot open a home directory, cannot read the journal and

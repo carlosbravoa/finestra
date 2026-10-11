@@ -168,6 +168,47 @@ export interface WireError {
 }
 
 /* ------------------------------------------------------------------ */
+/* Access                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The close code a session is given when the token it came in with was
+ * changed by another desktop and that desktop chose not to keep it. Private
+ * range, so no proxy or library will ever send it for a reason of its own;
+ * the shell treats it as "do not reconnect, say why" rather than as an outage.
+ */
+export const CLOSE_REVOKED = 4401;
+
+/** One open connection, as `auth.status` reports it. */
+export interface AccessSession {
+  id: string;
+  /** The connection that asked. */
+  self: boolean;
+  /** Where the socket came from; always loopback through an SSH tunnel. */
+  address: string | null;
+  /** The browser, as it introduced itself. Null for the CLI and the relay. */
+  userAgent: string | null;
+  /** Epoch milliseconds. */
+  since: number;
+  /** Reached through a relay (`WD_DIAL`) rather than the listener. */
+  viaRelay: boolean;
+}
+
+export interface AccessStatus {
+  /** Whether a token is checked at all. False under WD_NO_AUTH and when dialling out. */
+  enabled: boolean;
+  /**
+   * Where the token comes from, which decides whether it can be changed here.
+   * `none` is WD_NO_AUTH; `relay` is a server that dials out, where nothing
+   * listens and the relay decides who joins.
+   */
+  source: 'file' | 'env' | 'none' | 'relay';
+  /** The token file, so Settings can say where the new one is also kept. */
+  file: string;
+  sessions: AccessSession[];
+}
+
+/* ------------------------------------------------------------------ */
 /* Binary framing                                                      */
 /* ------------------------------------------------------------------ */
 

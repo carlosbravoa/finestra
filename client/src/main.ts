@@ -6,58 +6,68 @@ import { sysmanApp } from './apps/sysman';
 import { registerPinnedApps, waylandApp } from './apps/wayland';
 import { Desktop } from './core/desktop';
 import type { AppManifest } from './core/types';
+import { probeAccess } from './core/access';
 import { h } from './core/dom';
 import './style/main.css';
 
-const TOKEN_KEY = 'wd:token';
-
 /**
- * Takes the access token from `?t=…`, remembers it, and removes it from the
- * address bar so it does not end up in history, screenshots or shared links.
+ * Takes the access token from `?t=…` and removes it from the address bar so it
+ * does not end up in history, screenshots or shared links. It is not kept
+ * anywhere the page can read: the one request made with it below exchanges it
+ * for an HttpOnly cookie, and the cookie is the credential from then on —
+ * including for the WebSocket, which the browser sends it with unasked. An
+ * earlier version also kept a copy in localStorage for the socket URL, which
+ * put the one secret that opens a shell on the server within reach of every
+ * script in the page; that copy is removed here if it is still around.
  */
 function claimToken(): string | null {
+  try {
+    localStorage.removeItem('wd:token');
+  } catch {
+    // Nothing to tidy.
+  }
   const url = new URL(window.location.href);
   const fromUrl = url.searchParams.get('t') ?? url.searchParams.get('token');
-
-  if (fromUrl) {
-    try {
-      localStorage.setItem(TOKEN_KEY, fromUrl);
-    } catch {
-      // Private mode: the token still works for this page load.
-    }
-    url.searchParams.delete('t');
-    url.searchParams.delete('token');
-    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
-    return fromUrl;
-  }
-
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
+  if (!fromUrl) return null;
+  url.searchParams.delete('t');
+  url.searchParams.delete('token');
+  window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+  return fromUrl;
 }
 
-function socketUrl(token: string | null): string {
+function socketUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const query = token ? `?t=${encodeURIComponent(token)}` : '';
-  return `${protocol}//${window.location.host}/ws${query}`;
+  return `${protocol}//${window.location.host}/ws`;
 }
 
+/**
+ * A full-page notice. Before the desktop exists it is the page; once there is
+ * a desktop it sits over it, because the desktop underneath may still be
+ * saving its session on the way out and tearing it down would lose that.
+ */
 function showBootError(mount: HTMLElement, title: string, detail: string, hint?: string): void {
-  mount.replaceChildren(
-    h(
-      'div',
-      { class: 'boot-error' },
-      h('div', { class: 'boot-error-panel' },
-        h('div', { class: 'boot-error-icon', text: '⚠' }),
-        h('h1', { text: title }),
-        h('p', { text: detail }),
-        hint ? h('pre', { class: 'boot-error-hint', text: hint }) : null,
-      ),
+  const panel = h(
+    'div',
+    { class: `boot-error${mount.childElementCount > 0 ? ' is-over' : ''}` },
+    h('div', { class: 'boot-error-panel' },
+      h('div', { class: 'boot-error-icon', text: '⚠' }),
+      h('h1', { text: title }),
+      h('p', { text: detail }),
+      hint ? h('pre', { class: 'boot-error-hint', text: hint }) : null,
     ),
   );
+  if (mount.childElementCount > 0) mount.appendChild(panel);
+  else mount.replaceChildren(panel);
 }
+
+const HOW_TO_GET_IN =
+  'The URL looks like:\n' +
+  '  http://127.0.0.1:7070/?t=…\n\n' +
+  'To reach it from your own machine, forward the port over SSH first:\n' +
+  '  ssh -L 7070:127.0.0.1:7070 you@server\n\n' +
+  'The token is in the server\'s state directory:\n' +
+  '  /var/lib/finestra/token          (installed as a service)\n' +
+  '  ~/.local/state/finestra/token    (run directly)';
 
 /**
  * Registers anything dropped into `apps-extra/`. Vite resolves the glob at
@@ -105,19 +115,31 @@ async function boot(): Promise<void> {
       showBootError(
         mount,
         'Access token required',
-        'Open the URL the server printed when it started — it carries the token that lets you in. ' +
-          'Reaching this desktop already means you got here over SSH; the token is the second latch on that door.',
-        'The URL looks like:\n' +
-          '  http://127.0.0.1:7070/?t=…\n\n' +
-          'To reach it from your own machine, forward the port over SSH first:\n' +
-          '  ssh -L 7070:127.0.0.1:7070 you@server\n\n' +
-          'The token is in the server\'s state directory:\n' +
-          '  /var/lib/finestra/token          (installed as a service)\n' +
-          '  ~/.local/state/finestra/token    (run directly)',
+        (token
+          ? 'This link does not open this desktop. '
+          : 'This browser has no token for this desktop. ') +
+          'If it used to, the token was changed — from Settings on another desktop, or by deleting the token file — ' +
+          'and the new link is in both places. Open the URL the server printed when it started: ' +
+          'reaching this desktop already means you got here over SSH; the token is the second latch on that door.',
+        HOW_TO_GET_IN,
       );
       return;
     }
     if (!response.ok) throw new Error(`Server responded ${response.status}`);
+
+    // The token just claimed was only ever meant to become a cookie. If the
+    // cookie did not take, every later request — the socket first — would be
+    // refused for a reason the browser never shows.
+    if (token && (await probeAccess()) === 'refused') {
+      showBootError(
+        mount,
+        'This desktop needs a cookie',
+        'The token was accepted, but the browser did not keep the cookie it was exchanged for, ' +
+          'and nothing else carries it. Allow cookies for this address and open the link again.',
+        HOW_TO_GET_IN,
+      );
+      return;
+    }
   } catch (err) {
     showBootError(
       mount,
@@ -128,7 +150,20 @@ async function boot(): Promise<void> {
     return;
   }
 
-  const desktop = new Desktop(mount, socketUrl(token));
+  const desktop = new Desktop(mount, socketUrl());
+
+  // Hung up on for good: the token was changed from another desktop and this
+  // one was not kept. The windows are safe — the session is in this browser,
+  // not in the token — so the new link brings them straight back.
+  desktop.rpc.events.on('revoked', (reason) => {
+    showBootError(
+      mount,
+      'This desktop was signed out',
+      `${reason}. Open the new link and your windows come back as they were. ` +
+        'It is shown in Settings on the desktop that changed the token, and the token file on the server holds it too.',
+      HOW_TO_GET_IN,
+    );
+  });
 
   // Every app is registered here. Nothing else in the shell knows they exist,
   // which is what will let this list come from a manifest, or from remote

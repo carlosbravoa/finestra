@@ -3,7 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { cookieHeader, isAuthorized } from './auth.js';
-import { loadConfig } from './config.js';
+import { loadConfig, tokenFile } from './config.js';
 import { handleDownload, handleUpload, sendJson } from './transfer.js';
 import { loadExtraServices } from './extra-services.js';
 import { buildServiceMap } from './services/index.js';
@@ -145,7 +145,10 @@ server.on('upgrade', (req, socket, head) => {
     // does add the socket to `wss.clients`. Emitting it here is what keeps
     // the heartbeat below from treating every live connection as dead.
     wss.emit('connection', ws, req);
-    new Session(ws, serviceMap, config, host);
+    new Session(ws, serviceMap, config, host, {
+      address: req.socket.remoteAddress ?? null,
+      userAgent: req.headers['user-agent'] ?? null,
+    });
   });
 });
 
@@ -226,7 +229,7 @@ if (config.dial) {
       if (config.dev) {
         console.log(`               \x1b[2m↑ Vite dev server, with hot reload\x1b[0m`);
       }
-      console.log(`  token file   ${path.join(config.stateDir, 'token')}  (delete to rotate)\n`);
+      console.log(`  token file   ${tokenFile(config.stateDir)}  (Settings changes it; so does deleting it and restarting)\n`);
     }
     // Any bind that is not loopback, not just the wildcard: one address of a
     // VPN is still a network, and the advice is the same either way.
