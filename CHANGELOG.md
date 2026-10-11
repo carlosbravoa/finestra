@@ -7,6 +7,13 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.9 — 2026-10-11
+
+- **Maintenance only.** The server's WebSocket library moves to ws 8.22.0, and
+  the tools the release is built with were refreshed. Nothing you use should
+  look or behave differently; there is no security fix in this one, so there
+  is no hurry to take it.
+
 ## 0.3.8 — 2026-09-25
 
 - **Runs on 64-bit ARM.** There is now an arm64 build beside the x86_64 one,
