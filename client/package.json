@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:sdk": "tsc -p tsconfig.sdk.json",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },

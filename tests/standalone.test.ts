@@ -143,6 +143,21 @@ check('the extension points exist for it to be added back', () => {
   assert.ok(fs.existsSync(path.join(REPO, 'server/src/extra-services.ts')));
 });
 
+/* --- app packages cost an install without any exactly nothing ------- */
+
+check('the packages listing rides the one apps.list call the shell already makes', () => {
+  // Boot must not gain a request for a feature most installs never use: the
+  // loader is handed what start() fetched, and asks for nothing itself.
+  const packagesTs = fs.readFileSync(path.join(REPO, 'client/src/core/packages.ts'), 'utf8');
+  assert.ok(!/'apps',\s*'list'/.test(packagesTs), 'core/packages.ts calls apps.list');
+  assert.match(desktopTs, /'apps',\s*'list'/);
+});
+
+check('the server creates no packages directory of its own accord', () => {
+  const appsTs = fs.readFileSync(path.join(REPO, 'server/src/services/apps.ts'), 'utf8');
+  assert.ok(!/mkdirSync\([^)]*packagesDir/.test(appsTs), 'apps.ts mkdirs the packages directory');
+});
+
 const failed = results.filter((r) => !r).length;
 console.log(`\n${results.length - failed}/${results.length} checks passed`);
 process.exit(failed === 0 ? 0 : 1);

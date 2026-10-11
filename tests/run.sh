@@ -12,6 +12,25 @@ SERVER="server/dist/server/src/index.js"
 # of whoever is actually using this machine — which it did, once.
 export XDG_STATE_HOME="$(mktemp -d)"
 
+# App packages for the apps suite: the real example, and the ways a package
+# goes wrong that the server must report rather than hide or, worse, serve.
+PACKAGES="$XDG_STATE_HOME/finestra/apps"
+mkdir -p "$PACKAGES"
+cp -r examples/hello "$PACKAGES/hello"
+mkdir -p "$PACKAGES/broken" "$PACKAGES/future" "$PACKAGES/mismatch" "$PACKAGES/escape" "$PACKAGES/huge" "$PACKAGES/Bad Name"
+printf '{ not json' > "$PACKAGES/broken/app.json"
+printf '{"id":"future","name":"Future","version":"1.0.0","apiVersion":99,"entry":"app.js"}' > "$PACKAGES/future/app.json"
+printf 'export function mount() {}\n' > "$PACKAGES/future/app.js"
+printf '{"id":"other","name":"Mismatch","version":"1.0.0","apiVersion":1,"entry":"app.js"}' > "$PACKAGES/mismatch/app.json"
+printf 'export function mount() {}\n' > "$PACKAGES/mismatch/app.js"
+# A manifest that is fine, whose entry is a symlink to something outside the package.
+printf 'not for the browser\n' > "$XDG_STATE_HOME/secret.txt"
+printf '{"id":"escape","name":"Escape","version":"1.0.0","apiVersion":1,"entry":"app.js"}' > "$PACKAGES/escape/app.json"
+ln -s "$XDG_STATE_HOME/secret.txt" "$PACKAGES/escape/app.js"
+printf '{"id":"huge","name":"Huge","version":"1.0.0","apiVersion":1,"entry":"app.js"}' > "$PACKAGES/huge/app.json"
+head -c $((9 * 1024 * 1024)) /dev/zero | tr '\0' ' ' > "$PACKAGES/huge/app.js"
+printf '{"id":"bad","name":"Bad","version":"1.0.0","apiVersion":1,"entry":"app.js"}' > "$PACKAGES/Bad Name/app.json"
+
 # A scratch applications directory, with three entries the wayland suite makes
 # assertions about. They are written here rather than by the test because the
 # server scans for desktop entries once and caches the result, so they have to
@@ -136,6 +155,7 @@ run "pty.cwd"                     node tests/pty-cwd.mjs "$TOKEN" "$PORT"
 run "pty.status"                  node tests/pty-status.mjs "$TOKEN" "$PORT"
 run "pty.attach"                  node tests/pty-attach.mjs "$TOKEN" "$PORT"
 run "transfer + apps service"     node tests/transfer.mjs "$TOKEN" "$PORT"
+run "app packages on disk"        node tests/apps-packages.mjs "$TOKEN" "$PORT"
 run "system-manager services"     node tests/sysman.mjs "$TOKEN" "$PORT"
 run "wayland service"             node tests/wayland.mjs "$TOKEN" "$PORT"
 run "opening from a terminal"     node tests/shell.mjs "$TOKEN" "$PORT"
@@ -156,6 +176,7 @@ run "standalone stays standalone" npx tsx tests/standalone.test.ts
 run "session deadman"             npx tsx tests/deadman.test.ts
 run "session store"               npx tsx tests/session-store.test.ts
 run "file associations"           npx tsx tests/assoc.test.ts
+run "app packages in the shell"   npx tsx tests/packages.test.ts
 run "the desktop clipboard"       npx tsx tests/clipboard.test.ts
 # Reads files rather than running anything: the product's name where it is
 # load-bearing, and the internals that deliberately are not the product's name.

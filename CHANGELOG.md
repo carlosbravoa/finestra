@@ -7,6 +7,20 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## Unreleased
+
+- **Apps can be installed without rebuilding the shell.** A package is a
+  directory with `app.json` and `app.js` in it, placed under `apps/` in the
+  service's state directory (`configure.sh --state-dir` says where). Open
+  Settings and it is listed, launchable, and its windows come back after a
+  reload like any other app's. No restart, no reload to pick one up. A package
+  that cannot start says why in Settings, and in its own window, instead of
+  going missing. The format is specified in `docs/app-packages.md`;
+  `examples/hello/` is a complete one in plain JavaScript. Packages survive
+  updates and an account change, like the token does. If you had turned an app
+  off in Settings, its windows now stay closed after a reload too, which the
+  toggle had promised and not kept.
+
 ## 0.3.9 — 2026-10-11
 
 - **Maintenance only.** The server's WebSocket library moves to ws 8.22.0, and

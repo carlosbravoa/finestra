@@ -1,4 +1,4 @@
-import type { HostInfo } from '../../../shared/protocol';
+import type { HostInfo, InstalledApp } from '../../../shared/protocol';
 import { confirmDialog, promptDialog } from '../ui/dialog';
 import { DesktopIcons } from '../ui/icons';
 import { closeAllMenus, openMenu } from '../ui/menu';
@@ -915,16 +915,28 @@ export class Desktop implements DesktopAPI {
     this.refreshHostLabels();
     await this.rpc.ready();
 
-    // Which apps are enabled lives on the server; fetch it before session
-    // restore so a disabled app's saved windows are skipped, not reopened.
+    // Which apps are enabled lives on the server, and so do installed
+    // packages; one call fetches both, before session restore, so a disabled
+    // app's saved windows are skipped and a package's can be reopened.
     if (this.rpc.hasService('apps')) {
       try {
-        const { disabled } = await this.rpc.call<{ disabled: string[] }>('apps', 'list');
+        const { disabled, installed } = await this.rpc.call<{
+          disabled: string[];
+          installed?: InstalledApp[];
+        }>('apps', 'list');
         this.registry.setDisabled(disabled.filter((id) => id !== 'settings'));
+        this.installed = installed ?? [];
         this.icons.render();
       } catch (err) {
         console.warn('Could not load app state:', err);
       }
     }
   }
+
+  /** App packages the server listed at start-up. Settings re-asks for a live view. */
+  installedApps(): InstalledApp[] {
+    return this.installed;
+  }
+
+  private installed: InstalledApp[] = [];
 }

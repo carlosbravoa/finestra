@@ -451,8 +451,14 @@ desktop.register(notesApp);
 > `.claude/skills/`. It carries the full API reference, a compiling starter
 > template, the service-authoring guide, and the mistakes worth not repeating.
 
-That is the only place the shell learns an app exists — which is what will let
-this list eventually come from remote bundles loaded with `import()`.
+That is the only place the shell learns about an app that ships with it.
+
+**An app that does not ship with it is a package**: a directory with `app.json`
+and `app.js`, dropped into the server's state directory under `apps/`. The
+desktop lists it, launches it and restores its windows with no rebuild and no
+restart — open Settings and it is there. `examples/hello/` is one, in plain
+JavaScript with no build step; the format is specified in
+[`docs/app-packages.md`](docs/app-packages.md).
 
 What `mount` receives:
 
@@ -702,8 +708,10 @@ hashes, which is more attack surface than it buys. `ROADMAP.md` records the
 evidence so nobody re-derives it.
 
 - [`ROADMAP.md`](ROADMAP.md) — ordered by when each gap starts to hurt.
-- [`docs/app-installation.md`](docs/app-installation.md) — installing and
-  enabling apps without rebuilding the shell.
+- [`docs/app-packages.md`](docs/app-packages.md) — the app package format:
+  how to write an app for this desktop without touching this repository.
+- [`docs/app-installation.md`](docs/app-installation.md) — the design behind
+  installing and enabling apps, and what comes next.
 - [`docs/apps-wanted.md`](docs/apps-wanted.md) — the apps a sysadmin actually
   needs, and which ones are not worth building.
 - [`docs/wayland.md`](docs/wayland.md) — the compositor that puts *real* Linux

@@ -292,7 +292,10 @@ export class WindowManager implements WindowHost {
     let focusTarget: DesktopWindow | null = null;
 
     for (const record of records) {
-      if (!this.registry.get(record.appId)) continue;
+      // Unknown apps are skipped. Disabled ones too: a window of an app turned
+      // off in Settings must not come back on the next reload, which is what
+      // the enable toggle has promised since Stage 1 and only now keeps.
+      if (!this.registry.get(record.appId) || !this.registry.isEnabled(record.appId)) continue;
 
       const win = await this.launch(record.appId, {
         host: record.host,

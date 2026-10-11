@@ -1,0 +1,51 @@
+/*
+ * The window an app package gets when it cannot run. Shell-owned: the package
+ * never reached the point of bringing its own styles.
+ */
+.package-error {
+  height: 100%;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  color: var(--text);
+  background: var(--surface-1);
+}
+
+.package-error h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.package-error p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.package-error-where {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.package-error-settings {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.package-error-settings:hover {
+  background: var(--surface-4);
+  border-color: var(--border-strong);
+}

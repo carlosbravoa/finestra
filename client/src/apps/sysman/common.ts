@@ -1,5 +1,5 @@
 import { h } from '../../core/dom';
-import { RpcError } from '../../core/rpc';
+import { isRpcError } from '../../core/rpc';
 import type { DesktopAPI, MenuItem, Size, WindowHandle } from '../../core/types';
 
 /* ------------------------------------------------------------------ */
@@ -98,7 +98,7 @@ export function formatDate(epochMs: number): string {
 
 /** Turns a server error into a sentence someone can act on. */
 export function describeError(err: unknown): string {
-  if (err instanceof RpcError) {
+  if (isRpcError(err)) {
     switch (err.code) {
       case 'EACCES':
       case 'EPERM':

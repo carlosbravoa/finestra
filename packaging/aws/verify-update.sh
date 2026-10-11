@@ -96,6 +96,12 @@ wd_ci_ssh "$IP" "bash -s" <<REMOTE
 set -uo pipefail
 $CHECK_HELPER
 before=\$(running)
+# An app package, installed by hand the way docs/app-packages.md says to. It
+# lives in the state directory, which an update must never touch.
+pkg="\$(sudo /opt/finestra/current/configure.sh --state-dir)/apps/wd-test"
+sudo mkdir -p "\$pkg"
+printf '{"id":"wd-test","name":"Test","version":"1.0.0","apiVersion":1,"entry":"app.js"}\n' | sudo tee "\$pkg/app.json" >/dev/null
+printf 'export function mount({ root }) { root.textContent = "hi"; return {}; }\n' | sudo tee "\$pkg/app.js" >/dev/null
 sudo /opt/finestra/current/update.sh /tmp/finestra-9.9.9-newer.tar.gz >/tmp/up1.log 2>&1
 t "the update reports success"        grep -q "running 9.9.9-newer" /tmp/up1.log
 t "current points at the new version" bash -c '[ "\$(running)" = "9.9.9-newer" ]'
@@ -106,6 +112,8 @@ t "the old version is still on disk"  bash -c "[ -d /opt/finestra/\$before ]"
 # so an update that invalidates it reads as an update that broke the login.
 t "the token survived the update"     bash -c '
   sudo test -s "\$(sudo /opt/finestra/current/configure.sh --state-dir)/token"'
+t "an installed app package survived the update" bash -c '
+  sudo test -s "\$(sudo /opt/finestra/current/configure.sh --state-dir)/apps/wd-test/app.js"'
 exit \$fails
 REMOTE
 GOOD=$?

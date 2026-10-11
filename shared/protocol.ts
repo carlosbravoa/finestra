@@ -168,6 +168,70 @@ export interface WireError {
 }
 
 /* ------------------------------------------------------------------ */
+/* App packages                                                        */
+/* ------------------------------------------------------------------ */
+
+/** The highest `apiVersion` an app package may declare and still be loaded. */
+export const APP_API_VERSION = 1;
+
+/**
+ * A file association as a package may declare it: the data half of
+ * `FileAssociation` in the client's types. A manifest is JSON, so the
+ * predicate form (`matches`) is not expressible here, and nothing else is
+ * missing on purpose.
+ */
+export interface PackageAssociation {
+  extensions?: string[];
+  names?: string[];
+  fallback?: boolean;
+  verb?: string;
+  priority?: number;
+}
+
+/**
+ * What `app.json` may say. Every field here maps onto `AppManifest` by name,
+ * which is the whole point: the shell lists, enables and describes a package
+ * from this alone, and never runs its code until the app is launched.
+ */
+export interface PackageManifest {
+  id: string;
+  name: string;
+  version: string;
+  apiVersion: number;
+  /** Bare filename inside the package: the ES module exporting `mount`. */
+  entry: string;
+  /** Bare filename inside the package: a stylesheet injected once. */
+  style?: string;
+  /** Emoji, or an inline `<svg>` string. */
+  icon?: string;
+  description?: string;
+  category?: string;
+  singleton?: boolean;
+  showOnDesktop?: boolean;
+  showInLauncher?: boolean;
+  restorable?: boolean;
+  resizable?: boolean;
+  startMaximized?: boolean;
+  defaultSize?: { width: number; height: number };
+  minSize?: { width: number; height: number };
+  handles?: PackageAssociation[];
+}
+
+/**
+ * One package as the server found it. A package whose manifest is missing or
+ * wrong is still listed, with `error` set, because the alternative — silently
+ * absent — is the one outcome nobody can diagnose from the browser.
+ */
+export interface InstalledApp {
+  /** The directory name, which the manifest must also claim. */
+  id: string;
+  /** Absolute path of the package directory on the host. */
+  dir: string;
+  manifest?: PackageManifest;
+  error?: string;
+}
+
+/* ------------------------------------------------------------------ */
 /* Binary framing                                                      */
 /* ------------------------------------------------------------------ */
 

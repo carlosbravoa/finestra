@@ -1,5 +1,5 @@
 import { h } from '../../core/dom';
-import { RpcError } from '../../core/rpc';
+import { isRpcError } from '../../core/rpc';
 import type { AppContext, AppInstance, AppManifest, MenuItem } from '../../core/types';
 import './editor.css';
 
@@ -750,7 +750,7 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
     } catch (err) {
       if (disposed) return;
 
-      if (err instanceof RpcError && err.code === 'ENOENT') {
+      if (isRpcError(err) && err.code === 'ENOENT') {
         // Opening a path that does not exist yet is a reasonable way to start
         // a new file, so keep it editable and say what will happen on save.
         path = target;
@@ -1241,7 +1241,7 @@ function joinPath(dir: string, name: string): string {
 }
 
 function describeError(err: unknown): string {
-  if (err instanceof RpcError) {
+  if (isRpcError(err)) {
     if (err.code === 'EACCES' || err.code === 'EPERM') return 'Permission denied.';
     if (err.code === 'ENOENT') return 'That path does not exist.';
     if (err.code === 'EISDIR' || err.code === 'ENOTFILE') return 'That is not a regular file.';

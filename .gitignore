@@ -17,3 +17,4 @@ CLAUDE.md
 
 # Assistant scaffolding — never part of the project.
 .claude/
+client/dist-sdk/

@@ -19,6 +19,16 @@ export class RpcError extends Error {
   }
 }
 
+/**
+ * Whether an error came from the server, by shape rather than by class. An app
+ * package is its own bundle with no access to this class, so `instanceof`
+ * would be false for the very errors it most needs to recognise; the built-in
+ * apps use this too, so the same code works in both places.
+ */
+export function isRpcError(err: unknown): err is { name: string; message: string; code?: string } {
+  return err instanceof Error && err.name === 'RpcError';
+}
+
 export interface ChannelHandlers {
   /** The server accepted the channel; `info` is its handshake payload. */
   onOpen?(info: unknown): void;

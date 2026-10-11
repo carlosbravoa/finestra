@@ -1,0 +1,14 @@
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "entry": "app.js",
+  "style": "app.css",
+  "icon": "👋",
+  "description": "The smallest app package: two files and no build step",
+  "category": "Utilities",
+  "defaultSize": { "width": 520, "height": 360 },
+  "minSize": { "width": 300, "height": 200 },
+  "handles": [{ "verb": "View", "extensions": [".hello"] }]
+}

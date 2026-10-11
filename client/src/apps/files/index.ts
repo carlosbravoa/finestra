@@ -1,5 +1,5 @@
 import { h } from '../../core/dom';
-import { RpcError } from '../../core/rpc';
+import { isRpcError } from '../../core/rpc';
 import type { AppContext, AppInstance, AppManifest, MenuItem } from '../../core/types';
 import './files.css';
 
@@ -527,7 +527,7 @@ function formatTime(ms: number): string {
 }
 
 function describeError(err: unknown): string {
-  if (err instanceof RpcError) {
+  if (isRpcError(err)) {
     if (err.code === 'EACCES' || err.code === 'EPERM') return 'Permission denied.';
     if (err.code === 'ENOENT') return 'That path does not exist.';
     if (err.code === 'ENOTDIR') return 'That is not a folder.';

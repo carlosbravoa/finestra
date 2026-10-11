@@ -575,6 +575,9 @@ for src in "$PREVIOUS_STATE" "$LEGACY_STATE_DIR" "$LEGACY_SYSTEM_HOME" "$LEGACY_
     # status non-zero, and `set -e` would end the run there.
     [ -e "${src}/${f}" ] && cp -p "${src}/${f}" "${STATE_DIR}/${f}" || true
   done
+  # App packages are a directory, not a file, and an app someone installed is
+  # the first thing they would notice missing after changing accounts.
+  [ -d "${src}/apps" ] && cp -a "${src}/apps" "${STATE_DIR}/apps" || true
   chown -R "$SERVICE_USER:$SERVICE_GROUP" "$STATE_DIR"
   TOOK_OVER+=("the access token and settings from ${src}")
   say "carried the token and settings over from ${src}"

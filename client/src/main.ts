@@ -5,6 +5,7 @@ import { settingsApp } from './apps/settings';
 import { sysmanApp } from './apps/sysman';
 import { registerPinnedApps, waylandApp } from './apps/wayland';
 import { Desktop } from './core/desktop';
+import { packageProblem, registerPackages } from './core/packages';
 import type { AppManifest } from './core/types';
 import { h } from './core/dom';
 import './style/main.css';
@@ -61,10 +62,11 @@ function showBootError(mount: HTMLElement, title: string, detail: string, hint?:
 
 /**
  * Registers anything dropped into `apps-extra/`. Vite resolves the glob at
- * build time, so an app that is not there is not in the bundle — this is a
- * build-time extension point, not a runtime plugin loader, and deliberately so:
- * fetching code into a root-capable UI at runtime is a different and much worse
- * proposition.
+ * build time, so an app that is not there is not in the bundle. This is the
+ * extension point for apps that ship *with* the shell; apps installed on the
+ * server afterwards are packages, loaded at runtime over the authenticated
+ * socket by `core/packages.ts` — the trust model for that is set out in
+ * docs/app-installation.md.
  */
 function registerExtraApps(desktop: Desktop): void {
   const modules = import.meta.glob<Record<string, unknown>>(
@@ -151,6 +153,20 @@ async function boot(): Promise<void> {
   // happen after the connection is up (the list comes from the server) and
   // before restore, or a pinned window has no app to be restored into.
   await registerPinnedApps(desktop);
+
+  // App packages installed on the server. Registered from their manifests
+  // alone — no code runs until one is launched — and before restore, so a
+  // package's saved windows have an app to come back to.
+  const { broken } = registerPackages(desktop, desktop.installedApps());
+  if (broken.length > 0) {
+    desktop.notify({
+      kind: 'warning',
+      title: broken.length === 1 ? 'An app package cannot start' : `${broken.length} app packages cannot start`,
+      message: broken.map((p) => `${p.id}: ${packageProblem(p) ?? p.error}`).join('\n'),
+      timeout: 0,
+      actions: [{ label: 'Open Settings', onSelect: () => void desktop.launch('settings') }],
+    });
+  }
 
   // Put back whatever was open. Apps are already registered, and the server is
   // connected, so a restored terminal can spawn its shell immediately.

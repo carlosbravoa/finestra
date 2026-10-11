@@ -1,6 +1,27 @@
 # Design: installing and enabling apps
 
-Status: **proposal**. Nothing here is built yet.
+Status: **Stages 1 and 2 done.** Apps can be enabled and disabled per machine,
+and an app dropped into `<state>/apps/<id>/` as a package is listed, launched
+and restored without rebuilding the shell. The format is specified in
+`app-packages.md`; what follows is the design it came from, kept because the
+reasoning is what the next stage builds on.
+
+Stage 2 departs from the text below in three places, each found by looking
+rather than by reconsidering:
+
+- **Code travels over the RPC socket, not a static route.** `serveStatic` is
+  unauthenticated, and when the server dials out (`WD_DIAL`) there is no HTTP
+  listener at all — so the route would have needed auth of its own and still
+  not worked dialled out. `apps.read` hands the text over the one authenticated
+  transport, and the shell turns it back into a module through a Blob URL.
+- **`app.json` is the whole manifest and `app.js` exports only `mount`.**
+  Session restore drops, permanently, any record whose app is not registered.
+  Registering every package from its manifest — and fetching code lazily, on
+  first launch — means a broken package, or one written for a newer shell,
+  still has an app to restore into, which shows the reason instead of nothing.
+- **Packages live under the state directory**, not `~/.local/share`, because
+  that is the one path `configure.sh` creates, migrates between accounts,
+  whitelists under the sandbox and leaves alone across updates.
 
 Today `client/src/main.ts` hard-codes `desktop.register(terminalApp)` and
 `desktop.register(filesApp)`. Adding an app means editing the shell and

@@ -219,3 +219,8 @@
   width: 15px;
   height: 15px;
 }
+
+/* A package that cannot start says so where its description would be. */
+.settings-row-hint.is-broken {
+  color: var(--danger);
+}

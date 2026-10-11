@@ -1,5 +1,7 @@
+import type { InstalledApp } from '../../../../shared/protocol';
 import { DEFAULT_UPLOADS_DIR, WALLPAPERS } from '../../core/desktop';
 import { h, iconEl } from '../../core/dom';
+import { packageProblem, registerPackages } from '../../core/packages';
 import type { AppContext, AppInstance, AppManifest } from '../../core/types';
 import './settings.css';
 
@@ -33,6 +35,9 @@ async function mount({ root, desktop }: AppContext): Promise<AppInstance> {
       shells = [];
     }
   }
+
+  let installed: InstalledApp[] = [];
+  let packagesDir = '';
 
   const body = h('div', { class: 'settings-app' });
   root.replaceChildren(body);
@@ -201,6 +206,38 @@ async function mount({ root, desktop }: AppContext): Promise<AppInstance> {
     );
   }
 
+  /**
+   * Re-reads the packages directory and registers anything new, so "drop a
+   * package in and reopen Settings" is literally all an author has to do.
+   * Re-renders only when the listing changed, or every focus would flicker.
+   */
+  async function refreshPackages(): Promise<void> {
+    if (!desktop.rpc.hasService('apps')) return;
+    try {
+      const result = await desktop.rpc.call<{ dir?: string; installed?: InstalledApp[] }>('apps', 'list');
+      if (disposed) return;
+      const next = result.installed ?? [];
+      const changed = JSON.stringify(next) !== JSON.stringify(installed);
+      installed = next;
+      packagesDir = result.dir ?? '';
+      const { registered } = registerPackages(desktop, installed);
+      if (changed || registered.length > 0) render();
+    } catch {
+      // An older server, or one that cannot read its state: the list of
+      // built-ins is still worth showing.
+    }
+  }
+
+  function packageHint(app: AppManifest): { text: string; broken: boolean } | null {
+    const pkg = installed.find((p) => p.id === app.id);
+    if (!pkg) return null;
+    const problem = packageProblem(pkg);
+    if (problem) return { text: `Cannot start: ${problem}`, broken: true };
+    const version = pkg.manifest?.version ? ` ${pkg.manifest.version}` : '';
+    const about = app.description ? ` — ${app.description}` : '';
+    return { text: `Package${version}${about}`, broken: false };
+  }
+
   function apps(): HTMLElement {
     const persisted = desktop.rpc.hasService('apps');
     const rows = desktop
@@ -210,6 +247,7 @@ async function mount({ root, desktop }: AppContext): Promise<AppInstance> {
       .map((app) => {
         const isSettings = app.id === 'settings';
         const enabled = desktop.isAppEnabled(app.id);
+        const pkg = packageHint(app);
 
         const toggle = checkbox(enabled, (v) => {
           void desktop
@@ -235,10 +273,10 @@ async function mount({ root, desktop }: AppContext): Promise<AppInstance> {
             { class: 'settings-row-text' },
             h('div', { class: 'settings-row-label', text: app.name }),
             h('div', {
-              class: 'settings-row-hint',
+              class: `settings-row-hint${pkg?.broken ? ' is-broken' : ''}`,
               text: isSettings
                 ? 'Always on — it is how apps get re-enabled.'
-                : (app.description ?? ''),
+                : (pkg?.text ?? app.description ?? ''),
             }),
           ),
           toggle,
@@ -254,6 +292,12 @@ async function mount({ root, desktop }: AppContext): Promise<AppInstance> {
             class: 'settings-note',
             text: 'This server does not persist app state; changes last until reload.',
           }),
+      packagesDir
+        ? h('div', {
+            class: 'settings-note',
+            text: `App packages are read from ${packagesDir} — put one there and reopen Settings. See docs/app-packages.md.`,
+          })
+        : null,
     );
   }
 
@@ -342,9 +386,13 @@ async function mount({ root, desktop }: AppContext): Promise<AppInstance> {
   }
 
   render();
+  void refreshPackages();
 
   return {
-    onFocus: () => render(),
+    onFocus: () => {
+      render();
+      void refreshPackages();
+    },
     destroy: () => {
       disposed = true;
     },
