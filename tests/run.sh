@@ -142,6 +142,11 @@ run "opening from a terminal"     node tests/shell.mjs "$TOKEN" "$PORT"
 # Starts servers of its own: it changes the token, and the shared server's
 # token is in every other suite's argv.
 run "changing the access token"   node tests/auth.mjs "$((PORT + 20))"
+# The same, in a real browser: that a page gets back in on the cookie alone,
+# with the token nowhere a script could read it, is a claim only a browser
+# can make. Finds Chromium by absolute path — the `chromium` above is a
+# recorder — and skips itself when there is none. Its own server, as above.
+run "the access token, in a browser" node tests/access-browser.mjs "$((PORT + 30))"
 # The compositor's frame channel. Needs a C compiler and nothing else — not
 # libwayland, not a display, not an application — so unlike the rest of
 # compositor/ it runs everywhere.
