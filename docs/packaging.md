@@ -313,6 +313,12 @@ The token file is left in place under `--no-token` rather than deleted, so
 works. The server never writes one while `WD_NO_AUTH=1` is set, so a first
 install made with `--no-token` simply has no token file until it is turned on.
 
+The service rewrites that file itself when the token is changed from Settings
+→ Access, atomically, as the account it runs as. That is the one write the
+service makes outside its own state that packaging has to allow for, and it
+is inside the state directory the unit already whitelists; `acceptance.mjs`
+changes the token on every verified install to prove it still can.
+
 ## Verifying
 
 ```bash

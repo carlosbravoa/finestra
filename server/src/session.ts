@@ -18,12 +18,23 @@ import { ServiceError, type OpenedChannel, type Service } from './service.js';
  *
  * A session normally talks only to itself, and that is still true of every
  * request: this exists so one connection can *announce* something to the
- * others. There is exactly one caller — the `shell` service, carrying an
- * "open this" from a terminal to whichever browsers are showing a desktop —
- * and it is deliberately not a general message bus. Nothing here lets a
- * session read another's state or address one in particular.
+ * others. Two callers: the `shell` service, carrying an "open this" from a
+ * terminal to whichever browsers are showing a desktop, and the `auth`
+ * service, which has to tell every other desktop the token changed — or hang
+ * up on them, which is the one thing a session may do to another. It is
+ * deliberately not a general message bus: nothing here lets a session read
+ * another's state, and what `auth` lists about the others is who they are,
+ * never what they are doing.
  */
 export const liveSessions = new Set<Session>();
+
+/** What is known about the far end when the socket was accepted. */
+export interface SessionPeer {
+  address?: string | null;
+  userAgent?: string | null;
+  /** The connection came through a relay (`WD_DIAL`), not the listener. */
+  viaRelay?: boolean;
+}
 
 /**
  * One browser connection. Owns the demultiplexing of requests and channels
@@ -32,6 +43,8 @@ export const liveSessions = new Set<Session>();
  */
 export class Session {
   readonly id = randomUUID();
+  readonly since = Date.now();
+  readonly peer: SessionPeer;
   private readonly channels = new Map<number, OpenedChannel>();
   private closed = false;
 
@@ -40,7 +53,9 @@ export class Session {
     private readonly services: Map<string, Service>,
     private readonly config: Config,
     private readonly host: HostInfo,
+    peer: SessionPeer = {},
   ) {
+    this.peer = peer;
     ws.on('message', (data, isBinary) => {
       // The session's clock, when it has one, is fed from here — the only
       // place that knows the far side is still there.
@@ -190,6 +205,20 @@ export class Session {
       announce: (svc: string, event: string, data?: unknown) =>
         this.announce(svc, event, data),
     };
+  }
+
+  /** Push an event to this session alone. */
+  tell(svc: string, event: string, data?: unknown): void {
+    this.send({ t: 'ev', svc, e: event, d: data });
+  }
+
+  /**
+   * Hang up, with a reason the browser can show. The socket's own close event
+   * does the bookkeeping, so this is nothing more than the frame.
+   */
+  close(code: number, reason: string): void {
+    if (this.closed) return;
+    this.ws.close(code, reason);
   }
 
   /** Announce to every *other* live session. Returns how many were told. */

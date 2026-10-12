@@ -139,6 +139,14 @@ run "transfer + apps service"     node tests/transfer.mjs "$TOKEN" "$PORT"
 run "system-manager services"     node tests/sysman.mjs "$TOKEN" "$PORT"
 run "wayland service"             node tests/wayland.mjs "$TOKEN" "$PORT"
 run "opening from a terminal"     node tests/shell.mjs "$TOKEN" "$PORT"
+# Starts servers of its own: it changes the token, and the shared server's
+# token is in every other suite's argv.
+run "changing the access token"   node tests/auth.mjs "$((PORT + 20))"
+# The same, in a real browser: that a page gets back in on the cookie alone,
+# with the token nowhere a script could read it, is a claim only a browser
+# can make. Finds Chromium by absolute path — the `chromium` above is a
+# recorder — and skips itself when there is none. Its own server, as above.
+run "the access token, in a browser" node tests/access-browser.mjs "$((PORT + 30))"
 # The compositor's frame channel. Needs a C compiler and nothing else — not
 # libwayland, not a display, not an application — so unlike the rest of
 # compositor/ it runs everywhere.
@@ -157,6 +165,7 @@ run "session deadman"             npx tsx tests/deadman.test.ts
 run "session store"               npx tsx tests/session-store.test.ts
 run "file associations"           npx tsx tests/assoc.test.ts
 run "the desktop clipboard"       npx tsx tests/clipboard.test.ts
+run "the access token in the page" npx tsx tests/access.test.ts
 # Reads files rather than running anything: the product's name where it is
 # load-bearing, and the internals that deliberately are not the product's name.
 run "packaging names"             bash tests/packaging-names.sh

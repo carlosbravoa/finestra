@@ -132,21 +132,23 @@ One `fetch()` copies it off-box, and whoever holds it then has a shell on that
 server from anywhere, indefinitely, whether or not the browser is still open.
 The amplification is remoteness and persistence, not the privilege level.
 
-That is worth fixing on its own merits, independent of any app-install work,
-and it is cheap:
+That was worth fixing on its own merits, independent of any app-install work,
+and it was cheap. Both parts shipped in 0.3.10:
 
-1. **Keep the token out of reach of page JavaScript.** The server already sets
-   an `HttpOnly` cookie, which script cannot read. The `localStorage` copy in
-   `main.ts` exists only to put `?t=` on the WebSocket URL. If the cookie rides
-   the WS upgrade unaided — very likely in production, and plausibly through
-   the Vite dev proxy — the `localStorage` copy is redundant and should go.
-   **Verify before relying on it**, in both dev and production.
-2. **Give rotation a UI.** Today rotating means deleting a file on the host and
-   restarting. If a token is the thing worth stealing, revoking one should not
-   require shell access.
+1. **The token is out of reach of page JavaScript.** It is exchanged for an
+   `HttpOnly` cookie on the first load and never stored again; the cookie
+   rides the WebSocket upgrade unaided, in production and through the Vite
+   dev proxy, which `tests/access.test.ts` and the headless-browser check
+   confirmed before the `localStorage` copy was removed. An app package can
+   open a shell, but it cannot copy the credential off-box.
+2. **Rotation has a UI.** Settings → Access lists who is connected and mints
+   a new token without a restart (`server/src/services/auth.ts`). The default
+   keeps every desktop connected at that moment and cuts off every copy that
+   is not — which is exactly the set a leak lives in — and the alternative
+   signs the others out too, for when the list shows one you did not open.
 
-Do these two and the gap between this and a native install largely closes,
-without the cost of the next paragraph.
+That closes most of the gap between this and a native install, without the
+cost of the next paragraph.
 
 ### Real isolation, if it is ever wanted
 

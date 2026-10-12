@@ -1,3 +1,4 @@
+import { withToken } from './access';
 import { Emitter } from './events';
 import { RpcClient } from './rpc';
 import type { ConnectionState, SettingsStore } from './types';
@@ -146,6 +147,19 @@ export class HostRegistry {
         entry.label = host.hostname;
         this.persist();
       }
+      this.events.emit('changed', undefined);
+    });
+    // A remote host is reached with the token in its URL — there is no cookie
+    // across origins — so when that host changes its token from some other
+    // desktop, the stored address has to follow or the next reconnect is
+    // refused. The local host's token is a cookie the desktop refreshes itself.
+    rpc.events.on('event', ({ svc, e, d }) => {
+      if (entry.local || svc !== 'auth' || e !== 'rotated') return;
+      const token = (d as { token?: unknown } | null)?.token;
+      if (typeof token !== 'string' || !token) return;
+      entry.url = withToken(entry.url, token);
+      rpc.setUrl(entry.url);
+      this.persist();
       this.events.emit('changed', undefined);
     });
 

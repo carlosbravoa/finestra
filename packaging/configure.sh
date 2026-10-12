@@ -1038,7 +1038,7 @@ ${REACH}
 $(if [ "$TOKEN" = yes ]; then
 cat <<TOKENFILE
   The token lives in ${TOKEN_FILE}.
-  Delete that file and restart to rotate it.
+  Settings → Access in the desktop changes it; so does deleting that file and restarting.
 TOKENFILE
 else
 cat <<TOKENKEPT

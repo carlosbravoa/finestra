@@ -283,3 +283,11 @@
   white-space: pre-wrap;
   overflow-x: auto;
 }
+
+/* Over a desktop that has been signed out: the windows underneath are not
+   torn down, so the session they are saving on the way out is not lost. */
+.boot-error.is-over {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+}

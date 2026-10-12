@@ -70,7 +70,7 @@ serving the last production build.
 | --- | --- | --- |
 | `WD_HOST` | `127.0.0.1` | Bind address. Loopback by default — this is a remote shell. On an installed service, set it with `configure.sh --bind`, not by hand. |
 | `WD_PORT` | `7070` | Port. |
-| `WD_TOKEN` | generated | Access token. Persisted to `~/.local/state/finestra/token`; delete that file to rotate. |
+| `WD_TOKEN` | generated | Access token. Unset, one is minted into `~/.local/state/finestra/token` and can be changed from Settings → Access without a restart; set, the environment owns it and Settings says so. |
 | `WD_NO_AUTH` | unset | `1` disables authentication entirely. Only ever for a private network you control. |
 | `WD_ROOT` | unset | Confines the `fs` service to a directory. Does **not** confine the terminal. |
 | `WD_STATIC` | auto | Directory the built client is served from. |
