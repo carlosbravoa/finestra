@@ -4,344 +4,180 @@ What changed in each release, for someone deciding whether to update. The
 reasoning behind a change is in its commit; the failures that cost time are in
 `docs/`.
 
-Entries are written for the person running this, not for the person who wrote
-it: what now works that did not, and what to expect if it bites.
-
 ## 0.3.13 — 2026-10-20
 
-- **Firefox and Thunderbird work.** Both draw their entire interface in a
-  Wayland subsurface over an empty window, and the compositor dropped
-  subsurfaces: the window opened at the right size with the right title and
-  stayed blank. Subsurfaces now reach the browser as their own canvases,
-  placed and stacked the way menus are, with synchronized commits held for
-  the parent's — so a player that draws controls over a video changes both
-  together. Chrome never needed any of this, which is why it worked first.
-- **Scaled (HiDPI) screens.** At 150%, 166% or 200% every application was
-  asked to be twice its size and clicks landed twice as far from the
-  window's corner — an application that drew but never responded, and with
-  Firefox a window that grew to 6904×3900 and crawled. Sizes and clicks are
-  now in the application's own coordinates and the window paints at the
-  screen's density.
-- **An application that picks its own size no longer picks a screen's
-  worth.** Launched without a size, Firefox opened at 1920×1080 — the
-  imaginary screen the compositor advertised. The shell now tells the
-  compositor how much room there is, so a browser opens filling the window
-  and a calculator still opens calculator-sized; a window the application
-  resizes on its own is followed until you resize it yourself.
+- **Firefox and Thunderbird work.** Both draw their interface in a Wayland
+  subsurface, which the compositor did not support: the window opened and
+  stayed blank. Subsurfaces now reach the browser as their own canvases.
+- **Scaled (HiDPI) screens work.** At 150%, 166% or 200%, applications were
+  asked for twice their size and clicks landed in the wrong place. Sizes and
+  clicks now use the application's own coordinates, and the window paints at
+  the screen's density.
+- **An application launched without a size fills its window**, instead of
+  opening at the 1920×1080 the compositor used to advertise. A window the
+  application resizes itself is followed until you resize it.
 - **Menus open in the right place at any zoom.**
 
 ## 0.3.10 — 2026-10-11
 
 - **The access token can be changed from Settings.** Settings → Access lists
-  every desktop connected right now — which browser, from where, since when —
-  and a button mints a new token. Every link saved before stops working at
-  once. The desktops connected at that moment carry on: the new token reaches
-  them over the connection they already have, so a laptop, a phone and a tab
-  you forgot all stay in, while an old bookmark, a link pasted somewhere, or a
-  copy an app made off-box are all cut off. A second button signs the other
-  desktops out as well, for when the list shows one you did not open; they are
-  told why, and their windows come back when the new link is opened. The new
-  link is shown once, and the token file on the server holds it too. Changing
-  it used to mean deleting that file and restarting the service. A token set
-  with `WD_TOKEN` stays with the environment that set it, and Settings says so.
-- **The token no longer lives in the page.** The browser kept a copy in
-  `localStorage` for its socket, where any script in the page could read it —
-  the one thing a stolen token needs. It is now exchanged for an HttpOnly
-  cookie on the first load and never stored again; a copy left by an earlier
-  version is removed. A browser that blocks cookies for the address is told
-  so, instead of the desktop looking offline.
-- **A desktop whose token was changed while it was away is told.** It used to
-  retry for ever under a "reconnecting" badge. It now says what happened and
-  what to open.
+  every connected desktop (browser, address, since when) and can issue a new
+  token. Old links stop working at once. Desktops connected at that moment
+  receive the new token and stay in; a second button signs them out too. A
+  token set with `WD_TOKEN` cannot be changed there, and Settings says so.
+- **The token no longer lives in the page.** It was kept in `localStorage`,
+  where any script in the page could read it. It is now exchanged for an
+  HttpOnly cookie on first load; a copy left by an earlier version is removed.
+  A browser that blocks cookies for the address is told so.
+- **A desktop whose token changed while it was away is told** what happened
+  and what to open, instead of reconnecting for ever.
 
 ## 0.3.9 — 2026-10-11
 
-- **Maintenance only.** The server's WebSocket library moves to ws 8.22.0, and
-  the tools the release is built with were refreshed. Nothing you use should
-  look or behave differently; there is no security fix in this one, so there
-  is no hurry to take it.
+- **Maintenance only.** ws 8.22.0 and refreshed build tools. No visible change
+  and no security fix.
 
 ## 0.3.8 — 2026-09-25
 
-- **Runs on 64-bit ARM.** There is now an arm64 build beside the x86_64 one,
-  and the one-line installer picks whichever fits the machine: Graviton and
-  other ARM servers, and a Raspberry Pi 4 or 5 running the **64-bit**
-  Raspberry Pi OS. It is checked on the same six distributions as x86_64. A
-  32-bit Raspberry Pi OS is refused with a sentence saying so, including the
-  common case of a 64-bit kernel under a 32-bit system. Applications you
-  launch in it are another matter: many closed-source ones have no ARM build
-  for Linux at all.
-
+- **Runs on 64-bit ARM.** An arm64 build sits beside the x86_64 one and the
+  installer picks the right one: Graviton and other ARM servers, and
+  Raspberry Pi 4 and 5 on the 64-bit Raspberry Pi OS. The 32-bit Raspberry
+  Pi OS is refused with a message, including a 64-bit kernel over a 32-bit
+  system. Many closed-source applications have no ARM build for Linux.
 - **Native applications start on Debian 12, Rocky 9 and Amazon Linux 2023.**
-  They never did: the compositor needed a newer C library than those
-  releases have, and failed to start without saying why, while everything
-  else worked. The one-line installer accordingly accepted only Ubuntu
-  24.04 and newer; it now accepts glibc 2.34 and newer, which covers all
-  three and Raspberry Pi OS.
+  The compositor needed a newer C library than those have and failed without
+  a message. The installer now accepts glibc 2.34 and newer.
 
 ## 0.3.7 — 2026-09-07
 
-- **A terminal survives losing its browser.** Close the tab, shut the laptop,
-  drop off the VPN: the shell keeps running and the terminal that comes back
-  — the same page reconnecting, or a reload restoring the session — picks it
-  up where it was, showing what it missed. Before, every disconnect hung the
-  shell up and killed whatever was in it, the way a dropped SSH session does.
-  A shell nobody comes back for is hung up after an hour; `WD_TERMINAL_GRACE`
-  changes that, and `0` restores the old behaviour. Closing the window still
-  ends the shell, and so does restarting the service.
-
-- **A terminal can be kept for as long as it takes.** *Shell → Keep running
-  while I am away* exempts a shell from that hour — for the training run
-  that finishes tomorrow. Opening the desktop later, from any browser,
-  brings up a terminal onto every shell still running that no window is
-  showing; *Shell → Pick up a terminal* lists the rest, with what each is
-  running and how long it has been alone.
-
-- **The terminal is drawn by xterm.js 6.** Under the hood only; it should
-  look and behave exactly as before. If something in the terminal renders
-  differently than it did in 0.3.6, this is the change to suspect. The
-  build tooling moved to TypeScript 7 and Vite 8 at the same time, which
-  changes nothing that ships.
+- **A terminal survives losing its browser.** Close the tab or drop the
+  connection: the shell keeps running, and the terminal picks it up on
+  reconnect or reload. A shell nobody returns to is closed after an hour;
+  `WD_TERMINAL_GRACE` changes that, and `0` restores the old behaviour.
+  Closing the window or restarting the service still ends the shell.
+- **A terminal can be kept indefinitely.** *Shell → Keep running while I am
+  away* exempts it from the hour. Opening the desktop later brings up a
+  terminal for every shell still running; *Shell → Pick up a terminal* lists
+  the rest.
+- **The terminal moved to xterm.js 6.** No intended change in behaviour. The
+  build tooling moved to TypeScript 7 and Vite 8.
 
 ## 0.3.6 — 2026-08-24
 
-- **VS Code — and Electron apps generally — now start.** Two faults, either
-  one fatal. VS Code's `codium` command is a script that starts the editor in
-  the background and exits at once, and the compositor read that exit as "the
-  application closed" — tearing the session down under an editor that was
-  still starting, and calling it a clean exit. Sessions now live as long as
-  something is connected to the display, not as long as the first process.
-  Separately, Electron apps look for X11 and give up on a machine that has
-  none; every launch now carries the environment hint that points them at
-  Wayland instead. No app is named anywhere — anything shaped like either
-  problem is covered.
-
-- **Pasting text copied outside this desktop into the terminal works
-  again.** Broken by 0.3.5's double-paste fix, which suppressed the browser's
-  own paste — the only channel outside text has into a plain-http page. If
-  Ctrl+Shift+V answered "there is nothing to paste" to a full clipboard, this
-  is that. The double paste stays fixed.
-
-- **An app that fails right after starting is reported for what it did.**
-  "Reached the display and closed before showing anything" now, when that is
-  what happened — previously every silent exit read as the application never
-  arriving, which pointed at the environment when the app itself had decided
-  to stop.
-
-- **Closing a window cannot leave the app running behind it.** Applications
-  started through a launcher ended up outside the compositor's reach; closing
-  the session killed the launcher's remains and missed the app. They are now
-  asked to stop by the identity their display connection carries, however
-  they were started.
+- **VS Code and other Electron apps start.** The `codium` command exits as
+  soon as it has started the editor in the background, and the compositor read
+  that as the application closing. Sessions now last as long as something is
+  connected to the display. Electron apps also look for X11 first; every
+  launch now points them at Wayland.
+- **Pasting text copied outside the desktop into the terminal works again.**
+  Broken in 0.3.5.
+- **An app that exits right after starting is reported as such**, instead of
+  as never having started.
+- **Closing a window cannot leave the app running.** Apps started through a
+  launcher are now stopped by their display connection, however they were
+  started.
 
 ## 0.3.5 — 2026-08-20
 
-- **Ctrl+Shift+V in the terminal pasted everything twice.** New in 0.3.4, and
-  the reason is that the browser reads that combination as its own
-  paste-as-plain-text: the terminal pasted what you asked for, and the browser
-  pasted it again underneath. Once now.
-
-- **Pasting into the terminal is a paste, not typing.** Both the desktop
-  clipboard and the browser's own now go through the terminal's paste path, so
-  the text carries the brackets a program asks for when it wants to tell the
-  two apart. In practice that means a block of YAML pasted into `vim` or
-  `nano` arrives as it left, rather than auto-indented into a staircase.
-
-- **Switching to the light theme no longer leaves the desktop icons
-  unreadable.** The icons sit on the wallpaper rather than on anything the
-  theme controls, so choosing Light over a dark wallpaper printed dark names
-  on a dark picture. Two changes: the theme now moves the wallpaper with it,
-  remembering separately what you chose under each, and icon labels take their
-  colour from the wallpaper instead of the theme — so a light wallpaper under
-  the dark theme, which was equally broken, is readable too. An install
-  already sitting in that state fixes itself when the page reloads.
-
-- **Two more light wallpapers**, since "light" used to mean one grey wash.
-  *Linen* is quiet and neutral; *Horizon* is a colourful one in the style
-  current Macs use, kept pale so dark labels stay readable across it.
-
-- **The desktop's right-click menu offered Settings twice.** The shortcuts at
-  the top are the first three apps by name, and Settings sorted into them
-  right above the menu's own Settings entry. Apps that only ever have one
-  window are no longer offered as "New …", which is true of Settings and the
-  System Manager both.
+- **Ctrl+Shift+V in the terminal pasted twice.** Fixed.
+- **Pasting into the terminal is a bracketed paste**, so text pasted into
+  `vim` or `nano` arrives as it was, not auto-indented.
+- **Desktop icon labels are readable under the light theme.** The theme now
+  changes the wallpaper with it, and labels take their colour from the
+  wallpaper.
+- **Two more light wallpapers**: *Linen* and *Horizon*.
+- **The desktop's right-click menu no longer offers Settings twice.** Apps
+  with a single window are not offered as "New …".
 
 ## 0.3.4 — 2026-08-20
 
-- **Copy and paste work between the desktop's own windows again.** The browser
-  only shares the clipboard with a page served over https, and this desktop is
-  plain http behind an SSH tunnel — so it refused, and every app said so and
-  dropped the text. What was easy to miss is that this took *internal* copying
-  with it: a path copied out of Files and pasted into the terminal, a command
-  line from the process list, a line copied out of a Linux application in the
-  applications window. None of that involves your own machine's clipboard, and
-  all of it was failing.
-
-  The desktop now keeps its own clipboard. Every copy is kept there whatever
-  the browser decides, and pasting anywhere in the desktop — the terminal, the
-  editor, a native application, with Ctrl+V, Ctrl+Shift+V, middle-click or a
-  menu — uses it. Nothing to enable, and nothing to change if you already run
-  it behind TLS.
-
-- **Copies now reach the machine your browser is on, too.** Over plain http
-  they never did. The desktop falls back to the pre-permissions copy path,
-  which browsers still allow without a secure context, so a path copied in the
-  desktop can be pasted into anything else on your own machine. Pasting *in*
-  from your machine works as it always did, and still wins when you copied
-  there more recently than here.
-
-  Where the desktop cannot reach your machine's clipboard at all, it says so
-  once, in one notification, rather than complaining on every copy.
-
-- Still worth putting TLS in front of this if you can — a secure origin gets
-  the browser's own clipboard with no fallbacks. This release is about the
-  desktop being usable without one.
+- **Copy and paste work between the desktop's own windows again.** Browsers
+  share the clipboard only with https pages, and the desktop is http behind an
+  SSH tunnel. The desktop now keeps its own clipboard: every copy goes there
+  and every paste reads it.
+- **Copies also reach your own machine's clipboard** over plain http, through
+  the older copy path browsers still allow. Pasting in from your machine works
+  as before. Where the desktop cannot reach your clipboard, it says so once.
+- TLS in front of it still gets the browser's own clipboard, with no fallbacks.
 
 ## 0.3.3 — 2026-08-18
 
-- **It installs on Fedora, Rocky, RHEL and anything else with SELinux
-  enforcing.** It did not before, and the way it failed told you almost
-  nothing: the install finished, reported success, and the service then
-  restarted every two seconds with
-
-  ```
-  Failed to locate executable /opt/finestra/current/runtime/bin/node:
-  Permission denied            ... status=203/EXEC
-  ```
-
-  about a file that is present, executable, owned by root, and which runs
-  perfectly if you type its path yourself. The cause is that an SELinux label
-  comes from where a file was made rather than where it lives: the tarball is
-  unpacked under `/tmp`, so everything in it carried a temporary-file type into
-  `/opt`, and systemd is not permitted to execute that. The installer now runs
-  `restorecon` on what it wrote.
-
-  If you hit this on 0.3.2 there is nothing to undo — install 0.3.3 over the
-  top and it will start.
-
-- **Updates on those systems no longer roll themselves back.** `update.sh` put
-  the new version in place the same way, so an upgrade installed cleanly,
-  switched, failed its own health check and reverted — which looked like a bad
-  release rather than a file label. Note that the updater inside a package is a
-  copy taken when that package was built, so the *upgrade off* 0.3.2 on an
-  enforcing system still uses the old one; installing the 0.3.3 tarball
-  directly is the way through. Every update after this one is fine.
-
-- Nothing changes on Ubuntu or Debian, which carry no SELinux, or on Amazon
-  Linux 2023, which ships it permissive. All three worked before and work now.
+- **Installs on Fedora, Rocky, RHEL and other systems with SELinux
+  enforcing.** The service used to restart every two seconds with
+  `Permission denied ... status=203/EXEC` on a file that ran fine from a
+  shell: files unpacked under `/tmp` carried a temporary-file label into
+  `/opt`. The installer now runs `restorecon`. Installing 0.3.3 over 0.3.2
+  fixes it.
+- **Updates on those systems no longer roll themselves back.** The updater
+  inside 0.3.2 is the old one, so install the 0.3.3 tarball directly; updates
+  after that work.
+- Nothing changes on Ubuntu, Debian or Amazon Linux 2023.
 
 ## 0.3.2 — 2026-08-13
 
-- **It can answer on your network, not just through a tunnel.** Until now the
-  desktop bound loopback and the only way in was `ssh -L`. On a network you
-  actually control — a VPN, a tailnet, a LAN behind your own router — that is a
-  tax rather than a boundary, so the installed service can now drop it:
-
-  ```bash
-  sudo /opt/finestra/current/configure.sh --bind 0.0.0.0             # answer everywhere
-  sudo /opt/finestra/current/configure.sh --bind 100.83.0.4          # one address only
-  sudo /opt/finestra/current/configure.sh --bind 0.0.0.0 --no-token  # and no login at all
-  sudo /opt/finestra/current/configure.sh --bind local --token       # put it back
-  ```
-
-  Neither is refused and neither asks you to confirm: it warns, writes the
-  choice into the unit, and prints what it opened. Both survive upgrades and
-  both show in `--show`. The same flags work on `install.sh` and on the
-  one-liner, so a machine can be installed open in the first place.
-
-  Nothing changes if you do nothing. Loopback and a token remain the defaults,
-  an existing install keeps binding loopback, and the tunnel works as before.
-  Two things to know if you do open it: it is plain HTTP, so put TLS in front
-  of it before it faces anything untrusted; and the terminal is a real shell,
-  with `sudo` if you chose the privileged install.
-
-- **Binding one VPN address is tighter and more fragile.** That address does
-  not exist until the tunnel is up, and a service that starts first fails with
-  `EADDRNOTAVAIL`. `configure.sh` now warns when no interface carries the
-  address yet. For a tailnet, either bind everything and let the firewall
-  decide, or leave it on loopback with `tailscale serve` in front — that also
-  gets you a real certificate.
-
-- **Updates no longer roll themselves back on an opened install.** `update.sh`
-  and `configure.sh` both prove the service came up by asking it, and both used
-  to ask loopback. Bound to one address, loopback answers nothing — so a
-  working install reported "the service did not start" and a working update
-  undid itself. Both now ask the address the service is actually on.
-
-- **A hand-written drop-in is still honoured, and now said out loud.** If you
-  set `WD_HOST` in `systemd edit` before this existed, it still wins — it is
-  merged after the unit. `configure.sh` now reads back what is really in force
-  and tells you, instead of reporting a bind you are not getting. It never
-  removes the file.
+- **It can listen on your network, not only on loopback.**
+  `configure.sh --bind 0.0.0.0` answers everywhere, `--bind <address>` on one
+  address, `--no-token` removes the login, and `--bind local --token` puts it
+  back. The choice is written into the unit and survives upgrades. The same
+  flags work on `install.sh` and the one-liner. The defaults are unchanged.
+  It is plain HTTP: put TLS in front of it before it faces anything untrusted.
+- **Binding one VPN address** fails with `EADDRNOTAVAIL` if the service starts
+  before the tunnel. `configure.sh` warns when no interface has the address.
+  For a tailnet, bind everything or use `tailscale serve` on loopback.
+- **Updates no longer roll back on an opened install.** The health check asks
+  the address the service is on, not loopback.
+- **A `WD_HOST` drop-in from `systemctl edit` is still honoured**, and
+  `configure.sh` reports what is in force.
 
 ## 0.3.1 — 2026-08-13
 
-- **Windows give a band back.** An application's menus now sit behind one ☰
-  button alongside minimize, maximize and close, instead of in a row of their
-  own — so every window is 25px shorter. It matters most for native
-  applications, which draw their own titlebar inside their window: that used to
-  make three bars stacked above the content, and now makes two. Nothing moved
-  out of reach; the same menus are one press away.
+- **Windows are 25px shorter.** An application's menus sit behind one ☰
+  button next to minimize, maximize and close.
 
 ## 0.3.0 — 2026-08-12
 
-**Browsers run.** Chrome, Chromium and anything built on them now open, draw,
-take input and browse. Five separate faults were stacked under one symptom
-("it worked once and never again"), and all five are fixed:
+**Browsers run.** Chrome, Chromium and browsers built on them open, draw, take
+input and browse. Five faults fixed:
 
-- Chromium defaults to the X11 platform and aborted on a machine with no
-  display, before ever reaching Wayland. It is now told which platform to use,
-  in the command line of that one launch — nothing is written to your machine
-  and nothing changes for a desktop you also log into.
-- The compositor advertised a zero-pixel screen when a window was free to pick
-  its own size. GTK applications ignore that; Chrome reads it and dies without
-  a word. Windows that choose their own size now still have a screen to
-  choose against.
-- Every application was started with SIGTERM blocked and with file descriptors
-  it should never have been handed, including a terminal's. Closing an
-  application therefore always killed it outright, however politely we asked.
-- Closing a window now **asks** the application to close and waits for it to go,
-  instead of killing it and its display at the same instant. Applications that
-  keep a lock file — most browsers — no longer leave one behind and refuse to
-  start next time. A second click on the ✕ still forces a hung one.
-- Reloading the browser tab relaunched an application while the previous copy
-  was still dying, and the new one handed its window to the old one. A launch
-  now waits for the previous copy to be gone.
+- Chromium defaults to X11 and aborted before reaching Wayland. It is now told
+  the platform on the command line of that one launch.
+- The compositor advertised a zero-pixel screen when a window chose its own
+  size. Chrome died on it.
+- Applications were started with SIGTERM blocked and with inherited file
+  descriptors, so closing always killed them outright.
+- Closing a window asks the application to close and waits for it, so browsers
+  no longer leave a lock file behind. A second click on ✕ forces it.
+- Reloading the tab relaunched an application while the previous copy was
+  still dying. A launch now waits for it to be gone.
 
-**When something does not start, it says why.** The reason was already on the
-application's own error output and was being thrown away. A window that closes
-without opening now quotes the application, and the "it is running in your
-desktop session" explanation is only offered on machines that actually have
-one — a headless server is no longer told to go and close a window on a screen
-it does not have.
+**When something does not start, it says why**, quoting the application's
+error output. The "running in your desktop session" explanation is offered
+only on machines that have one.
 
 ## 0.2.3 — 2026-08-12
 
-- Snap applications are marked as such in the applications window, with one
-  note explaining what that means, so the caveat arrives before the surprise.
-- The download page says snaps are experimental, and `docs/wayland.md` records
-  what is known to work and what is not.
+- Snap applications are marked in the applications window, with a note on
+  what that means.
+- The download page says snaps are experimental; `docs/wayland.md` records
+  what works.
 
 ## 0.2.2 — 2026-08-11
 
-- Snaps start on a packaged install. The session bus they need is now derived
-  from the runtime directory rather than hoped for in the environment, which a
-  systemd unit never has.
-- The text editor no longer draws a focus ring across the top and left of its
-  text area.
-- Publishing refuses to overwrite a version that was already released from a
-  different build.
+- Snaps start on a packaged install: the session bus is derived from the
+  runtime directory.
+- The text editor no longer draws a focus ring across its text area.
+- Publishing refuses to overwrite a version already released from a different
+  build.
 
 ## 0.2.1 — 2026-08-11
 
 - The installer no longer fetches two libraries at install time, and says what
-  it does instead.
+  to install instead.
 - The licence is back in the install tree.
 - The site counts what it served without the product reporting anything.
 
 ## 0.2.0 — 2026-08-11
 
-First public release: the desktop, the terminal on a real PTY, the file
-manager, system and service management, native Linux applications through a
-Wayland compositor written for this, session restore, and a one-command
-install.
+First public release: the desktop, the terminal, the file manager, system and
+service management, Linux GUI applications through a Wayland compositor,
+session restore, and a one-command install.
