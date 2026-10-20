@@ -4,6 +4,27 @@ What changed in each release, for someone deciding whether to update. The
 reasoning behind a change is in its commit; the failures that cost time are in
 `docs/`.
 
+## 0.3.14 — 2026-10-20
+
+- **Open and Save dialogs work in Firefox and other confined applications.**
+  A snap asks the desktop portal for its file dialog, and a headless server
+  has no portal, so the dialog never appeared. The server now answers the
+  file-chooser portal itself: the dialog is drawn by the desktop over the
+  application's window and browses the server's files. Open, Save, multiple
+  selection and folder choice are covered. Other portals (settings,
+  screenshots, notifications) are still absent.
+- **An application already running on the machine's own screen is named.**
+  Launching Firefox while a copy was open on the server's physical desktop
+  ended with "started and exited without opening a window". It now says the
+  application is already running outside this desktop, with its pid.
+- **System Manager, Processes.** Arriving from Network or the Journal left a
+  single pid in the filter with no obvious way back; a "Show all" button
+  appears whenever a filter is set. The detail panel can be closed with ✕,
+  Escape or a second click. When the selected process ends, the panel closes
+  and the full list returns. Terminate and Kill now say what they do, in the
+  buttons, the confirmation and the menu, and a process still running five
+  seconds after Terminate gets a note pointing at Kill.
+
 ## 0.3.13 — 2026-10-20
 
 - **Firefox and Thunderbird work.** Both draw their interface in a Wayland
