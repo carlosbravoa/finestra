@@ -522,6 +522,58 @@ if (resized) {
     after.x === 0 && after.y === 0 && after.width === 500);
 }
 
+/* ------------------------------------------------------------------ */
+/* Subsurfaces: a surface drawn inside another, shown as its own canvas */
+/* ------------------------------------------------------------------ */
+
+// Firefox draws its entire interface in one wl_subsurface over an empty
+// toplevel, so a compositor that drops subsurface commits shows a blank
+// browser with the right title. The fixture is that shape without the
+// browser: a red window, a green rectangle committed *synchronized* over it,
+// with an empty input region, moved on the next configure.
+const subApp = apps.find((a) => a.id === 'wd-test-subsurface');
+if (subApp) {
+  const sub = open('wayland', 'session', { appId: subApp.id, width: 320, height: 240 });
+  const announced = await until(() =>
+    sub.data.some((d) => d.t === 'subsurface') && sub.frames.length >= 2);
+  const win = sub.data.find((d) => d.t === 'window');
+  const placed = sub.data.find((d) => d.t === 'subsurface');
+  check('a subsurface is announced, with its parent and position', announced && placed?.parent === win?.id,
+    placed ? `w${placed.id} in w${placed.parent} at ${placed.x},${placed.y}` : (sub.error ?? 'nothing arrived'));
+  check('where the application put it, stacked above the parent',
+    placed?.x === 40 && placed?.y === 30 && placed?.z === 1, placed ? `${placed.x},${placed.y} z${placed.z}` : '');
+  check('and the empty input region is passed on, so the pointer falls through',
+    placed?.input === false, `input ${placed?.input}`);
+
+  const decoded = sub.frames.map(decodeFrame);
+  const parentAt = decoded.findIndex((f) => f.id === win?.id);
+  const childAt = decoded.findIndex((f) => f.id === placed?.id);
+  const childFrame = decoded[childAt];
+  check('its frame arrives under its own id, at its own size',
+    childAt >= 0 && childFrame.fullWidth === 120 && childFrame.fullHeight === 80,
+    childFrame ? `${childFrame.fullWidth}x${childFrame.fullHeight}` : 'no frame for it');
+  check('carrying its own pixels, not the parent\'s',
+    childFrame && childFrame.pixels[0] === 0 && childFrame.pixels[1] === 255 && childFrame.pixels[2] === 0,
+    childFrame ? `rgb(${childFrame.pixels[0]},${childFrame.pixels[1]},${childFrame.pixels[2]})` : '');
+  // The fixture commits the child 300ms before the parent. A compositor that
+  // showed it at once would have its frame first.
+  check('a synchronized commit is held until the parent commits',
+    parentAt >= 0 && childAt > parentAt, `parent frame #${parentAt}, child frame #${childAt}`);
+
+  for (const f of sub.frames) ctl(sub, 'ack', { id: f.readUInt32BE(0) });
+  const placements = sub.data.filter((d) => d.t === 'subsurface').length;
+  ctl(sub, 'configure', { id: win.id, width: 400, height: 300 });
+  const moved = await until(() => sub.data.filter((d) => d.t === 'subsurface').length > placements);
+  const last = sub.data.filter((d) => d.t === 'subsurface').pop();
+  check('a move set before the parent commits lands with that commit',
+    moved && last?.x === 60 && last?.y === 50, last ? `${last.x},${last.y}` : 'no new placement');
+
+  ws.send(JSON.stringify({ t: 'close', id: sub.id }));
+  await sleep(300);
+} else {
+  console.log('SKIP  subsurfaces — compositor/build/subsurface-client is not built (needs libwayland-client)');
+}
+
 /* Damage tracking is the whole bandwidth story: after the first frame, a
  * redraw should cost a fraction of a full one. Only assert it if the
  * application actually redrew something small on its own. */

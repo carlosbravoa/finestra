@@ -79,6 +79,19 @@ $(BUILD)/ipc-test: src/ipc-test.c src/ipc.c src/ipc.h | $(BUILD)
 check-ipc: $(BUILD)/ipc-test
 	@$(BUILD)/ipc-test
 
+# A client with a subsurface, for the suite to launch through the service: the
+# shape of Firefox without Firefox. Needs libwayland-client, which the build
+# host has whenever it has libwayland-dev; nothing ships it.
+$(BUILD)/xdg-shell-client-protocol.h: $(PROTO_DIR)/xdg-shell.xml | $(BUILD)
+	$(SCANNER) client-header $< $@
+
+$(BUILD)/subsurface-client: src/subsurface-client.c $(BUILD)/xdg-shell-client-protocol.h $(BUILD)/xdg-shell-protocol.o
+	$(CC) $(CFLAGS) $(shell pkg-config --cflags wayland-client) $< $(BUILD)/xdg-shell-protocol.o \
+		$(shell pkg-config --libs wayland-client) -o $@
+
+subsurface-client: $(BUILD)/subsurface-client
+.PHONY: subsurface-client
+
 # Does this machine have what the build needs? wayland-protocols is no longer
 # on the list: the XML it would have provided is in protocols/.
 check:

@@ -1,0 +1,147 @@
+/*
+ * A Wayland client that draws a window with a subsurface in it, for the test
+ * suite: a red toplevel, and a green rectangle committed *synchronized* over
+ * it, with an empty input region. It is the shape of Firefox — the browser
+ * puts its whole interface in one subsurface — reduced to what the suite can
+ * assert on without a browser installed: that the subsurface is announced
+ * with its parent and position, that its frame arrives under its own id and
+ * only once the parent has committed, and that moving it lands with the
+ * parent's next commit.
+ *
+ * Launched through the service like any application: run.sh writes a desktop
+ * entry pointing here. Built only where libwayland-client is, and the suite
+ * skips the checks when it is not.
+ */
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <wayland-client.h>
+
+#include "xdg-shell-client-protocol.h"
+
+static struct wl_compositor *compositor;
+static struct wl_subcompositor *subcompositor;
+static struct wl_shm *shm;
+static struct xdg_wm_base *wm_base;
+
+static struct wl_surface *surface, *child;
+static struct wl_subsurface *subsurface;
+static bool running = true;
+static int configures;
+
+static struct wl_buffer *solid(int32_t w, int32_t h, uint32_t argb) {
+	size_t size = (size_t)w * h * 4;
+	int fd = memfd_create("wd-subsurface", 0);
+	if (fd < 0 || ftruncate(fd, (off_t)size) < 0) {
+		perror("memfd");
+		exit(1);
+	}
+	uint32_t *px = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	for (size_t i = 0; i < size / 4; i++) px[i] = argb;
+	munmap(px, size);
+	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
+	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, w, h, w * 4,
+		WL_SHM_FORMAT_ARGB8888);
+	wl_shm_pool_destroy(pool);
+	close(fd);
+	return buffer;
+}
+
+static void wm_base_ping(void *data, struct xdg_wm_base *base, uint32_t serial) {
+	xdg_wm_base_pong(base, serial);
+}
+static const struct xdg_wm_base_listener wm_base_listener = {wm_base_ping};
+
+static int32_t width = 320, height = 240;
+
+static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
+		int32_t w, int32_t h, struct wl_array *states) {
+	if (w > 0 && h > 0) {
+		width = w;
+		height = h;
+	}
+}
+static void toplevel_close(void *data, struct xdg_toplevel *toplevel) {
+	running = false;
+}
+static const struct xdg_toplevel_listener toplevel_listener = {
+	toplevel_configure, toplevel_close, NULL, NULL};
+
+static void surface_configure(void *data, struct xdg_surface *xdg,
+		uint32_t serial) {
+	xdg_surface_ack_configure(xdg, serial);
+	configures++;
+
+	if (configures == 1) {
+		/* The child first, synchronized, and well before the parent: a
+		 * compositor that shows it now, rather than with the parent's
+		 * commit, is one the suite can catch. */
+		child = wl_compositor_create_surface(compositor);
+		subsurface = wl_subcompositor_get_subsurface(subcompositor, child, surface);
+		wl_subsurface_set_position(subsurface, 40, 30);
+		struct wl_region *empty = wl_compositor_create_region(compositor);
+		wl_surface_set_input_region(child, empty);
+		wl_region_destroy(empty);
+		wl_surface_attach(child, solid(120, 80, 0xff00ff00), 0, 0);
+		wl_surface_damage_buffer(child, 0, 0, 120, 80);
+		wl_surface_commit(child);
+		wl_display_flush(wl_proxy_get_display((struct wl_proxy *)child));
+		usleep(300 * 1000);
+	} else {
+		/* A move on the child is state of the parent's commit. */
+		wl_subsurface_set_position(subsurface, 60, 50);
+	}
+
+	wl_surface_attach(surface, solid(width, height, 0xffff0000), 0, 0);
+	wl_surface_damage_buffer(surface, 0, 0, width, height);
+	wl_surface_commit(surface);
+}
+static const struct xdg_surface_listener surface_listener = {surface_configure};
+
+static void global(void *data, struct wl_registry *registry, uint32_t name,
+		const char *interface, uint32_t version) {
+	if (!strcmp(interface, wl_compositor_interface.name)) {
+		compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 4);
+	} else if (!strcmp(interface, wl_subcompositor_interface.name)) {
+		subcompositor = wl_registry_bind(registry, name, &wl_subcompositor_interface, 1);
+	} else if (!strcmp(interface, wl_shm_interface.name)) {
+		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+	} else if (!strcmp(interface, xdg_wm_base_interface.name)) {
+		wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
+		xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
+	}
+}
+static void global_remove(void *data, struct wl_registry *registry, uint32_t name) {}
+static const struct wl_registry_listener registry_listener = {global, global_remove};
+
+int main(void) {
+	struct wl_display *display = wl_display_connect(NULL);
+	if (!display) {
+		fprintf(stderr, "wd-subsurface-client: no Wayland display\n");
+		return 1;
+	}
+	struct wl_registry *registry = wl_display_get_registry(display);
+	wl_registry_add_listener(registry, &registry_listener, NULL);
+	wl_display_roundtrip(display);
+	if (!compositor || !subcompositor || !shm || !wm_base) {
+		fprintf(stderr, "wd-subsurface-client: the compositor lacks a global\n");
+		return 1;
+	}
+
+	surface = wl_compositor_create_surface(compositor);
+	struct xdg_surface *xdg = xdg_wm_base_get_xdg_surface(wm_base, surface);
+	xdg_surface_add_listener(xdg, &surface_listener, NULL);
+	struct xdg_toplevel *toplevel = xdg_surface_get_toplevel(xdg);
+	xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
+	xdg_toplevel_set_title(toplevel, "Subsurface Test");
+	xdg_toplevel_set_app_id(toplevel, "wd-subsurface-test");
+	wl_surface_commit(surface);
+
+	while (running && wl_display_dispatch(display) != -1) {
+	}
+	return 0;
+}

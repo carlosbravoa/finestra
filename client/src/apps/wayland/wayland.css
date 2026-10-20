@@ -28,6 +28,11 @@
 
 .wayland-canvas {
   display: block;
+  /* Positioned so that a subsurface can be stacked under it as well as over
+     it: SUBSURFACE_BASE in index.ts, which each subsurface's own z-index is
+     counted from. Menus and dialogs sit above all of that. */
+  position: relative;
+  z-index: 100;
   /* Not `pixelated`. That was a defence against the browser magnifying a 1x
      frame onto a HiDPI box — nearest-neighbour looked less mushy than bilinear
      on text. The frame now arrives at the screen's own density, so there is
@@ -263,9 +268,16 @@
   position: relative;
 }
 
+/* A piece of its parent — Firefox's whole interface is one — placed by the
+   compositor inside whatever the parent is drawn in. */
+.wayland-subsurface {
+  position: absolute;
+  line-height: 0;
+}
+
 .wayland-popup {
   position: absolute;
-  z-index: 2;
+  z-index: 200;
   line-height: 0;
   filter: drop-shadow(0 4px 12px rgb(0 0 0 / 45%));
 }
@@ -275,7 +287,7 @@
 .wayland-backdrop {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 300;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -283,6 +295,7 @@
 }
 
 .wayland-dialog {
+  position: relative;
   line-height: 0;
   max-width: 100%;
   max-height: 100%;

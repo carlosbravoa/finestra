@@ -123,17 +123,29 @@ export function iconMarkup(icon: IconData | null | undefined): string | null {
   );
 }
 
-/** One Wayland surface: the window itself, a menu, or a dialog. */
+/** One Wayland surface: the window itself, a menu, a dialog, or a piece of
+ *  one of those drawn at an offset inside it. */
 interface Surface {
   id: number;
-  kind: 'window' | 'popup' | 'dialog';
+  kind: 'window' | 'popup' | 'dialog' | 'subsurface';
   parent: number;
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D | null;
-  /** Wrapper that positions popups and dialogs; absent for the window. */
+  /** Wrapper that positions everything but the window itself. */
   holder: HTMLElement | null;
+  /** Where a popup or subsurface sits in its parent, in the application's
+   *  own logical pixels — the CSS position is this times the zoom. */
+  x: number;
+  y: number;
   detach: Array<() => void>;
 }
+
+/**
+ * The window's canvas sits at this z-index so that a subsurface can be
+ * stacked under it as well as over it: the compositor sends each one's place
+ * against the parent, -1 just below, 1 just above, and it is added to this.
+ */
+const SUBSURFACE_BASE = 100;
 
 interface FrameHeader {
   id: number;
@@ -309,6 +321,7 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     for (const surface of surfaces.values()) {
       surface.canvas.style.width = `${(surface.canvas.width * zoom) / scale}px`;
       surface.canvas.style.height = `${(surface.canvas.height * zoom) / scale}px`;
+      placeSurface(surface, surface.x, surface.y);
     }
     pushSize();
     win.setMenu(menu);
@@ -429,6 +442,8 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
       context: canvas.getContext('2d', { alpha: kind !== 'window' }),
       canvas,
       holder: null,
+      x: 0,
+      y: 0,
       detach: [],
     };
 
@@ -438,6 +453,11 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
       // Positioned by the compositor, in the window's own coordinates.
       surface.holder = h('div', { class: 'wayland-popup' }, canvas);
       stage.appendChild(surface.holder);
+    } else if (kind === 'subsurface') {
+      // A piece of its parent, drawn where the compositor says. Firefox's
+      // entire interface is one of these, over a toplevel that holds nothing
+      // but the shadow.
+      surface.holder = h('div', { class: 'wayland-subsurface' }, canvas);
     } else {
       // A dialog is its own window on a real desktop; here it sits over its
       // parent, which is where a modal one would appear anyway.
@@ -447,7 +467,22 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
 
     wireInput(surface);
     surfaces.set(id, surface);
+
+    // Children can arrive before their parent — Firefox commits its content
+    // before the window it goes in — so each is attached when both exist.
+    if (kind === 'subsurface') attachToParent(surface);
+    for (const child of surfaces.values()) {
+      if (child.kind === 'subsurface' && child.parent === id) attachToParent(child);
+    }
     return surface;
+  }
+
+  /** Puts a subsurface inside whatever its parent is drawn in. */
+  function attachToParent(surface: Surface): void {
+    const parent = surfaces.get(surface.parent);
+    if (!surface.holder || !parent) return;
+    const container = parent.kind === 'window' ? stage : parent.holder;
+    container?.appendChild(surface.holder);
   }
 
   function destroySurface(id: number): void {
@@ -461,10 +496,18 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     else surface.canvas.remove();
   }
 
-  function placePopup(surface: Surface, x: number, y: number): void {
-    if (!surface.holder) return;
-    surface.holder.style.left = `${x}px`;
-    surface.holder.style.top = `${y}px`;
+  /**
+   * Positions a popup or subsurface inside its parent. The compositor speaks
+   * in the application's logical pixels; the parent's canvas is shown at
+   * `zoom` CSS pixels per logical one, so the offset is scaled the same way
+   * or a menu opens in the wrong place whenever the zoom is not 1.
+   */
+  function placeSurface(surface: Surface, x: number, y: number): void {
+    surface.x = x;
+    surface.y = y;
+    if (!surface.holder || surface.kind === 'dialog') return;
+    surface.holder.style.left = `${x * zoom}px`;
+    surface.holder.style.top = `${y * zoom}px`;
   }
 
   /* ---------------------------------------------------------------- */
@@ -543,14 +586,15 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         // Resizing the canvas clears it, so only do it when it really changed.
         // wdcomp always sends a full frame when the size changes, so nothing
         // is lost by the clear.
-        if (canvas.width !== header.fullWidth || canvas.height !== header.fullHeight) {
+        const scale = displayScale();
+        const resized = canvas.width !== header.fullWidth || canvas.height !== header.fullHeight;
+        if (resized) {
           canvas.width = header.fullWidth;
           canvas.height = header.fullHeight;
           // The backing store is in the application's pixels; the box it is
           // drawn in is in CSS pixels. Dividing by the scale is what makes a
           // 2x frame occupy the same space and resolve at twice the density,
           // rather than being magnified to twice the size.
-          const scale = displayScale();
           canvas.style.width = `${(header.fullWidth * zoom) / scale}px`;
           canvas.style.height = `${(header.fullHeight * zoom) / scale}px`;
         }
@@ -569,6 +613,21 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
           win.setStatus(
             `${header.fullWidth}×${header.fullHeight} · frame ${formatBytes(bytes.length)}`,
           );
+          // An application can change its own size after the first frame —
+          // Firefox grows a shadow once it is mapped and takes 26×23 off its
+          // window for it — and until the person has sized the window, what
+          // the application wants is what it gets. The window follows; a
+          // claimed window does not, and the frame scrolls instead.
+          if (resized) {
+            const box = contentSize();
+            const css = {
+              width: (header.fullWidth * zoom) / scale,
+              height: (header.fullHeight * zoom) / scale,
+            };
+            if (box && (Math.abs(box.width - css.width) > 1 || Math.abs(box.height - css.height) > 1)) {
+              adoptSize(css.width, css.height);
+            }
+          }
         }
 
         // Acknowledging is what releases the application's frame callback.
@@ -598,6 +657,10 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     minHeight?: number;
     edges?: number;
     shape?: number;
+    /** For a subsurface: its place against the parent, and whether it takes
+     *  the pointer or lets it through to the parent. */
+    z?: number;
+    input?: boolean;
     text?: string;
   }
 
@@ -623,7 +686,20 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
 
       case 'popup': {
         const surface = surfaces.get(id) ?? createSurface(id, 'popup', message.parent ?? 0);
-        placePopup(surface, message.x ?? 0, message.y ?? 0);
+        placeSurface(surface, message.x ?? 0, message.y ?? 0);
+        break;
+      }
+
+      case 'subsurface': {
+        const surface =
+          surfaces.get(id) ?? createSurface(id, 'subsurface', message.parent ?? 0);
+        placeSurface(surface, message.x ?? 0, message.y ?? 0);
+        if (surface.holder) {
+          surface.holder.style.zIndex = String(SUBSURFACE_BASE + (message.z ?? 1));
+          // An empty input region is the application saying the pointer
+          // belongs to the parent; the browser can say the same thing.
+          surface.holder.style.pointerEvents = message.input === false ? 'none' : '';
+        }
         break;
       }
 
@@ -1002,6 +1078,11 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     // window is then resized to fit it. One the person has sized themselves is
     // theirs, and the application is launched to fit *it* instead.
     const size = windowIsUnclaimed() ? undefined : frameSize();
+    // Either way, the room there is: an application choosing its own size
+    // measures itself against the screen, and this is its screen. Firefox
+    // takes all of it, so a screen bigger than the window is a browser
+    // bigger than the window.
+    const screen = frameSize();
     channel = desktop.rpc.openChannel(
       'wayland',
       'session',
@@ -1009,6 +1090,8 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         appId,
         width: size?.width,
         height: size?.height,
+        screenWidth: screen?.width,
+        screenHeight: screen?.height,
         layout: layout || undefined,
         scale: displayScale(),
       },

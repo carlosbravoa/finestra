@@ -15,7 +15,7 @@
  * wl_data_device_manager as stubs, and xdg_wm_base with toplevel and popup
  * roles.
  *
- * What is not: dmabuf, popup rendering, subsurface composition, decorations,
+ * What is not: dmabuf, popup rendering, decorations,
  * clipboard. Those are stages 6, 4, 6, 4 and 5.
  */
 
@@ -144,6 +144,15 @@ struct wdc_server {
 	int32_t width, height;
 
 	/*
+	 * The size of the screen we claim to be, when it is not simply the size
+	 * above. A window told to choose its own size (-g 0x0) chooses against
+	 * the output: Firefox opens its first window at the full screen, so a
+	 * made-up 1920x1080 produced a browser three times the shell window it
+	 * was to live in. The shell knows how much room there is; this is it.
+	 */
+	int32_t out_width, out_height;
+
+	/*
 	 * What we tell applications the display's pixel density is, and the only
 	 * reason their text can be sharp. A browser on a HiDPI screen draws our
 	 * frames into a box whose device pixels outnumber them; advertising 1 here
@@ -185,10 +194,17 @@ struct wdc_server {
 	uint32_t next_window_id;
 	struct wl_list windows; /* every xdg_surface, whatever its role */
 	struct wl_list popups;  /* most recent first, for grab lookup */
+	struct wl_list subsurfaces; /* every wl_subsurface, for lookup by id */
 };
 
 struct wdc_toplevel;
 struct wdc_popup;
+struct wdc_subsurface;
+
+/* Only whether anything was ever added: see surface_set_input_region. */
+struct wdc_region {
+	bool nonempty;
+};
 
 /* A wl_surface, with whatever xdg role has been attached to it. */
 struct wdc_surface {
@@ -204,9 +220,19 @@ struct wdc_surface {
 	int damage_count;
 	bool damage_overflow;
 	int32_t pending_scale;
+	bool pending_input_empty;
 
 	/* Current state. */
 	int32_t scale;
+	/* An input region with nothing in it: the pointer goes to whatever is
+	 * underneath, which is the shell's business to arrange. */
+	bool input_empty;
+
+	/* The id frames go out under, assigned with the role — an xdg_surface's
+	 * own, or a subsurface's — and the size last sent under it, so a resize
+	 * can force a full frame. */
+	uint32_t id;
+	int32_t sent_width, sent_height;
 
 	/*
 	 * Frame pacing. A client will not draw again until its frame callback
@@ -217,6 +243,17 @@ struct wdc_surface {
 	uint32_t frame_sent_ms;
 
 	struct wdc_xdg_surface *xdg;
+	struct wdc_subsurface *sub;
+
+	/*
+	 * Subsurfaces, bottom to top. The parent sits in this stack too —
+	 * `parent_depth` of the children are below it — because wl_subsurface
+	 * can place a child under its parent.
+	 */
+	struct wl_list children;
+	int parent_depth;
+	/* Committed while synchronized: applied when the parent next commits. */
+	bool cached;
 };
 
 /*
@@ -237,10 +274,8 @@ struct wdc_xdg_surface {
 	bool initial_configure_sent;
 	uint32_t last_acked;
 
-	/* The size this window is configured at, and the size last sent, so a
-	 * resize can force a full frame. */
+	/* The size this window is configured at. */
 	int32_t cfg_width, cfg_height;
-	int32_t sent_width, sent_height;
 
 	/* set_window_geometry: the window without its shadow margins. */
 	bool has_geometry;
@@ -274,6 +309,34 @@ struct wdc_popup {
 	struct wdc_rect placement;
 };
 
+/*
+ * A wl_subsurface: a surface drawn at an offset inside another. Firefox puts
+ * its entire interface in one — tabs, toolbar, page — and its toplevel is an
+ * empty rounded rectangle holding the shadow, so without these the browser is
+ * a blank window that is the right size and has the right title. Nothing is
+ * composited here either: like a popup, a subsurface reaches the shell as its
+ * own canvas with a position, and CSS stacks them.
+ */
+struct wdc_subsurface {
+	struct wl_resource *resource;
+	struct wdc_server *server;
+	struct wdc_surface *surface;
+	struct wdc_surface *parent;
+	struct wl_list link;        /* parent->children */
+	struct wl_list server_link; /* wdc_server.subsurfaces */
+	uint32_t id;
+	/* Double-buffered on the *parent*: set_position takes effect when the
+	 * parent commits, not when this one does. */
+	int32_t x, y;
+	int32_t pending_x, pending_y;
+	bool pending_position;
+	/* Synchronized, the default, holds a commit here until the parent
+	 * commits; desynchronized lets it land at once. Firefox uses the
+	 * latter, video players the former. */
+	bool sync;
+	bool announced;
+};
+
 struct wdc_positioner {
 	struct wl_resource *resource;
 	int32_t width, height;
@@ -288,8 +351,16 @@ static uint32_t next_serial(struct wdc_server *server) {
 	return ++server->serial;
 }
 
-/* Defined with the xdg roles, needed by the renderer above them. */
+/* Defined with the roles, needed by the renderer above them. */
 static void window_announce(struct wdc_xdg_surface *xdg);
+static void subsurface_announce(struct wdc_subsurface *sub);
+static void subsurface_send_placement(struct wdc_subsurface *sub);
+
+/** A frame is the first the shell hears of a surface, whatever its role. */
+static void surface_announce(struct wdc_surface *surface) {
+	if (surface->xdg) window_announce(surface->xdg);
+	else if (surface->sub) subsurface_announce(surface->sub);
+}
 
 /* ------------------------------------------------------------------ */
 /* Rendering a commit                                                  */
@@ -400,12 +471,11 @@ static struct wdc_rect damage_bounds(struct wdc_surface *surface,
 static void emit_frame_ipc(struct wdc_surface *surface,
 		struct wl_shm_buffer *shm, struct wdc_rect win) {
 	struct wdc_server *server = surface->server;
-	struct wdc_xdg_surface *xdg = surface->xdg;
 
-	window_announce(xdg);
+	surface_announce(surface);
 
-	bool resized = xdg->sent_width != win.width ||
-		xdg->sent_height != win.height;
+	bool resized = surface->sent_width != win.width ||
+		surface->sent_height != win.height;
 	struct wdc_rect d = damage_bounds(surface, win, resized);
 
 	size_t raw_len = (size_t)d.width * (size_t)d.height * 4;
@@ -436,7 +506,7 @@ static void emit_frame_ipc(struct wdc_surface *surface,
 	}
 
 	uint8_t head[29];
-	ipc_put_u32(head + 0, xdg->id);
+	ipc_put_u32(head + 0, surface->id);
 	ipc_put_u32(head + 4, (uint32_t)d.x);
 	ipc_put_u32(head + 8, (uint32_t)d.y);
 	ipc_put_u32(head + 12, (uint32_t)d.width);
@@ -451,13 +521,13 @@ static void emit_frame_ipc(struct wdc_surface *surface,
 		server->running = false;
 	}
 
-	xdg->sent_width = win.width;
-	xdg->sent_height = win.height;
+	surface->sent_width = win.width;
+	surface->sent_height = win.height;
 	surface->awaiting_ack = true;
 	surface->frame_sent_ms = now_ms();
 	server->frames_written++;
 
-	logdbg("frame w%u  %d,%d %dx%d of %dx%d  %zu -> %zu bytes", xdg->id,
+	logdbg("frame w%u  %d,%d %dx%d of %dx%d  %zu -> %zu bytes", surface->id,
 		d.x, d.y, d.width, d.height, win.width, win.height, raw_len,
 		payload_len);
 
@@ -551,9 +621,10 @@ static void render_commit(struct wdc_surface *surface,
 	if (server->ipc) {
 		if (surface->xdg && (surface->xdg->toplevel || surface->xdg->popup)) {
 			emit_frame_ipc(surface, shm, win);
+		} else if (surface->sub && surface->sub->parent) {
+			emit_frame_ipc(surface, shm, win);
 		} else {
-			logdbg("commit on a surface with no xdg role — subsurfaces are not"
-				" composited");
+			logdbg("commit on a surface with no role — nowhere to show it");
 		}
 	} else {
 		emit_frame_png(surface, shm, win, buf_w, buf_h);
@@ -653,16 +724,34 @@ static void surface_release_frames(struct wdc_surface *surface) {
 static void surface_set_opaque_region(struct wl_client *client,
 		struct wl_resource *resource, struct wl_resource *region) {}
 
+/*
+ * Only emptiness is kept, and it is kept for one reason: Firefox's content
+ * subsurface declares an empty input region so that the pointer reaches the
+ * GTK toplevel underneath — the surface its toolkit actually knows about.
+ * Deliver a click to the subsurface instead and GDK receives an enter on a
+ * surface it never created. NULL is the protocol's "everything".
+ */
 static void surface_set_input_region(struct wl_client *client,
-		struct wl_resource *resource, struct wl_resource *region) {}
+		struct wl_resource *resource, struct wl_resource *region) {
+	struct wdc_surface *surface = wl_resource_get_user_data(resource);
+	struct wdc_region *r = region ? wl_resource_get_user_data(region) : NULL;
+	surface->pending_input_empty = r && !r->nonempty;
+}
+
+/** Whether a commit here waits for the parent: its own mode, or any ancestor's. */
+static bool surface_is_synchronized(struct wdc_surface *surface) {
+	for (struct wdc_surface *s = surface; s && s->sub; s = s->sub->parent) {
+		if (s->sub->sync) return true;
+	}
+	return false;
+}
+
+static void surface_apply(struct wdc_surface *surface);
 
 static void surface_commit(struct wl_client *client,
 		struct wl_resource *resource) {
 	struct wdc_surface *surface = wl_resource_get_user_data(resource);
 	struct wdc_xdg_surface *xdg = surface->xdg;
-
-	if (surface->pending_scale > 0) surface->scale = surface->pending_scale;
-	surface->pending_scale = 0;
 
 	if (xdg && xdg->pending_geometry_set) {
 		xdg->geometry = xdg->pending_geometry;
@@ -679,6 +768,35 @@ static void surface_commit(struct wl_client *client,
 		xdg_surface_send_configure(xdg->resource, next_serial(surface->server));
 		xdg->initial_configure_sent = true;
 		logdbg("sent initial configure");
+	}
+
+	/*
+	 * A synchronized subsurface's commit is a promise, not an event: the
+	 * state is cached and lands with the parent's next commit, so that a
+	 * video frame and the controls drawn over it change together. Ignore
+	 * that and the result is tearing and stale frames — which is to say,
+	 * it looks like the bug it was meant to fix.
+	 */
+	if (surface_is_synchronized(surface)) {
+		surface->cached = true;
+		logdbg("w%u committed while synchronized — held for the parent",
+			surface->id);
+		return;
+	}
+	surface_apply(surface);
+}
+
+/** The commit proper: everything pending becomes current, and is drawn. */
+static void surface_apply(struct wdc_surface *surface) {
+	surface->cached = false;
+
+	if (surface->pending_scale > 0) surface->scale = surface->pending_scale;
+	surface->pending_scale = 0;
+
+	bool input_changed = surface->input_empty != surface->pending_input_empty;
+	surface->input_empty = surface->pending_input_empty;
+	if (input_changed && surface->sub && surface->sub->announced) {
+		subsurface_send_placement(surface->sub);
 	}
 
 	if (surface->pending_buffer_set) {
@@ -702,6 +820,22 @@ static void surface_commit(struct wl_client *client,
 	 * from outrunning the socket.
 	 */
 	if (!surface->awaiting_ack) surface_release_frames(surface);
+
+	/*
+	 * The children's turn. A position set on a subsurface lands with the
+	 * parent's commit whatever its mode, and a synchronized child's whole
+	 * cached commit lands now.
+	 */
+	struct wdc_subsurface *sub, *tmp;
+	wl_list_for_each_safe(sub, tmp, &surface->children, link) {
+		if (sub->pending_position) {
+			sub->x = sub->pending_x;
+			sub->y = sub->pending_y;
+			sub->pending_position = false;
+			subsurface_send_placement(sub);
+		}
+		if (sub->surface && sub->surface->cached) surface_apply(sub->surface);
+	}
 }
 
 static void surface_set_buffer_transform(struct wl_client *client,
@@ -759,11 +893,22 @@ static void surface_resource_destroy(struct wl_resource *resource) {
 		wl_resource_destroy(cb);
 	}
 	if (surface->xdg) surface->xdg->surface = NULL;
+	if (surface->sub) {
+		/* The role object may outlive the surface; it must not point here. */
+		surface->sub->surface = NULL;
+	}
+	/* Children keep their role objects but have nowhere to be drawn. */
+	struct wdc_subsurface *child, *next;
+	wl_list_for_each_safe(child, next, &surface->children, link) {
+		child->parent = NULL;
+		wl_list_remove(&child->link);
+		wl_list_init(&child->link);
+	}
 	free(surface);
 }
 
 /* ------------------------------------------------------------------ */
-/* wl_region — tracked only so the objects exist                       */
+/* wl_region — only whether it is empty                                 */
 /* ------------------------------------------------------------------ */
 
 static void region_destroy_req(struct wl_client *client,
@@ -771,8 +916,15 @@ static void region_destroy_req(struct wl_client *client,
 	wl_resource_destroy(resource);
 }
 
+static void region_resource_destroy(struct wl_resource *resource) {
+	free(wl_resource_get_user_data(resource));
+}
+
 static void region_add(struct wl_client *client, struct wl_resource *resource,
-		int32_t x, int32_t y, int32_t width, int32_t height) {}
+		int32_t x, int32_t y, int32_t width, int32_t height) {
+	struct wdc_region *region = wl_resource_get_user_data(resource);
+	if (width > 0 && height > 0) region->nonempty = true;
+}
 
 static void region_subtract(struct wl_client *client,
 		struct wl_resource *resource, int32_t x, int32_t y, int32_t width,
@@ -800,6 +952,7 @@ static void compositor_create_surface(struct wl_client *client,
 	surface->server = server;
 	surface->scale = 1;
 	wl_list_init(&surface->pending_frames);
+	wl_list_init(&surface->children);
 	wl_list_init(&surface->pending_buffer_destroy.link);
 	surface->pending_buffer_destroy.notify = handle_pending_buffer_destroy;
 
@@ -817,13 +970,16 @@ static void compositor_create_surface(struct wl_client *client,
 
 static void compositor_create_region(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id) {
-	struct wl_resource *region = wl_resource_create(client,
-		&wl_region_interface, wl_resource_get_version(resource), id);
+	struct wdc_region *state = calloc(1, sizeof *state);
+	struct wl_resource *region = state ? wl_resource_create(client,
+		&wl_region_interface, wl_resource_get_version(resource), id) : NULL;
 	if (!region) {
+		free(state);
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(region, &region_impl, NULL, NULL);
+	wl_resource_set_implementation(region, &region_impl, state,
+		region_resource_destroy);
 }
 
 static const struct wl_compositor_interface compositor_impl = {
@@ -1515,9 +1671,9 @@ static void wm_base_get_xdg_surface(struct wl_client *client,
 		struct wl_resource *surface_resource) {
 	struct wdc_surface *surface = wl_resource_get_user_data(surface_resource);
 
-	if (surface->xdg) {
+	if (surface->xdg || surface->sub) {
 		wl_resource_post_error(resource, XDG_WM_BASE_ERROR_ROLE,
-			"surface already has an xdg role");
+			"surface already has a role");
 		return;
 	}
 
@@ -1529,6 +1685,7 @@ static void wm_base_get_xdg_surface(struct wl_client *client,
 	}
 	xdg->surface = surface;
 	xdg->id = ++server->next_window_id;
+	surface->id = xdg->id;
 	xdg->cfg_width = server->width;
 	xdg->cfg_height = server->height;
 	xdg->resource = wl_resource_create(client, &xdg_surface_interface,
@@ -1598,9 +1755,15 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
 	 * launch through session restore — which carries a size — worked. The
 	 * screen a window sizes itself against has to exist even when the
 	 * window is free to pick.
+	 *
+	 * And it has to be the *right* screen: a window free to pick measures
+	 * itself against this, and Firefox picks all of it. --output is the
+	 * shell saying how much room there really is.
 	 */
-	int32_t out_w = server->width > 0 ? server->width : 1920;
-	int32_t out_h = server->height > 0 ? server->height : 1080;
+	int32_t out_w = server->out_width > 0 ? server->out_width
+		: server->width > 0 ? server->width : 1920;
+	int32_t out_h = server->out_height > 0 ? server->out_height
+		: server->height > 0 ? server->height : 1080;
 	wl_output_send_geometry(resource, 0, 0, 0, 0, WL_OUTPUT_SUBPIXEL_UNKNOWN,
 		"Finestra", "wdcomp", WL_OUTPUT_TRANSFORM_NORMAL);
 	wl_output_send_mode(resource,
@@ -2237,27 +2400,157 @@ static void selection_pull(struct wdc_server *server,
 }
 
 /* ------------------------------------------------------------------ */
-/* wl_subcompositor and wl_data_device_manager                         */
-/*                                                                     */
-/* Clients bind these unconditionally and fall over if they are absent,*/
-/* so they exist and do nothing. A subsurface will not be composited   */
-/* in stage 1; a selection will not be carried.                        */
+/* wl_subcompositor                                                    */
 /* ------------------------------------------------------------------ */
+
+static int subsurface_index(struct wdc_subsurface *sub) {
+	int i = 0;
+	struct wdc_subsurface *other;
+	wl_list_for_each(other, &sub->parent->children, link) {
+		if (other == sub) return i;
+		i++;
+	}
+	return -1;
+}
+
+/** Where this child sits against its parent: -1 is just under it, 1 just
+ *  over it, counting outwards. Never 0 — that is the parent's own place. */
+static int32_t subsurface_z(struct wdc_subsurface *sub) {
+	int i = subsurface_index(sub);
+	int depth = sub->parent->parent_depth;
+	return i < depth ? i - depth : i - depth + 1;
+}
+
+/** Tells the shell where a subsurface is, how it stacks, and whether it
+ *  takes the pointer. The first of these is the announcement. */
+static void subsurface_send_placement(struct wdc_subsurface *sub) {
+	struct wdc_surface *surface = sub->surface;
+	struct wdc_surface *parent = sub->parent;
+	if (!surface || !parent || !sub->server->ipc || !sub->announced) return;
+
+	/*
+	 * The position is in the parent's surface coordinates, and the shell
+	 * sees the parent cropped to its window geometry — so the shadow margin
+	 * comes off here, as it goes back on for pointer events the other way.
+	 */
+	int32_t x = sub->x, y = sub->y;
+	if (parent->xdg && parent->xdg->has_geometry) {
+		x -= parent->xdg->geometry.x;
+		y -= parent->xdg->geometry.y;
+	}
+
+	uint8_t msg[21];
+	ipc_put_u32(msg + 0, sub->id);
+	ipc_put_u32(msg + 4, parent->id);
+	ipc_put_u32(msg + 8, (uint32_t)x);
+	ipc_put_u32(msg + 12, (uint32_t)y);
+	ipc_put_u32(msg + 16, (uint32_t)subsurface_z(sub));
+	msg[20] = surface->input_empty ? 0 : 1;
+	ipc_send(sub->server->ipc, IPC_SUBSURFACE, msg, sizeof msg, NULL, 0);
+}
+
+static void subsurface_announce(struct wdc_subsurface *sub) {
+	if (sub->announced) return;
+	sub->announced = true;
+	subsurface_send_placement(sub);
+}
+
+static void subsurface_unlink(struct wdc_subsurface *sub) {
+	struct wdc_surface *parent = sub->parent;
+	if (!parent) return;
+	if (subsurface_index(sub) < parent->parent_depth) parent->parent_depth--;
+	wl_list_remove(&sub->link);
+	wl_list_init(&sub->link);
+}
+
+/*
+ * place_above / place_below, against a sibling or the parent itself. The
+ * protocol makes this pending until the parent commits; it is applied at
+ * once here, and nothing observed so far can tell the difference.
+ */
+static void subsurface_restack(struct wdc_subsurface *sub,
+		struct wl_resource *sibling_resource, bool above) {
+	struct wdc_surface *parent = sub->parent;
+	struct wdc_surface *sibling =
+		sibling_resource ? wl_resource_get_user_data(sibling_resource) : NULL;
+	if (!parent || !sibling || sibling == sub->surface) return;
+	if (sibling != parent &&
+			(!sibling->sub || sibling->sub->parent != parent)) {
+		wl_resource_post_error(sub->resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
+			"not a sibling of this subsurface");
+		return;
+	}
+
+	subsurface_unlink(sub);
+
+	if (sibling == parent) {
+		/* The parent's slot is between children parent_depth-1 and
+		 * parent_depth; above it is that slot, below it is the same slot
+		 * with the parent moving up one. */
+		struct wl_list *prev = &parent->children;
+		struct wdc_subsurface *other;
+		int i = 0;
+		wl_list_for_each(other, &parent->children, link) {
+			if (i++ >= parent->parent_depth) break;
+			prev = &other->link;
+		}
+		wl_list_insert(prev, &sub->link);
+		if (!above) parent->parent_depth++;
+	} else {
+		/* Next to the sibling, on the sibling's side of the parent. */
+		struct wdc_subsurface *other = sibling->sub;
+		bool under = subsurface_index(other) < parent->parent_depth;
+		wl_list_insert(above ? &other->link : other->link.prev, &sub->link);
+		if (under) parent->parent_depth++;
+	}
+
+	/* Everyone's place may have moved. */
+	struct wdc_subsurface *each;
+	wl_list_for_each(each, &parent->children, link) {
+		subsurface_send_placement(each);
+	}
+}
 
 static void subsurface_destroy_req(struct wl_client *client,
 		struct wl_resource *resource) {
 	wl_resource_destroy(resource);
 }
+
 static void subsurface_set_position(struct wl_client *client,
-		struct wl_resource *resource, int32_t x, int32_t y) {}
+		struct wl_resource *resource, int32_t x, int32_t y) {
+	struct wdc_subsurface *sub = wl_resource_get_user_data(resource);
+	sub->pending_x = x;
+	sub->pending_y = y;
+	sub->pending_position = true;
+}
+
 static void subsurface_place_above(struct wl_client *client,
-		struct wl_resource *resource, struct wl_resource *sibling) {}
+		struct wl_resource *resource, struct wl_resource *sibling) {
+	subsurface_restack(wl_resource_get_user_data(resource), sibling, true);
+}
+
 static void subsurface_place_below(struct wl_client *client,
-		struct wl_resource *resource, struct wl_resource *sibling) {}
+		struct wl_resource *resource, struct wl_resource *sibling) {
+	subsurface_restack(wl_resource_get_user_data(resource), sibling, false);
+}
+
 static void subsurface_set_sync(struct wl_client *client,
-		struct wl_resource *resource) {}
+		struct wl_resource *resource) {
+	struct wdc_subsurface *sub = wl_resource_get_user_data(resource);
+	sub->sync = true;
+}
+
 static void subsurface_set_desync(struct wl_client *client,
-		struct wl_resource *resource) {}
+		struct wl_resource *resource) {
+	struct wdc_subsurface *sub = wl_resource_get_user_data(resource);
+	sub->sync = false;
+	/* Whatever was committed while waiting lands now — unless an ancestor
+	 * is still synchronized, in which case it keeps waiting for that one. */
+	if (sub->surface && sub->surface->cached &&
+			!surface_is_synchronized(sub->surface)) {
+		surface_apply(sub->surface);
+	}
+}
 
 static const struct wl_subsurface_interface subsurface_impl = {
 	.destroy = subsurface_destroy_req,
@@ -2268,6 +2561,19 @@ static const struct wl_subsurface_interface subsurface_impl = {
 	.set_desync = subsurface_set_desync,
 };
 
+static void subsurface_resource_destroy(struct wl_resource *resource) {
+	struct wdc_subsurface *sub = wl_resource_get_user_data(resource);
+	if (sub->announced && sub->server->ipc) {
+		uint8_t msg[4];
+		ipc_put_u32(msg, sub->id);
+		ipc_send(sub->server->ipc, IPC_CLOSED, msg, sizeof msg, NULL, 0);
+	}
+	subsurface_unlink(sub);
+	wl_list_remove(&sub->server_link);
+	if (sub->surface) sub->surface->sub = NULL;
+	free(sub);
+}
+
 static void subcompositor_destroy_req(struct wl_client *client,
 		struct wl_resource *resource) {
 	wl_resource_destroy(resource);
@@ -2275,15 +2581,43 @@ static void subcompositor_destroy_req(struct wl_client *client,
 
 static void subcompositor_get_subsurface(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id,
-		struct wl_resource *surface, struct wl_resource *parent) {
-	struct wl_resource *sub = wl_resource_create(client,
-		&wl_subsurface_interface, wl_resource_get_version(resource), id);
+		struct wl_resource *surface_resource,
+		struct wl_resource *parent_resource) {
+	struct wdc_server *server = wl_resource_get_user_data(resource);
+	struct wdc_surface *surface = wl_resource_get_user_data(surface_resource);
+	struct wdc_surface *parent = wl_resource_get_user_data(parent_resource);
+
+	if (surface->xdg || surface->sub || surface == parent) {
+		wl_resource_post_error(resource, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
+			"surface already has a role, or is its own parent");
+		return;
+	}
+
+	struct wdc_subsurface *sub = calloc(1, sizeof *sub);
 	if (!sub) {
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(sub, &subsurface_impl, NULL, NULL);
-	logdbg("subsurface created — not composited in stage 1");
+	sub->server = server;
+	sub->surface = surface;
+	sub->parent = parent;
+	sub->sync = true;
+	sub->id = ++server->next_window_id;
+	sub->resource = wl_resource_create(client, &wl_subsurface_interface,
+		wl_resource_get_version(resource), id);
+	if (!sub->resource) {
+		free(sub);
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(sub->resource, &subsurface_impl, sub,
+		subsurface_resource_destroy);
+	surface->sub = sub;
+	surface->id = sub->id;
+	/* A new one starts on top of its siblings and the parent. */
+	wl_list_insert(parent->children.prev, &sub->link);
+	wl_list_insert(&server->subsurfaces, &sub->server_link);
+	logmsg("new subsurface w%u of w%u", sub->id, parent->id);
 }
 
 static const struct wl_subcompositor_interface subcompositor_impl = {
@@ -2599,6 +2933,26 @@ static struct wdc_xdg_surface *find_window(struct wdc_server *server,
 	return NULL;
 }
 
+/** Any surface the shell has an id for: a window, a menu, or a subsurface. */
+static struct wdc_surface *find_surface(struct wdc_server *server,
+		uint32_t id) {
+	struct wdc_xdg_surface *xdg = find_window(server, id);
+	if (xdg) return xdg->surface;
+	struct wdc_subsurface *sub;
+	wl_list_for_each(sub, &server->subsurfaces, server_link) {
+		if (sub->id == id) return sub->surface;
+	}
+	return NULL;
+}
+
+/** Keys go to the window, whichever of its surfaces the browser focused. */
+static struct wdc_surface *keyboard_target(struct wdc_surface *surface) {
+	while (surface && surface->sub && surface->sub->parent) {
+		surface = surface->sub->parent;
+	}
+	return surface;
+}
+
 /** The popup holding a grab, if any: input belongs to it while it is up. */
 static struct wdc_popup *grabbing_popup(struct wdc_server *server) {
 	struct wdc_popup *popup;
@@ -2652,11 +3006,12 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		break;
 	}
 
-	case IPC_ACK:
+	case IPC_ACK: {
 		if (len < 4) return;
-		xdg = find_window(server, ipc_get_u32(payload));
-		if (xdg && xdg->surface) surface_release_frames(xdg->surface);
+		struct wdc_surface *acked = find_surface(server, ipc_get_u32(payload));
+		if (acked) surface_release_frames(acked);
 		break;
+	}
 
 	case IPC_CLOSE:
 		if (len < 4) return;
@@ -2669,9 +3024,9 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 
 	case IPC_POINTER: {
 		if (len < 21) return;
-		xdg = find_window(server, ipc_get_u32(payload));
-		if (!xdg || !xdg->surface) return;
-		struct wdc_surface *surface = xdg->surface;
+		struct wdc_surface *surface = find_surface(server, ipc_get_u32(payload));
+		if (!surface) return;
+		xdg = surface->xdg;
 
 		uint8_t kind = payload[4];
 		int32_t x = (int32_t)ipc_get_u32(payload + 5);
@@ -2687,7 +3042,7 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		 * lands about 25 pixels up and to the left of where it was aimed,
 		 * which looks exactly like input being broken.
 		 */
-		if (xdg->has_geometry) {
+		if (xdg && xdg->has_geometry) {
 			x += xdg->geometry.x;
 			y += xdg->geometry.y;
 		}
@@ -2736,8 +3091,9 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 
 	case IPC_KEY: {
 		if (len < 9) return;
-		xdg = find_window(server, ipc_get_u32(payload));
-		if (!xdg || !xdg->surface) return;
+		struct wdc_surface *focused =
+			keyboard_target(find_surface(server, ipc_get_u32(payload)));
+		if (!focused) return;
 		uint32_t keycode = ipc_get_u32(payload + 4);
 		/* Evdev codes only; anything else is a client bug or worse. */
 		if (keycode == 0 || keycode > 0x2ff) return;
@@ -2746,7 +3102,7 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		 * thinks is focused — that is what makes Escape close it. */
 		struct wdc_popup *grab = grabbing_popup(server);
 		struct wdc_surface *target =
-			grab && grab->xdg->surface ? grab->xdg->surface : xdg->surface;
+			grab && grab->xdg->surface ? grab->xdg->surface : focused;
 
 		seat_keyboard_enter(server, target);
 		seat_key(server, keycode, payload[8] != 0);
@@ -2766,17 +3122,19 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		break;
 	}
 
-	case IPC_FOCUS:
+	case IPC_FOCUS: {
 		if (len < 5) return;
-		xdg = find_window(server, ipc_get_u32(payload));
-		if (!xdg || !xdg->surface) return;
+		struct wdc_surface *focused =
+			keyboard_target(find_surface(server, ipc_get_u32(payload)));
+		if (!focused) return;
 		if (payload[4]) {
-			seat_keyboard_enter(server, xdg->surface);
+			seat_keyboard_enter(server, focused);
 		} else {
 			seat_keyboard_leave(server);
 			seat_pointer_leave(server);
 		}
 		break;
+	}
 
 	default:
 		break;
@@ -2978,6 +3336,9 @@ static void usage(FILE *out) {
 		"  -s, --socket NAME   wayland socket name (default wayland-wd)\n"
 		"  -g, --size WxH      size to configure windows at (default 800x600);\n"
 		"                      0x0 lets each application choose its own\n"
+		"      --output WxH    the screen size to advertise, when it is not\n"
+		"                      the size above; what a window choosing its own\n"
+		"                      size measures itself against\n"
 		"      --scale N       display scale the application draws for (1-3)\n"
 		"  -o, --out DIR       where to write frames (default /tmp/wdcomp)\n"
 		"  -n, --frames N      exit after N frames (default: run until closed)\n"
@@ -3039,6 +3400,7 @@ int main(int argc, char **argv) {
 		{"no-force-shm", no_argument, NULL, 'S'},
 		/* Long-only: -S is taken, and this is not a thing anyone types twice. */
 		{"scale", required_argument, NULL, 'C'},
+		{"output", required_argument, NULL, 'O'},
 		{"verbose", no_argument, NULL, 'v'},
 		{"help", no_argument, NULL, 'h'},
 		{0, 0, 0, 0},
@@ -3062,7 +3424,8 @@ int main(int argc, char **argv) {
 			server.scale = (int32_t)v;
 			break;
 		}
-		case 'g': {
+		case 'g':
+		case 'O': {
 			long w = 0, h = 0;
 			const char *p = parse_dec(optarg, &w);
 			if (p && *p == 'x')
@@ -3073,8 +3436,13 @@ int main(int argc, char **argv) {
 				logmsg("bad size '%s', expected WxH", optarg);
 				return 1;
 			}
-			server.width = (int)w;
-			server.height = (int)h;
+			if (c == 'g') {
+				server.width = (int)w;
+				server.height = (int)h;
+			} else {
+				server.out_width = (int)w;
+				server.out_height = (int)h;
+			}
 			break;
 		}
 		case 'o':
@@ -3129,6 +3497,7 @@ int main(int argc, char **argv) {
 	server.loop = wl_display_get_event_loop(server.display);
 	wl_list_init(&server.windows);
 	wl_list_init(&server.popups);
+	wl_list_init(&server.subsurfaces);
 	wl_list_init(&server.clients);
 	server.client_created.notify = client_arrived;
 	wl_display_add_client_created_listener(server.display, &server.client_created);

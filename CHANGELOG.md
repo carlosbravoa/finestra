@@ -7,6 +7,27 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.11 — 2026-10-20
+
+- **Firefox and Thunderbird draw.** Both put their entire interface in a
+  Wayland subsurface over an empty window, and the compositor dropped
+  subsurfaces: the window opened at the right size with the right title and
+  stayed blank. Subsurfaces now reach the browser as their own canvases,
+  placed and stacked the way menus are, with synchronized commits held for
+  the parent's — so a player that draws controls over a video changes both
+  together. Clicks and keys reach the application the way its toolkit
+  expects. Chrome never needed any of this, which is why it worked first.
+- **An application that picks its own size no longer picks a screen's
+  worth.** Launched without a size, Firefox opened at 1920×1080 — the
+  imaginary screen the compositor advertised — and had to be shrunk to fit.
+  The shell now tells the compositor how much room there is, so a browser
+  opens filling the window and a calculator still opens calculator-sized. A
+  window the application resizes on its own after opening is followed too,
+  until you resize it yourself.
+- **Menus open in the right place at any zoom.** A menu's position was in the
+  application's pixels and placed in the browser's, which only agree at
+  zoom 1.
+
 ## 0.3.10 — 2026-10-11
 
 - **The access token can be changed from Settings.** Settings → Access lists

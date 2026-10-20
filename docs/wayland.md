@@ -57,6 +57,7 @@ whole thesis.
 | `wl_callback.done` → | sent once the browser has acked the frame |
 | `xdg_toplevel.move` / `.resize` | the shell starts its own drag |
 | `xdg_popup` + `xdg_positioner` | an overlay layer, free to escape the window |
+| `wl_subsurface` | its own canvas inside the parent's, stacked by CSS |
 | toplevel with `set_parent` | modal child window |
 | `wl_pointer` / `wl_keyboard` | DOM events on the canvas |
 | `wl_data_device` selection | `navigator.clipboard` |
@@ -145,46 +146,68 @@ covers the rest. That is enough to cover GTK 4 without implementing dmabuf.
 
 There is a sharper split than the buffer type, and it is invisible until you go
 looking: **whether the application draws into its `xdg_toplevel` or into a
-subsurface.** `wl_subcompositor` exists here so that clients binding it do not
-fall over, but it composites nothing, and the IPC path drops every commit that
-arrives without an xdg role — `commit on a surface with no xdg role`.
+subsurface.** Chrome creates **zero** subsurfaces: chrome, tabs, page, all of
+it goes to the toplevel. Firefox puts its **entire** interface — tab strip,
+toolbar, URL bar and web content — into one `wl_subsurface`, and its toplevel
+is nothing but an empty rounded rectangle holding the shadow; Thunderbird is
+the same, being Gecko. For a long time `wl_subcompositor` existed here only so
+that clients binding it did not fall over, and the IPC path dropped every
+commit that arrived without an xdg role. In a 55-second run the browser
+received exactly **one** frame, 1.9 kB of blank window, while **27**
+subsurface commits were dropped: a window that was there, correctly sized and
+titled, and permanently empty.
 
-Chrome creates **zero** subsurfaces: chrome, tabs, page, all of it goes to the
-toplevel, which is the whole reason it works. Firefox puts its **entire**
-interface — tab strip, toolbar, URL bar and web content — into one
-`wl_subsurface`, and its toplevel is nothing but an empty rounded rectangle
-holding the shadow. So Finestra faithfully renders the one surface Firefox does
-not draw in. In a 55-second run the browser received exactly **one** frame, 1.9
-kB of blank window, while **27** subsurface commits were dropped. The window is
-there, correctly sized and titled, and permanently empty.
-
-Three things about this are worth keeping:
+Three things about this were worth keeping, and still are:
 
 **It is not dmabuf, and not the GPU.** The subsurface carries ordinary shm the
 compositor can read perfectly well — the PNG sink proves it by writing a
 pixel-exact Firefox window. Nothing needs to be imported, converted or
-accelerated; the pixels are already in hand and simply have nowhere to go.
+accelerated; the pixels are already in hand.
 
 **The debug path flatters the shipping path.** `emit_frame_png()` writes *every*
-commit regardless of role, so `smoke.sh` renders Firefox beautifully while the
-product shows a blank window. A compositor check that passes and a product that
-fails, on the same machine in the same second — trust the IPC path, not the PNG.
+commit regardless of role, so `smoke.sh` rendered Firefox beautifully while the
+product showed a blank window. A compositor check that passes and a product
+that fails, on the same machine in the same second — trust the IPC path, not
+the PNG.
 
 **No pref avoids it.** `gfx.webrender.compositor=false`,
 `gfx.webrender.software=true` and `layers.acceleration.disabled` were measured
 and change nothing: the subsurface is `MozContainerWayland`, part of how Gecko
 draws on Wayland, not a compositing option. Firefox cannot be configured into
-working here.
+drawing in its toplevel.
 
-The work is smaller than "implement compositing", because this compositor never
-composites anything. It ships each surface to the browser as its own canvas and
-lets CSS stack them — which is exactly what popups already do, via `IPC_POPUP`
-and `placePopup()`. A subsurface is the same mechanism: a message carrying
-parent and position, `place_above`/`place_below` for z-order, and the client's
-existing `createSurface()`. The genuinely fiddly part is **synchronised**
-subsurfaces, whose state applies on the *parent's* commit rather than their own;
-ignore that and the result is tearing and stale frames — which is to say, it
-looks like the bug it was meant to fix.
+**What was done about it is smaller than "implement compositing", because
+this compositor never composites anything.** A subsurface reaches the browser
+the way a popup does: as its own canvas, announced by `IPC_SUBSURFACE` with
+its parent, its position, where it stacks against the parent (-1 just under,
+1 just over) and whether it takes the pointer; CSS does the rest. Four details
+are the difference between "renders" and "works":
+
+- **A synchronized commit is a promise, not an event.** A subsurface starts
+  synchronized, and a commit on one is cached until the *parent* commits — that
+  is how a video player changes the frame and the controls over it together.
+  Shown at once, the result is tearing and stale frames, which is to say it
+  looks like the bug it was meant to fix. `surface_commit` caches,
+  `surface_apply` runs with the parent's commit, and `set_desync` applies
+  whatever was waiting. Firefox desynchronizes its subsurface; the suite's
+  fixture (`compositor/src/subsurface-client.c`, launched through the service
+  like any application) deliberately does not, and commits the child 300 ms
+  before the parent to catch a compositor that shows it early.
+- **The position belongs to the parent's commit** too, whatever the mode, and
+  the parent is cropped to its window geometry — so the shadow margin comes
+  off the child's position on the way out, as it goes back on for pointer
+  events the other way.
+- **The empty input region is the whole input story.** Firefox declares an
+  empty input region on its subsurface so the pointer reaches the GTK toplevel
+  underneath, the surface its toolkit actually knows about. The compositor
+  keeps that one bit of `wl_region` and passes it on; the browser puts
+  `pointer-events: none` on the canvas and the click falls through to the
+  parent's. Deliver it to the subsurface instead and GDK receives an enter on
+  a surface it never created. Keys always go to the window, whichever of its
+  surfaces the browser had focused.
+- **The child can arrive before the parent.** Firefox commits its content
+  before the toplevel's first frame, so the client keeps a subsurface whose
+  parent it has not seen yet and attaches it when the parent appears.
 
 ### What the buffer type does not explain
 
@@ -340,6 +363,17 @@ named it — the protocol trace ends at the 0×0 mode, three lines before the
 trap. The output now advertises a real screen (the configured size, or
 1920×1080 when the windows are choosing their own), which is the difference
 between "your window may pick its size" and "you live on zero pixels".
+
+**And it has to be the right screen.** A window free to pick measures itself
+against the output, and Firefox takes all of it: 1920×1080 of browser, in a
+shell window a third the size, which then had to shrink it. `--output WxH` is
+the shell saying how much room there actually is — the content box, sent on
+every launch as `screenWidth`/`screenHeight` — so a browser opens exactly
+filling the window and a calculator still opens calculator-sized. One more
+Firefox habit: it changes its own geometry after mapping, when the CSD shadow
+appears and takes 26×23 off the window. While nobody has resized the shell
+window, it follows a size the application chose for itself, rather than
+keeping a dark strip where the frame used to reach.
 
 Alongside, **say what the application said**: the reason for a death was on
 stderr the whole time, collected into a 4 kB tail and discarded unless
@@ -588,12 +622,15 @@ application's *Open File* dialog at the Files app.
 5. **Integration.** ✅ Browse-and-pin, cursor shapes, keyboard-layout
    detection, and the clipboard — copying out fully, pasting in with the
    limitation described below.
-6. **Later, if something demands it.** Subsurface composition — and Firefox is
-   the something that demands it, being unusable without it; dmabuf import for
-   GPU applications; H.264 for animated content; Xwayland (it is just another
-   Wayland client, but it drags a full X11 window-management job behind it);
-   audio over PipeWire; an `xdg-desktop-portal` so an application's *Open File*
-   dialog opens the Files app.
+6. **Subsurfaces.** ✅ Each one its own canvas, positioned and stacked by CSS,
+   synchronized commits held for the parent's. Firefox demanded it: it and
+   Thunderbird draw their entire interface in one.
+7. **Later, if something demands it.** dmabuf import for GPU applications;
+   H.264 for animated content; Xwayland (it is just another Wayland client, but
+   it drags a full X11 window-management job behind it); audio over PipeWire;
+   an `xdg-desktop-portal` so an application's *Open File* dialog opens the
+   Files app — DOSBox-X's first-run directory picker is a `zenity` waiting on
+   one today, and the application never gets past it.
 
 Stages 1–3 are the small half. Stage 4 is where the time goes, and it is what
 decides whether this feels like a desktop or a demo.

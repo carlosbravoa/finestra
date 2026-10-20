@@ -102,6 +102,17 @@ printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\n' \
   "WD Test Exported" /bin/true \
   > "$XDG_DATA_HOME/flatpak/exports/share/applications/wd-test-exported.desktop"
 
+# A window with a subsurface in it — the shape of Firefox, which draws its
+# whole interface in one — as a client of its own, so the suite can check the
+# path without a browser installed. Needs libwayland-client to build, so it is
+# offered only where it could be built; the suite skips the checks otherwise.
+if [ -x compositor/build/wdcomp ] && pkg-config --exists wayland-client 2>/dev/null; then
+  make -s -C compositor subsurface-client >/dev/null 2>&1 || true
+fi
+if [ -x compositor/build/subsurface-client ]; then
+  fixture wd-test-subsurface "WD Test Subsurface" "$PWD/compositor/build/subsurface-client" ""
+fi
+
 export WD_TOKEN="test-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
 TOKEN="$WD_TOKEN"
 # Short enough that "nobody came back for it" can be checked in a test.

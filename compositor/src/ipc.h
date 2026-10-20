@@ -29,6 +29,8 @@
 #define IPC_COPY    'Y' /* utf-8 — the application put this on the clipboard */
 #define IPC_LOG     'L' /* utf-8 message                                    */
 #define IPC_CLIENT  'E' /* count u32 — connected Wayland clients, on change */
+#define IPC_SUBSURFACE 'S' /* id, parent u32, x i32, y i32, z i32, input u8 — a   */
+                        /* surface drawn inside another; z<0 is under it   */
 
 /* node -> wdcomp */
 #define IPC_CONFIGURE 'C' /* id u32, w u32, h u32                            */

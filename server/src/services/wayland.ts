@@ -31,6 +31,7 @@ const MSG_COPY = 'Y'.charCodeAt(0);
 const MSG_RESIZE = 'Z'.charCodeAt(0);
 const MSG_LOG = 'L'.charCodeAt(0);
 const MSG_CLIENT = 'E'.charCodeAt(0);
+const MSG_SUBSURFACE = 'S'.charCodeAt(0);
 
 const MSG_CONFIGURE = 'C';
 const MSG_ACK = 'A';
@@ -771,6 +772,10 @@ interface SessionArgs {
   appId?: string;
   width?: number;
   height?: number;
+  /** The room there is, in the same pixels: the screen an application
+   *  choosing its own size measures itself against. */
+  screenWidth?: number;
+  screenHeight?: number;
   /** xkb layout the browser is really typing on; see docs/wayland.md. */
   layout?: string;
   /**
@@ -928,6 +933,12 @@ export const waylandService: Service = {
       // clampDimension. The shell then sizes its window to whatever it chose.
       const width = clampDimension(args?.width, 0);
       const height = clampDimension(args?.height, 0);
+      // How much room there is for a window that picks its own size — the
+      // "screen" it measures itself against. Firefox takes all of whatever
+      // this is, so the compositor's invented 1080p produced a browser three
+      // times the size of the shell window it was going to live in.
+      const screenWidth = clampDimension(args?.screenWidth, 0);
+      const screenHeight = clampDimension(args?.screenHeight, 0);
 
       const { layout, variant } = safeLayout(args?.layout);
       // What the browser says its display density is. Clamped rather than
@@ -949,6 +960,7 @@ export const waylandService: Service = {
         `${width}x${height}`,
         '--scale',
         String(scale),
+        ...(screenWidth && screenHeight ? ['--output', `${screenWidth}x${screenHeight}`] : []),
         '-l',
         layout,
         ...(variant ? ['--variant', variant] : []),
@@ -1161,6 +1173,24 @@ export const waylandService: Service = {
               y: body.readInt32BE(12),
               width: body.readUInt32BE(16),
               height: body.readUInt32BE(20),
+            });
+            break;
+
+          case MSG_SUBSURFACE:
+            if (body.length < 21) return;
+            ctx.send({
+              t: 'subsurface',
+              id: body.readUInt32BE(0),
+              parent: body.readUInt32BE(4),
+              // Relative to the parent as the browser sees it, shadow margin
+              // already taken off.
+              x: body.readInt32BE(8),
+              y: body.readInt32BE(12),
+              // Against the parent: 1 is just above it, -1 just below.
+              z: body.readInt32BE(16),
+              // False means the application wants the pointer to fall through
+              // to the parent — Firefox does, for its whole interface.
+              input: body[20] !== 0,
             });
             break;
 

@@ -117,5 +117,8 @@ Cursor shapes come from `wp_cursor_shape_v1`, and the clipboard from a real
 `wl_data_device` — copying out of an application works; pasting in has a
 toolkit-side limitation described in `docs/wayland.md`.
 
-Not implemented: `xdg-decoration` so Qt applications can use the shell's own
-frame, dmabuf and subsurface composition (6).
+A subsurface is shown as its own canvas, placed and stacked by the shell,
+with synchronized commits held for the parent's (6) — which is what puts
+Firefox and Thunderbird on screen, since both draw their whole interface in
+one. Not implemented: `xdg-decoration` so Qt applications can use the shell's
+own frame, and dmabuf (7).
