@@ -4,15 +4,30 @@ What changed in each release, for someone deciding whether to update. The
 reasoning behind a change is in its commit; the failures that cost time are in
 `docs/`.
 
+## 0.3.15 — 2026-10-20
+
+- **Open and Save dialogs work in Firefox and other snaps, on every machine.**
+  0.3.14 said this worked; it worked only on a machine with no desktop
+  portal of its own. On any machine with a desktop login, a snap's request
+  went to that desktop's portal, and the dialog opened on the physical
+  screen. A snap now reaches the session bus through a socket the desktop
+  provides, and its file-chooser requests are answered there. Verified with
+  the Firefox snap on a machine whose own portal owns the bus.
+- **Files chosen in a snap are handed over as paths.** A snap reads them
+  through its home interface: files in hidden directories or outside the home
+  directory are not readable to it.
+
 ## 0.3.14 — 2026-10-20
 
-- **Open and Save dialogs work in Firefox and other confined applications.**
+- **Open and Save dialogs in confined applications, on a headless server.**
   A snap asks the desktop portal for its file dialog, and a headless server
   has no portal, so the dialog never appeared. The server now answers the
   file-chooser portal itself: the dialog is drawn by the desktop over the
   application's window and browses the server's files. Open, Save, multiple
   selection and folder choice are covered. Other portals (settings,
-  screenshots, notifications) are still absent.
+  screenshots, notifications) are still absent. **This release claimed the
+  dialogs worked in Firefox; on a machine with a desktop session they did
+  not. Fixed in 0.3.15.**
 - **An application already running on the machine's own screen is named.**
   Launching Firefox while a copy was open on the server's physical desktop
   ended with "started and exited without opening a window". It now says the

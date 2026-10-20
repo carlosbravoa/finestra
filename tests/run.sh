@@ -173,8 +173,9 @@ if [ ! -f "$SERVER" ]; then
 fi
 
 # The machine's session bus, as far as the server is concerned: a private
-# dbus-daemon, so the snap path — the shared portal, requests routed by pid —
-# runs on every machine and never touches the bus of whoever is logged in.
+# dbus-daemon, so the snap path — the proxy socket in front of that bus, the
+# chooser answered on the way — runs on every machine and never touches the
+# bus of whoever is logged in.
 # Handed over as WD_SNAP_BUS rather than DBUS_SESSION_BUS_ADDRESS: the latter
 # would also send the server's `systemctl --user` to a bus with no systemd on
 # it, and the Services section would fail for a reason that has nothing to

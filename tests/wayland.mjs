@@ -355,18 +355,20 @@ if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))
     check('and an ordinary application still gets a private one',
       silent.info?.sessionBus === true, String(silent.info?.sessionBus));
 
-    /* The portal on that shared bus. One portal serves every snap session,
-     * so a request has to be traced to the window its application was
-     * launched from — by the caller's pid, up through /proc to a compositor
-     * we know. Two sessions at once is the only shape that can tell routing
-     * from luck: each application asks, each window must get its own
-     * request, and each application must get back what its window chose. */
+    /* The portal, for a snap. The snap reaches the machine's bus through a
+     * socket of the server's in its runtime directory, and that is where
+     * the file chooser is answered — on the machine's bus the name belongs
+     * to whoever got it first, a real portal on a workstation, and a dialog
+     * cannot be taken from it there. Two sessions at once is the shape that
+     * tells a proxy per session from luck: each application asks, each
+     * window must get its own request, and each application must get back
+     * what its window chose. */
     const builtClient = apps.some((a) => a.id === 'wd-test-subsurface');
     if (builtClient && portalDir) {
       const snapB = open('wayland', 'session', { appId: 'wd-test-snap', width: 320, height: 240 });
       const asked = (s) => s.data.find((d) => d.t === 'portal');
       await until(() => asked(snapA) && asked(snapB), 20000);
-      check('a request on the shared bus reaches the window its application was launched from',
+      check('a snap\'s request reaches the window its application was launched from',
         !!asked(snapA) && !!asked(snapB) && asked(snapA).id !== asked(snapB).id,
         `${asked(snapA)?.id ?? 'nothing in A'} / ${asked(snapB)?.id ?? 'nothing in B'}`);
       if (asked(snapA) && asked(snapB)) {
@@ -386,10 +388,20 @@ if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))
         check('delivered to it without a match rule, the way GTK waits for it',
           resultOf(snapA)?.code === 0 && resultOf(snapB)?.code === 0,
           `codes ${resultOf(snapA)?.code} ${resultOf(snapB)?.code}`);
+        // Everything but the chooser goes through: the name list is the
+        // machine's bus's, and the portal name on it is owned, by the server.
+        check('what a snap says to its bus reaches the machine\'s bus',
+          resultOf(snapA)?.onMachineBus === true && resultOf(snapB)?.onMachineBus === true,
+          JSON.stringify([resultOf(snapA)?.onMachineBus, resultOf(snapB)?.onMachineBus]));
+        // GDBus checks a Response against the owner of the portal name, so
+        // the one written into the stream has to be signed with that name.
+        check('and the Response carries the portal owner\'s name, as GTK checks',
+          typeof resultOf(snapA)?.owner === 'string' && resultOf(snapA)?.sender === resultOf(snapA)?.owner,
+          `${resultOf(snapA)?.sender} vs owner ${resultOf(snapA)?.owner}`);
       }
       ws.send(JSON.stringify({ t: 'close', id: snapB.id }));
     } else {
-      console.log('SKIP  the portal on the shared bus — compositor/build/subsurface-client is not built');
+      console.log('SKIP  the portal for a snap — compositor/build/subsurface-client is not built');
     }
     ws.send(JSON.stringify({ t: 'close', id: snapA.id }));
     await sleep(300);

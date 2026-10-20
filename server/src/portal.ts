@@ -41,6 +41,18 @@ export interface PortalRequest {
   files: string[];
 }
 
+/**
+ * Where the portal's answers go. A bus connection that owns the portal name
+ * is one; the proxy a snap talks through (`busproxy.ts`), which answers in
+ * the real bus's place, is the other.
+ */
+export interface Endpoint {
+  reply(to: Message, signature?: string, body?: unknown[]): void;
+  replyError(to: Message, name: string, text: string): void;
+  emitSignal(path: string, iface: string, member: string, signature: string, body: unknown[], destination?: string): void;
+  pidOf(name: string): Promise<number | null>;
+}
+
 /** One browser session that can show a dialog. */
 export interface PortalTarget {
   deliver(request: PortalRequest): void;
@@ -112,18 +124,14 @@ export class FileChooserPortal {
   onClosed: (() => void) | null = null;
 
   private constructor(
-    private readonly bus: DBus,
+    private readonly bus: Endpoint,
     private readonly route: (senderPid: number | null) => PortalTarget | null,
-  ) {
-    bus.onMethodCall = (msg) => void this.handle(msg);
-    bus.on('error', () => {
-      // The close that follows is what matters; an error here is not ours to crash on.
-    });
-    bus.on('close', () => {
-      this.closed = true;
-      this.pending.clear();
-      this.onClosed?.();
-    });
+    private readonly release: () => void,
+  ) {}
+
+  /** The portal behind an endpoint of someone else's, which hands it the calls. */
+  static attach(endpoint: Endpoint, target: PortalTarget): FileChooserPortal {
+    return new FileChooserPortal(endpoint, () => target, () => undefined);
   }
 
   /**
@@ -142,10 +150,21 @@ export class FileChooserPortal {
       bus.close();
       return null;
     }
-    return new FileChooserPortal(bus, route);
+    const portal = new FileChooserPortal(bus, route, () => bus.close());
+    bus.onMethodCall = (msg) => void portal.handle(msg);
+    bus.on('error', () => {
+      // The close that follows is what matters; an error here is not ours to crash on.
+    });
+    bus.on('close', () => {
+      portal.closed = true;
+      portal.pending.clear();
+      portal.onClosed?.();
+    });
+    return portal;
   }
 
-  private async handle(msg: Message): Promise<void> {
+  /** A call addressed to the portal; `msg.sender` names who asked. */
+  async handle(msg: Message): Promise<void> {
     const { bus } = this;
     try {
       if (msg.interface === PEER && msg.member === 'Ping') {
@@ -262,6 +281,20 @@ export class FileChooserPortal {
     this.emitResponse(id, pending.sender, uris ? SUCCESS : CANCELLED, uris ?? []);
   }
 
+  /** Whether `id` is a request of ours still waiting for an answer. */
+  has(id: string): boolean {
+    return this.pending.has(id);
+  }
+
+  /** A connection went away; its dialogs come down and nobody is told. */
+  forget(sender: string): void {
+    for (const [id, pending] of [...this.pending]) {
+      if (pending.sender !== sender) continue;
+      this.pending.delete(id);
+      pending.target.dismiss(id);
+    }
+  }
+
   /** The session behind these dialogs is gone; every open request ends. */
   cancelAll(target: PortalTarget): void {
     for (const [id, pending] of [...this.pending]) {
@@ -275,6 +308,6 @@ export class FileChooserPortal {
     for (const [id, pending] of [...this.pending]) this.emitResponse(id, pending.sender, ENDED, []);
     this.pending.clear();
     this.closed = true;
-    this.bus.close();
+    this.release();
   }
 }

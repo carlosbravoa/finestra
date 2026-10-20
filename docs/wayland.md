@@ -467,7 +467,7 @@ message names it by pid: "already running on this machine outside this
 desktop". `tests/wayland.mjs` starts such a twin itself and expects the pid
 back.
 
-**Preventing it was tried, and rejected.** Snaps only need the host bus because
+**Preventing it was tried, and rejected — and then done another way.** Snaps only need the host bus because
 `snap-confine` asks `systemd --user` for a tracking scope, and it skips that if
 it finds itself already inside a cgroup named `snap.<snap>.<app>*`. Creating
 one first —
@@ -684,33 +684,77 @@ portal now sets the destination to the sender of the request. Test against
 a real GTK client and not only against your own: the suite's client was too
 well-behaved to catch this.
 
-**The shared-bus path is in the suite, without a snap.** `tests/run.sh`
-starts a private `dbus-daemon` and hands it to the server as `WD_SNAP_BUS`
-(the one variable `sessionBusAddress()` reads before
-`DBUS_SESSION_BUS_ADDRESS`; the latter would also send `systemctl --user`
-there), and puts a fake `snap` on the server's PATH that runs
-`tests/portal-app.mjs` beside the fixture client. Two snap sessions ask at
-once; each window must receive its own request and each application the
-answer its own window gave, which is the only shape that tells pid routing
-from luck.
+**A snap reaches the machine's bus through a socket of ours.** A snap
+cannot be given a private bus: `snap run` asks the *session* bus's
+`org.freedesktop.systemd1` for a transient scope holding its own pid, and on
+a bus with no systemd it prints `… is not a snap cgroup for tag
+snap.firefox.firefox` and exits 0 having run nothing. (Measured twice: under
+`dbus-run-session`, and under a private daemon with the systemd name relayed
+to the real one — the relay worked, and it was still the wrong shape, see
+below.) But on the machine's bus the portal name belongs to whoever got it
+first, and on any machine with a desktop login that is the real
+`xdg-desktop-portal`, which draws a confined application's Open File on the
+physical monitor. 0.3.14 did exactly that and said Firefox worked; it worked
+only where no portal existed. So the snap is handed neither: it gets
+`DBUS_SESSION_BUS_ADDRESS=unix:abstract=/tmp/dbus-wd-…`, a socket of ours
+(`server/src/busproxy.ts`), and behind it a connection to the real bus made
+on its behalf. Every frame passes through untouched — `Hello`, the systemd
+call, `snap userd`, the document portal, the a11y bus — except a method call
+for the file chooser, which is answered here, and the `Response` it waits
+for, which is written into its stream. This is what Flatpak's
+`xdg-dbus-proxy` does, reduced to one interface. `tests/run.sh` still hands
+the server a private daemon as `WD_SNAP_BUS` and a fake `snap`; two snap
+sessions ask at once, each window must get its own request, each application
+its own answer, and the fixture checks that `ListNames` through the socket is
+the real bus's list and that the `Response` is signed by the portal's owner.
 
-**Two kinds of bus, one portal each.** An ordinary application runs under
-`dbus-run-session`, and only the compositor ever knew that bus's address, so
-`wdcomp` now reports it over IPC (`IPC_BUS`) before it spawns the client and
-the session opens a portal there. A snap shares the machine's own bus; one
-portal is opened on it and shared by every snap session, and a request is
-traced back to its window by the caller's pid: the bus says who called,
-walking `/proc` parents finds the compositor it was launched under, and
-`hostTargets` finds the browser behind it.
+**Where a snap may connect.** Its profile includes
+`abstractions/dbus-session-strict`: `owner /run/user/<uid>/bus` and abstract
+`@/tmp/dbus-*`, and nothing else that looks like a bus. A path socket in the
+snap's own runtime directory is covered by a file rule with `w` and is still
+refused for `connect`. Node binds an abstract name correctly only from 22 on
+(libuv's bind with a length; Node 20 cuts the name at its leading NUL and
+listens somewhere else, silently), which the shipped runtime is; a developer
+on an older Node gets a path socket that only the suite's unconfined fake
+snap can reach. `abstractSocketsWork()` is that one check.
 
-**On a machine with a desktop, the real portal wins.** `RequestName` with
-`DO_NOT_QUEUE` either makes us the owner or tells us someone else is, and
-that someone is the real `xdg-desktop-portal` of the owner's login session.
-Then a snap's dialog appears on that machine's physical screen, which is the
-same single-instance caveat snaps already carry and is why Firefox's dialog
-was "not appearing" on the development box all along — it was on the monitor.
-A headless server, which is what this is for, has no such process and the
-name is ours.
+**GDBusProxy addresses the owner's unique name.** With the proxy in place and
+everything relayed, Firefox's `OpenFile` still reached the real portal:
+`dbus-monitor` showed it sent to `:1.63`, not to
+`org.freedesktop.portal.Desktop`. A `GDBusProxy` resolves the name's owner
+when it is created and addresses every call to that unique name, so the
+chooser has to be recognised under either, and the owner is tracked through
+`NameOwnerChanged`. The same name signs the injected `Response`: GTK
+subscribes with the well-known sender and `NO_MATCH_RULE`, and GDBus matches
+that against the current owner. Where nobody owns the name — a headless
+server — the proxy's control connection takes it, so there is always an owner
+to be.
+
+**Two probes that lied.** `busctl` inside the snap said "Permission denied"
+for every socket, ours and the real bus alike; the kernel log (readable
+through `journalctl -k` by group `adm`) showed the denial was `busctl`'s own
+`bind` of its abstract client name, which sd-bus does before every connect
+and which no snap profile allows. And a relay test that ran its client with
+`spawnSync` starved the relay in the same process of its event loop, which
+looked exactly like a call the bus never delivered. Run the thing under test
+in its own process, and read the audit line before believing an errno.
+
+**What the proxy costs.** `NEGOTIATE_UNIX_FD` is declined — a descriptor
+cannot cross a connection node relays — so the few portal calls that pass
+one (`Documents.AddFull`) fail; GTK's file picker passes none. The bus sees
+our unconfined connection, so the daemon's AppArmor mediation of the snap's
+bus traffic does not apply through it: a snap launched here can call what
+its interfaces would otherwise keep from it on the session bus. And the
+files chosen come back as plain `file://` paths; a snap reads them through
+its `home` interface, which excludes hidden directories and anything outside
+`$HOME`.
+
+**Verified against the Firefox snap on a machine whose real portal owns the
+bus** — the development box — through the shell in headless Chromium:
+Ctrl+O, the shell's dialog titled "Open File - Mozilla Firefox", a file
+picked, the page opened in Firefox. The earlier checks (zenity, Mozilla's
+tarball on a private bus) exercised the portal and not the snap, which is
+the gap 0.3.14 fell through.
 
 **A D-Bus client of our own.** The protocol the portal needs — EXTERNAL
 auth, marshalling driven by signature strings, calls, replies, errors and

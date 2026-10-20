@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { Duplex } from 'node:stream';
 import { ServiceError, type Service } from '../service.js';
 import { FileChooserPortal, type PortalTarget } from '../portal.js';
+import { BusProxy, abstractSocketsWork } from '../busproxy.js';
 
 /**
  * Real Linux applications, in a window.
@@ -239,65 +240,17 @@ function runningElsewhere(argv: string[]): number[] {
   return named.filter((pid) => !ours(pid));
 }
 
-/* ------------------------------------------------------------------ */
-/* The portal on the machine's own bus                                 */
-/* ------------------------------------------------------------------ */
-
 /**
- * Snaps share this user's session bus, so one portal serves every snap
- * session at once and has to work out which window a request belongs to.
- * The bus tells us the caller's pid; walking its parents finds the
- * compositor it was launched under, and this map finds the browser behind
- * that compositor.
+ * The snap an entry runs, by the name snapd uses for its runtime directory:
+ * `/snap/bin/<snap>` or `/snap/bin/<snap>.<app>`, or `snap run <snap>`.
+ * That directory is the one place under the runtime dir a snap's profile
+ * lets it open a socket of ours; see busproxy.ts.
  */
-const hostTargets = new Map<number, PortalTarget>();
-let hostPortal: { address: string; portal: Promise<FileChooserPortal | null> } | null = null;
-
-function parentPid(pid: number): number {
-  try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    return Number(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[1]);
-  } catch {
-    return 0;
-  }
-}
-
-function routeByPid(pid: number | null): PortalTarget | null {
-  for (let p = pid ?? 0, hops = 0; p > 1 && hops < 64; p = parentPid(p), hops++) {
-    const target = hostTargets.get(p);
-    if (target) return target;
-  }
-  return null;
-}
-
-/**
- * The portal on the host bus, opened once and shared. Null when a real one
- * owns the name — a machine with a desktop session — in which case a snap's
- * dialog appears on that desktop's screen, which is the real portal's call.
- * A refusal is not cached: the next session asks again, which is one
- * connection and one RequestName.
- */
-function hostPortalFor(address: string): Promise<FileChooserPortal | null> {
-  if (hostPortal && hostPortal.address === address) return hostPortal.portal;
-  const opened = FileChooserPortal.open(address, routeByPid).then(
-    (portal) => {
-      if (!portal) {
-        hostPortal = null;
-        return null;
-      }
-      portal.onClosed = () => {
-        if (hostPortal?.portal === opened) hostPortal = null;
-      };
-      return portal;
-    },
-    (err: Error) => {
-      hostPortal = null;
-      console.error(`[wayland] portal on ${address}: ${err.message}`);
-      return null;
-    },
-  );
-  hostPortal = { address, portal: opened };
-  return opened;
+function snapNameOf(argv: string[]): string | null {
+  const head = argv[0] ?? '';
+  const name = head === 'snap' && argv[1] === 'run' ? argv[2] : head.startsWith('/snap/bin/') ? path.basename(head) : '';
+  const snap = (name ?? '').split('.')[0];
+  return snap && /^[a-z0-9-]+(_[a-z0-9]+)?$/.test(snap) ? snap : null;
 }
 
 function hasGraphicalSession(): boolean {
@@ -1110,12 +1063,47 @@ export const waylandService: Service = {
       const command = useBus ? 'dbus-run-session' : binary;
       const commandArgs = useBus ? ['--', binary, ...compositorArgs] : compositorArgs;
 
+      /*
+       * Portal requests from the application become dialogs in this window.
+       * On a private bus the portal is this session's own and arrives once
+       * the compositor reports the bus address. A snap is on the machine's
+       * bus, where the portal name is somebody else's, so it reaches that bus
+       * through a socket of ours that answers the file chooser on the way
+       * (busproxy.ts): an abstract `@/tmp/dbus-…`, the one kind of socket
+       * besides the bus itself that its profile lets it connect to. A Node
+       * too old to bind one gets a path socket in the snap's runtime
+       * directory instead, which only an unconfined client can reach — the
+       * suite's fake snap, on a developer's machine.
+       */
+      const portalTarget: PortalTarget = {
+        deliver: (request) => ctx.send({ t: 'portal', ...request }),
+        dismiss: (id) => ctx.send({ t: 'portal-close', id }),
+      };
+      let proxy: BusProxy | null = null;
+      const snapName = hostBus ? snapNameOf(app.argv) : null;
+      if (hostBus && snapName) {
+        try {
+          if (abstractSocketsWork()) {
+            proxy = await BusProxy.open(hostBus, { abstract: `/tmp/dbus-wd-${socketName}` }, portalTarget);
+          } else {
+            const uid = process.getuid?.();
+            const runtimeDir = process.env.XDG_RUNTIME_DIR || (uid === undefined ? '' : `/run/user/${uid}`);
+            const dir = path.join(runtimeDir, `snap.${snapName}`);
+            fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+            proxy = await BusProxy.open(hostBus, { path: path.join(dir, `wd-bus-${socketName}`) }, portalTarget);
+          }
+        } catch (err) {
+          ctx.send({ t: 'log', message: `bus proxy: ${(err as Error).message}` });
+        }
+      }
+
       const env = { ...process.env };
       // A bus of our own replaces this one; with no bus of our own, whatever
       // the server has is better than none at all — and for a snap, the
       // address may be one we worked out rather than one we were given, so it
       // has to be put in the environment rather than left to be inherited.
       if (useBus) delete env.DBUS_SESSION_BUS_ADDRESS;
+      else if (proxy) env.DBUS_SESSION_BUS_ADDRESS = proxy.address;
       else if (hostBus) env.DBUS_SESSION_BUS_ADDRESS = hostBus;
       delete env.WAYLAND_DISPLAY;
       delete env.DISPLAY;
@@ -1135,6 +1123,7 @@ export const waylandService: Service = {
           env,
         });
       } catch (err) {
+        proxy?.close();
         throw new ServiceError(
           `Could not start the compositor: ${(err as Error).message}`,
           'ESPAWN',
@@ -1148,6 +1137,7 @@ export const waylandService: Service = {
         } catch {
           // Already gone.
         }
+        proxy?.close();
         throw new ServiceError('The compositor channel did not open', 'EPIPE');
       }
 
@@ -1157,29 +1147,10 @@ export const waylandService: Service = {
       if (!instances) liveApps.set(app.id, (instances = new Set()));
       instances.add(stopped);
 
-      /*
-       * Portal requests from the application become dialogs in this window.
-       * On a private bus the portal is this session's own and arrives once
-       * the compositor reports the bus address; on the host bus it is the
-       * shared one, and this session is registered under its compositor's
-       * pid so a request can be traced back here.
-       */
-      const portalTarget: PortalTarget = {
-        deliver: (request) => ctx.send({ t: 'portal', ...request }),
-        dismiss: (id) => ctx.send({ t: 'portal-close', id }),
-      };
       let ownPortal: FileChooserPortal | null = null;
-      let sharedPortal: FileChooserPortal | null = null;
-      if (hostBus) {
-        hostTargets.set(child.pid!, portalTarget);
-        void hostPortalFor(hostBus).then((portal) => {
-          sharedPortal = portal;
-        });
-      }
       const releasePortal = () => {
-        hostTargets.delete(child.pid!);
-        sharedPortal?.cancelAll(portalTarget);
-        sharedPortal = null;
+        proxy?.close();
+        proxy = null;
         ownPortal?.close();
         ownPortal = null;
       };
@@ -1632,7 +1603,7 @@ export const waylandService: Service = {
                   (u): u is string => typeof u === 'string' && u.startsWith('file:///'),
                 )
               : null;
-            (ownPortal ?? sharedPortal)?.respond(id, uris);
+            (ownPortal ?? proxy)?.respond(id, uris);
             return;
           }
 

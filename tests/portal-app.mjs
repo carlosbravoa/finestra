@@ -19,6 +19,15 @@ const write = (result) => fs.writeFileSync(out, JSON.stringify(result));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const bus = await DBus.connect(process.env.DBUS_SESSION_BUS_ADDRESS);
+// Whether this is the machine's bus, seen through whatever is in front of it:
+// the portal name is owned there, by the server, and nowhere else.
+const names = (await bus.call({
+  destination: 'org.freedesktop.DBus',
+  path: '/org/freedesktop/DBus',
+  interface: 'org.freedesktop.DBus',
+  member: 'ListNames',
+})).body[0];
+const onMachineBus = Array.isArray(names) && names.includes('org.freedesktop.portal.Desktop');
 let handle = null;
 for (let attempt = 0; attempt < 50 && !handle; attempt++) {
   try {
@@ -44,9 +53,18 @@ if (!handle) {
   process.exit(1);
 }
 
+const owner = (await bus.call({
+  destination: 'org.freedesktop.DBus',
+  path: '/org/freedesktop/DBus',
+  interface: 'org.freedesktop.DBus',
+  member: 'GetNameOwner',
+  signature: 's',
+  body: ['org.freedesktop.portal.Desktop'],
+})).body[0];
+
 bus.onSignal = (m) => {
   if (m.path !== handle || m.member !== 'Response') return;
-  write({ token, handle, code: m.body[0], uris: m.body[1]?.get('uris')?.value ?? null });
+  write({ token, handle, code: m.body[0], uris: m.body[1]?.get('uris')?.value ?? null, onMachineBus, owner, sender: m.sender });
   process.exit(0);
 };
 setTimeout(() => {
