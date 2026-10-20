@@ -3591,6 +3591,14 @@ int main(int argc, char **argv) {
 			WL_EVENT_READABLE, handle_ipc_readable, &server);
 		logmsg("listening on WAYLAND_DISPLAY=%s, streaming frames on fd %d",
 			socket_name, WDC_IPC_FD);
+		/*
+		 * Under dbus-run-session the bus is ours alone and only this
+		 * process knows its address, which the server needs in order to
+		 * answer portal requests on it. Said once, before any client.
+		 */
+		const char *bus = getenv("DBUS_SESSION_BUS_ADDRESS");
+		if (bus && *bus)
+			ipc_send(server.ipc, IPC_BUS, bus, strlen(bus), NULL, 0);
 	} else {
 		logmsg("listening on WAYLAND_DISPLAY=%s, frames to %s", socket_name,
 			server.outdir);

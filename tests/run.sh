@@ -124,6 +124,18 @@ if [ -x compositor/build/wdcomp ] && pkg-config --exists wayland-client 2>/dev/n
 fi
 if [ -x compositor/build/subsurface-client ]; then
   fixture wd-test-subsurface "WD Test Subsurface" "$PWD/compositor/build/subsurface-client" ""
+  # A confined application asking the portal for a file dialog. The script
+  # writes down the private bus it was given, then stays connected to the
+  # display as the fixture client so the session lives while the test, as
+  # the application, talks to the portal on that bus.
+  export WD_TEST_BUS="$XDG_STATE_HOME/portal-bus"
+  cat > "$BIN_DIR/wd-portal-app" <<EOF
+#!/bin/sh
+printf '%s' "\$DBUS_SESSION_BUS_ADDRESS" > "$WD_TEST_BUS"
+exec "$PWD/compositor/build/subsurface-client"
+EOF
+  chmod +x "$BIN_DIR/wd-portal-app"
+  fixture wd-test-portal "WD Test Portal" "$BIN_DIR/wd-portal-app" ""
 fi
 # Where that client writes the pointer position the compositor delivered, so
 # the suite can click in the browser's pixels and read where it landed.

@@ -31,6 +31,7 @@
 #define IPC_CLIENT  'E' /* count u32 — connected Wayland clients, on change */
 #define IPC_SUBSURFACE 'S' /* id, parent u32, x i32, y i32, z i32, input u8 — a   */
                         /* surface drawn inside another; z<0 is under it   */
+#define IPC_BUS     'B' /* utf-8 — the session bus address the app will use */
 
 /* node -> wdcomp */
 #define IPC_CONFIGURE 'C' /* id u32, w u32, h u32                            */

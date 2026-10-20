@@ -1,4 +1,5 @@
 import { h, listen } from '../../core/dom';
+import { fileChooser, type Chooser, type ChooserRequest } from './chooser';
 import { cssCursor } from './cursor';
 import {
   EVDEV_BY_CODE,
@@ -784,9 +785,47 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         console.debug('[wayland]', message.message);
         break;
 
+      // The application asked the portal for a file dialog, and the portal
+      // asked us. The request id is the portal's object path, a string.
+      case 'portal': {
+        const request = data as ChooserRequest & { id: string };
+        if (typeof request.id !== 'string') break;
+        closeChooser(request.id, false);
+        const chooser = fileChooser(desktop, request);
+        choosers.set(request.id, chooser);
+        root.appendChild(chooser.element);
+        void chooser.result.then((uris) => {
+          if (choosers.get(request.id) !== chooser) return;
+          choosers.delete(request.id);
+          chooser.element.remove();
+          channel?.ctl('portal', { id: request.id, uris });
+        });
+        break;
+      }
+
+      case 'portal-close': {
+        const id = (data as { id?: unknown }).id;
+        if (typeof id === 'string') closeChooser(id, false);
+        break;
+      }
+
       default:
         break;
     }
+  }
+
+  /** Portal dialogs on screen, by the request they answer. */
+  const choosers = new Map<string, Chooser>();
+
+  /** Takes a dialog down. With `answer`, the application hears "cancelled";
+   *  without it — the application withdrew, or the session ended — nothing
+   *  is sent, because there is nobody left to send it to. */
+  function closeChooser(id: string, answer: boolean): void {
+    const chooser = choosers.get(id);
+    if (!chooser) return;
+    if (!answer) choosers.delete(id);
+    chooser.element.remove();
+    chooser.close();
   }
 
   /**
@@ -1075,6 +1114,7 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
 
   function reset(): void {
     asked = null;
+    for (const id of [...choosers.keys()]) closeChooser(id, false);
     for (const id of [...surfaces.keys()]) destroySurface(id);
     stage.replaceChildren();
     mainId = null;

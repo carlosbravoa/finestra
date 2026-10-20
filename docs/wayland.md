@@ -425,7 +425,7 @@ hit them sooner and harder.
 | Limit | What you see | Why |
 | --- | --- | --- |
 | **No dmabuf import** | A window that never paints, or an application that exits complaining about EGL | Anything on the GPU commits buffers we cannot read. `wdcomp` sets `GSK_RENDERER=cairo`, `QT_QUICK_BACKEND=software` and `LIBGL_ALWAYS_SOFTWARE=1` when it spawns the client (`force_shm`, on by default), which is what rescues GTK 4 and Qt Quick. **Whether those survive into a snap's own runtime is not something we control** — snapd rebuilds much of the environment — so the escape hatch that fixes a `.deb` may simply not apply. Electron-based snaps are the usual casualty |
-| **No portals** | *Open File* and *Save As* do nothing, hang, or return empty; screenshots, secrets and notifications fail | `xdg-desktop-portal` is the interface a confined application uses to reach anything outside itself, and a headless server has no portal running. A `.deb` often falls back to its own file chooser; a strictly confined snap frequently has no fallback because the portal *is* its file access |
+| **Only the file-chooser portal** | *Open File* and *Save As* work, drawn by the shell; screenshots, secrets and notifications fail | `xdg-desktop-portal` is the interface a confined application uses to reach anything outside itself. The service answers the `FileChooser` interface itself (stage 7); the rest of the portal is not there, which an application experiences as a machine with no portal |
 | **No Xwayland** | `Failed to open display` from anything X11-only | Stage 6, unstarted. A snap shipping an X11-only toolkit is out of reach for the same reason `dosbox-x` is |
 | **No audio** | Silence, or a startup failure in an application that insists on a sound server | No PipeWire or PulseAudio is offered to the session |
 | **Single-instance handoff** | Starts, draws nothing, exits cleanly | Only on a machine that *has* a desktop session: snaps share this user's real session bus, so a copy already running there takes the window. The session says so rather than reporting a clean exit — see below. A headless server never sees this |
@@ -635,21 +635,75 @@ application's *Open File* dialog at the Files app.
 6. **Subsurfaces.** ✅ Each one its own canvas, positioned and stacked by CSS,
    synchronized commits held for the parent's. Firefox demanded it: it and
    Thunderbird draw their entire interface in one.
-7. **Portals.** ⏭ Next. Firefox's *Open File* dialog does not appear: the
-   snap asks `xdg-desktop-portal` for one over the session bus, and nothing
-   answers. The same gap stops DOSBox-X at its first-run directory picker (a
-   `zenity` waiting on a portal) and takes *Save As*, screenshots and
-   notifications with it in every confined application. The fix is a portal
-   backend of our own on the session's private bus, answering the
-   `FileChooser` interface with the Files app. Once a browser can open and
-   save a file, the "snaps are experimental" caveat shrinks to audio and
-   Xwayland.
+7. **The file-chooser portal.** ✅ Firefox's *Open File* did not appear: the
+   snap asks `org.freedesktop.portal.Desktop` on the session bus for a dialog
+   and waits for a `Response` signal, and with nobody on that name the
+   request fails and the dialog is silently cancelled. The service now owns
+   that name on every bus it hands an application — the session's private
+   bus, whose address the compositor reports over IPC (`IPC_BUS`), and the
+   machine's own bus that snaps share — and answers `FileChooser` with a
+   dialog drawn by the shell over the application's window
+   (`client/src/apps/wayland/chooser.ts`). See "What stage 7 settled".
 8. **Later, if something demands it.** dmabuf import for GPU applications;
    H.264 for animated content; Xwayland (it is just another Wayland client, but
    it drags a full X11 window-management job behind it); audio over PipeWire.
 
 Stages 1–3 are the small half. Stage 4 is where the time goes, and it is what
 decides whether this feels like a desktop or a demo.
+
+## What stage 7 settled
+
+**We are the portal, not a backend for one.** `xdg-desktop-portal` is
+normally two processes: a frontend owning `org.freedesktop.portal.Desktop`
+that every application talks to, and a desktop-specific backend behind it.
+A headless server has neither, so `server/src/portal.ts` owns the frontend
+name itself and implements the one interface a file dialog needs,
+`org.freedesktop.portal.FileChooser` (`OpenFile`, `SaveFile`, `SaveFiles`,
+the `version` property, and `Request.Close`). Everything else on that name is
+refused with `UnknownMethod`, which is exactly what an application gets from
+a machine with no portal, so nothing behaves worse than before.
+
+**The request becomes a shell dialog.** A call arrives on the bus, the
+session sends `{t:'portal', …}` to the browser, `chooser.ts` draws a dialog
+over the application's window that browses the server through the fs
+service, and the answer comes back as `ctl('portal', {id, uris})`. The portal
+emits `Response` on the request path the application predicted from its
+`handle_token`, which is why the request object has to exist before the
+method returns. `uris` are `file://` URIs of paths on the server; anything
+that is not one is dropped on the way through.
+
+**Two kinds of bus, one portal each.** An ordinary application runs under
+`dbus-run-session`, and only the compositor ever knew that bus's address, so
+`wdcomp` now reports it over IPC (`IPC_BUS`) before it spawns the client and
+the session opens a portal there. A snap shares the machine's own bus; one
+portal is opened on it and shared by every snap session, and a request is
+traced back to its window by the caller's pid: the bus says who called,
+walking `/proc` parents finds the compositor it was launched under, and
+`hostTargets` finds the browser behind it.
+
+**On a machine with a desktop, the real portal wins.** `RequestName` with
+`DO_NOT_QUEUE` either makes us the owner or tells us someone else is, and
+that someone is the real `xdg-desktop-portal` of the owner's login session.
+Then a snap's dialog appears on that machine's physical screen, which is the
+same single-instance caveat snaps already carry and is why Firefox's dialog
+was "not appearing" on the development box all along — it was on the monitor.
+A headless server, which is what this is for, has no such process and the
+name is ours.
+
+**A D-Bus client of our own.** The protocol the portal needs — EXTERNAL
+auth, marshalling driven by signature strings, calls, replies, errors and
+signals — is `server/src/dbus.ts`, about four hundred lines. The obvious
+dependency, `dbus-next`, pulls in `node-gyp`, `request` and `event-stream`
+with a critical advisory and no fix, for a protocol whose useful subset is
+smaller than the advisory. The suite drives the portal through the same
+client, as the application: `tests/wayland.mjs` opens a session whose fixture
+writes down its bus, calls `OpenFile`, answers from the browser side and
+checks the `Response` that comes back.
+
+**Not done, and not needed for Firefox:** the document portal (a snap that
+cannot read `$HOME` directly cannot read what it chose either — Firefox has
+the `home` interface), MIME-type filters (only globs are honoured), `choices`,
+and every other portal: settings, notifications, screenshots.
 
 ## What stage 5 settled
 

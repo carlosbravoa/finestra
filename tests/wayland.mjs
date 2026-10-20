@@ -627,6 +627,110 @@ if (subApp) {
   console.log('SKIP  subsurfaces — compositor/build/subsurface-client is not built (needs libwayland-client)');
 }
 
+/* ---------------------------------------------------------------- */
+/* The portal: a file dialog a confined application cannot draw      */
+/* ---------------------------------------------------------------- */
+
+// Firefox in its snap does not open a file dialog of its own: it asks
+// org.freedesktop.portal.Desktop on the session bus for one and waits for a
+// Response signal. With nobody on that name the dialog never appears and
+// nothing says why. The service owns the name on every bus it hands an
+// application and the browser answers. Here the test is the application.
+const portalApp = apps.find((a) => a.id === 'wd-test-portal');
+if (portalApp && process.env.WD_TEST_BUS) {
+  const { DBus, Variant } = await import('../server/dist/server/src/dbus.js');
+  const busFile = process.env.WD_TEST_BUS;
+  try { fs.unlinkSync(busFile); } catch { /* first run */ }
+  const pa = open('wayland', 'session', { appId: portalApp.id, width: 320, height: 240 });
+  const haveBus = await until(() =>
+    fs.existsSync(busFile) && fs.readFileSync(busFile, 'utf8').length > 0 && pa.frames.length >= 1, 15000);
+  check('the application is told which bus its session is on', haveBus,
+    haveBus ? '' : (pa.error ?? 'no bus address written'));
+  if (haveBus) {
+    const DESKTOP = 'org.freedesktop.portal.Desktop';
+    const PATH = '/org/freedesktop/portal/desktop';
+    const CHOOSER = 'org.freedesktop.portal.FileChooser';
+    const bus = await DBus.connect(fs.readFileSync(busFile, 'utf8'));
+    const signals = [];
+    bus.onSignal = (m) => signals.push(m);
+    await bus.addMatch("type='signal',interface='org.freedesktop.portal.Request'");
+    const responseTo = (handle) => signals.find((s) => s.path === handle && s.member === 'Response');
+    const askedFor = (handle) => pa.data.find((d) => d.t === 'portal' && d.id === handle);
+    const request = (member, token, extra = []) =>
+      bus.call({
+        destination: DESKTOP, path: PATH, interface: CHOOSER, member, signature: 'ssa{sv}',
+        body: ['', 'Open a file', new Map([['handle_token', new Variant('s', token)], ...extra])],
+      }).then((r) => r.body[0]);
+
+    // GTK asks the version before it asks for anything else.
+    let version;
+    try {
+      const got = await bus.call({
+        destination: DESKTOP, path: PATH, interface: 'org.freedesktop.DBus.Properties',
+        member: 'Get', signature: 'ss', body: [CHOOSER, 'version'],
+      });
+      version = got.body[0]?.value;
+    } catch (err) {
+      version = String(err);
+    }
+    check('the portal answers on that bus with a FileChooser version',
+      typeof version === 'number' && version >= 3, String(version));
+
+    const handle = await request('OpenFile', 'wdtest1', [
+      ['multiple', new Variant('b', true)],
+      ['filters', new Variant('a(sa(us))', [['Text', [[0, '*.txt']]], ['All', [[0, '*']]]])],
+      ['current_folder', new Variant('ay', new TextEncoder().encode('/tmp\0'))],
+    ]);
+    const expected = `/org/freedesktop/portal/desktop/request/${bus.uniqueName.slice(1).replace(/\./g, '_')}/wdtest1`;
+    check('OpenFile returns the handle the application predicted from its token',
+      handle === expected, String(handle));
+    await until(() => askedFor(handle), 5000);
+    const asked = askedFor(handle);
+    check('and the browser is asked to show the dialog',
+      asked?.kind === 'open' && asked?.multiple === true,
+      asked ? JSON.stringify({ kind: asked.kind, multiple: asked.multiple }) : 'nothing arrived');
+    check('with the title, filters and starting folder the application gave',
+      asked?.title === 'Open a file' && asked?.currentFolder === '/tmp' &&
+        asked?.filters?.[0]?.patterns?.[0] === '*.txt' && asked?.filters?.length === 2,
+      asked ? `"${asked.title}" in ${asked.currentFolder}, ${asked.filters?.map((f) => f.name).join('/')}` : '');
+
+    ctl(pa, 'portal', { id: handle, uris: ['file:///tmp/a.txt', 'file:///tmp/b%20c.txt', '/tmp/not-a-uri'] });
+    await until(() => responseTo(handle), 5000);
+    const answered = responseTo(handle);
+    const uris = answered?.body?.[1]?.get('uris')?.value;
+    check('the choice reaches the application as a Response signal, code 0',
+      answered?.body?.[0] === 0, answered ? `code ${answered.body[0]}` : 'no signal');
+    check('carrying the chosen file URIs and nothing that is not one',
+      Array.isArray(uris) && uris.length === 2 && uris[1] === 'file:///tmp/b%20c.txt', JSON.stringify(uris));
+
+    // Cancelled in the browser.
+    const saveHandle = await request('SaveFile', 'wdtest2', [['current_name', new Variant('s', 'notes.txt')]]);
+    await until(() => askedFor(saveHandle), 5000);
+    const save = askedFor(saveHandle);
+    check('a save dialog carries the name the application suggested',
+      save?.kind === 'save' && save?.currentName === 'notes.txt', save ? `${save.kind} ${save.currentName}` : 'nothing arrived');
+    ctl(pa, 'portal', { id: saveHandle, uris: null });
+    await until(() => responseTo(saveHandle), 5000);
+    check('cancelling in the browser answers with code 1',
+      responseTo(saveHandle)?.body?.[0] === 1, `code ${responseTo(saveHandle)?.body?.[0]}`);
+
+    // Withdrawn by the application, which is what happens when its window
+    // closes with the dialog still up.
+    const third = await request('OpenFile', 'wdtest3');
+    await until(() => askedFor(third), 5000);
+    await bus.call({ destination: DESKTOP, path: third, interface: 'org.freedesktop.portal.Request', member: 'Close' });
+    await until(() => responseTo(third) && pa.data.some((d) => d.t === 'portal-close' && d.id === third), 5000);
+    check('an application that closes its request takes the dialog down, code 2',
+      responseTo(third)?.body?.[0] === 2 && pa.data.some((d) => d.t === 'portal-close' && d.id === third),
+      `code ${responseTo(third)?.body?.[0]}`);
+    bus.close();
+  }
+  ws.send(JSON.stringify({ t: 'close', id: pa.id }));
+  await sleep(300);
+} else if (!portalApp) {
+  console.log('SKIP  portal — compositor/build/subsurface-client is not built (needs libwayland-client)');
+}
+
 /* Damage tracking is the whole bandwidth story: after the first frame, a
  * redraw should cost a fraction of a full one. Only assert it if the
  * application actually redrew something small on its own. */

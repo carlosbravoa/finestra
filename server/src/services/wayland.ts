@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Duplex } from 'node:stream';
 import { ServiceError, type Service } from '../service.js';
+import { FileChooserPortal, type PortalTarget } from '../portal.js';
 
 /**
  * Real Linux applications, in a window.
@@ -32,6 +33,7 @@ const MSG_RESIZE = 'Z'.charCodeAt(0);
 const MSG_LOG = 'L'.charCodeAt(0);
 const MSG_CLIENT = 'E'.charCodeAt(0);
 const MSG_SUBSURFACE = 'S'.charCodeAt(0);
+const MSG_BUS = 'B'.charCodeAt(0);
 
 const MSG_CONFIGURE = 'C';
 const MSG_ACK = 'A';
@@ -235,6 +237,67 @@ function runningElsewhere(argv: string[]): number[] {
     return false;
   };
   return named.filter((pid) => !ours(pid));
+}
+
+/* ------------------------------------------------------------------ */
+/* The portal on the machine's own bus                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Snaps share this user's session bus, so one portal serves every snap
+ * session at once and has to work out which window a request belongs to.
+ * The bus tells us the caller's pid; walking its parents finds the
+ * compositor it was launched under, and this map finds the browser behind
+ * that compositor.
+ */
+const hostTargets = new Map<number, PortalTarget>();
+let hostPortal: { address: string; portal: Promise<FileChooserPortal | null> } | null = null;
+
+function parentPid(pid: number): number {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return Number(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[1]);
+  } catch {
+    return 0;
+  }
+}
+
+function routeByPid(pid: number | null): PortalTarget | null {
+  for (let p = pid ?? 0, hops = 0; p > 1 && hops < 64; p = parentPid(p), hops++) {
+    const target = hostTargets.get(p);
+    if (target) return target;
+  }
+  return null;
+}
+
+/**
+ * The portal on the host bus, opened once and shared. Null when a real one
+ * owns the name — a machine with a desktop session — in which case a snap's
+ * dialog appears on that desktop's screen, which is the real portal's call.
+ * A refusal is not cached: the next session asks again, which is one
+ * connection and one RequestName.
+ */
+function hostPortalFor(address: string): Promise<FileChooserPortal | null> {
+  if (hostPortal && hostPortal.address === address) return hostPortal.portal;
+  const opened = FileChooserPortal.open(address, routeByPid).then(
+    (portal) => {
+      if (!portal) {
+        hostPortal = null;
+        return null;
+      }
+      portal.onClosed = () => {
+        if (hostPortal?.portal === opened) hostPortal = null;
+      };
+      return portal;
+    },
+    (err: Error) => {
+      hostPortal = null;
+      console.error(`[wayland] portal on ${address}: ${err.message}`);
+      return null;
+    },
+  );
+  hostPortal = { address, portal: opened };
+  return opened;
 }
 
 function hasGraphicalSession(): boolean {
@@ -1091,6 +1154,33 @@ export const waylandService: Service = {
       instances.add(stopped);
 
       /*
+       * Portal requests from the application become dialogs in this window.
+       * On a private bus the portal is this session's own and arrives once
+       * the compositor reports the bus address; on the host bus it is the
+       * shared one, and this session is registered under its compositor's
+       * pid so a request can be traced back here.
+       */
+      const portalTarget: PortalTarget = {
+        deliver: (request) => ctx.send({ t: 'portal', ...request }),
+        dismiss: (id) => ctx.send({ t: 'portal-close', id }),
+      };
+      let ownPortal: FileChooserPortal | null = null;
+      let sharedPortal: FileChooserPortal | null = null;
+      if (hostBus) {
+        hostTargets.set(child.pid!, portalTarget);
+        void hostPortalFor(hostBus).then((portal) => {
+          sharedPortal = portal;
+        });
+      }
+      const releasePortal = () => {
+        hostTargets.delete(child.pid!);
+        sharedPortal?.cancelAll(portalTarget);
+        sharedPortal = null;
+        ownPortal?.close();
+        ownPortal = null;
+      };
+
+      /*
        * Node opens extra stdio pipes as bidirectional sockets, but types them
        * as one direction only — hence the cast. Verified: the compositor
        * reads configure/ack on the same fd it writes frames to.
@@ -1302,6 +1392,28 @@ export const waylandService: Service = {
             if (body.length >= 4 && body.readUInt32BE(0) > 0) sawClient = true;
             break;
 
+          case MSG_BUS: {
+            // The compositor's private bus, known only to it until now.
+            // The portal goes on it before the application has had time to
+            // ask for anything: the address arrives before the client is
+            // spawned.
+            if (!useBus) break;
+            const address = body.toString('utf8');
+            FileChooserPortal.open(address, () => portalTarget).then(
+              (portal) => {
+                if (!alive || !portal) {
+                  portal?.close();
+                  return;
+                }
+                ownPortal = portal;
+              },
+              (err: Error) => {
+                ctx.send({ t: 'log', message: `portal: ${err.message}` });
+              },
+            );
+            break;
+          }
+
           default:
             break;
         }
@@ -1377,6 +1489,7 @@ export const waylandService: Service = {
       child.on('error', (err) => {
         alive = false;
         markStopped();
+        releasePortal();
         liveApps.get(app.id)?.delete(stopped);
         ctx.close(`Could not start the compositor: ${err.message}`);
       });
@@ -1452,6 +1565,7 @@ export const waylandService: Service = {
       child.on('exit', (code, signal) => {
         alive = false;
         markStopped();
+        releasePortal();
         liveApps.get(app.id)?.delete(stopped);
         if (killTimer) clearTimeout(killTimer);
         // We asked, so there is nothing to explain.
@@ -1500,6 +1614,21 @@ export const waylandService: Service = {
           // The clipboard belongs to the session, not to one window.
           if (method === 'paste') {
             if (typeof ctlArgs?.text === 'string') sendPaste(ctlArgs.text);
+            return;
+          }
+
+          // The browser's answer to a portal dialog: file:// URIs, or null
+          // for cancelled. Anything that is not a file URI is dropped here
+          // rather than handed to an application as a path it did not pick.
+          if (method === 'portal') {
+            const id = typeof ctlArgs?.id === 'string' ? ctlArgs.id : null;
+            if (!id) return;
+            const uris = Array.isArray(ctlArgs?.uris)
+              ? (ctlArgs.uris as unknown[]).filter(
+                  (u): u is string => typeof u === 'string' && u.startsWith('file:///'),
+                )
+              : null;
+            (ownPortal ?? sharedPortal)?.respond(id, uris);
             return;
           }
 
