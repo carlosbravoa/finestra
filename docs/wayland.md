@@ -684,6 +684,16 @@ portal now sets the destination to the sender of the request. Test against
 a real GTK client and not only against your own: the suite's client was too
 well-behaved to catch this.
 
+**The shared-bus path is in the suite, without a snap.** `tests/run.sh`
+starts a private `dbus-daemon` and hands it to the server as `WD_SNAP_BUS`
+(the one variable `sessionBusAddress()` reads before
+`DBUS_SESSION_BUS_ADDRESS`; the latter would also send `systemctl --user`
+there), and puts a fake `snap` on the server's PATH that runs
+`tests/portal-app.mjs` beside the fixture client. Two snap sessions ask at
+once; each window must receive its own request and each application the
+answer its own window gave, which is the only shape that tells pid routing
+from luck.
+
 **Two kinds of bus, one portal each.** An ordinary application runs under
 `dbus-run-session`, and only the compositor ever knew that bus's address, so
 `wdcomp` now reports it over IPC (`IPC_BUS`) before it spawns the client and

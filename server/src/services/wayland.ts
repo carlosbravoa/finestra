@@ -375,7 +375,11 @@ function withLaunchQuirks(argv: string[]): string[] {
  * wrong costs exactly the failure the snap has without this.
  */
 function sessionBusAddress(): string | null {
-  const configured = process.env.DBUS_SESSION_BUS_ADDRESS;
+  // WD_SNAP_BUS names the bus snaps are handed, and nothing else: the suite
+  // points it at a private daemon so the shared-portal path runs on every
+  // machine without touching the bus of whoever is logged in, and without
+  // sending `systemctl --user` there too, which DBUS_SESSION_BUS_ADDRESS would.
+  const configured = process.env.WD_SNAP_BUS || process.env.DBUS_SESSION_BUS_ADDRESS;
   if (configured) return configured;
 
   const uid = process.getuid?.();

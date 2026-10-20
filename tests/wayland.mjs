@@ -339,22 +339,63 @@ if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))
   // Two things have to be true for there to be anything to check: `snap` on
   // PATH, or the entry is not offered at all, and a user bus, or there is no
   // choice to make.
-  const runtimeDir = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`;
-  const userBus = fs.existsSync(path.join(runtimeDir, 'bus'));
-  if (ids.has('wd-test-snap') && userBus && status.sessionBus) {
-    const snap = open('wayland', 'session', { appId: 'wd-test-snap' });
-    await until(() => snap.info !== null, 8000);
+  // The machine's bus is a private dbus-daemon run.sh hands the server as
+  // WD_SNAP_BUS, and `snap` is a fake on its PATH, so this runs everywhere
+  // and nobody's login session is involved.
+  const hostBus = process.env.WD_TEST_HOST_BUS;
+  const portalDir = process.env.WD_TEST_PORTAL_DIR;
+  if (ids.has('wd-test-snap') && hostBus && status.sessionBus) {
+    const snapA = open('wayland', 'session', { appId: 'wd-test-snap', width: 320, height: 240 });
+    await until(() => snapA.info !== null, 8000);
     check('a snap is given this machine\'s session bus',
-      snap.info?.sessionBus === false, `${runtimeDir}/bus`);
+      snapA.info?.sessionBus === false, hostBus);
     // The half that protects a machine with a real desktop on it: sharing the
     // bus is what lets a single-instance application hand its window to the
     // copy in someone's login session, so only a snap may pay that price.
     check('and an ordinary application still gets a private one',
       silent.info?.sessionBus === true, String(silent.info?.sessionBus));
-    await until(() => snap.closed, 8000);
+
+    /* The portal on that shared bus. One portal serves every snap session,
+     * so a request has to be traced to the window its application was
+     * launched from — by the caller's pid, up through /proc to a compositor
+     * we know. Two sessions at once is the only shape that can tell routing
+     * from luck: each application asks, each window must get its own
+     * request, and each application must get back what its window chose. */
+    const builtClient = apps.some((a) => a.id === 'wd-test-subsurface');
+    if (builtClient && portalDir) {
+      const snapB = open('wayland', 'session', { appId: 'wd-test-snap', width: 320, height: 240 });
+      const asked = (s) => s.data.find((d) => d.t === 'portal');
+      await until(() => asked(snapA) && asked(snapB), 20000);
+      check('a request on the shared bus reaches the window its application was launched from',
+        !!asked(snapA) && !!asked(snapB) && asked(snapA).id !== asked(snapB).id,
+        `${asked(snapA)?.id ?? 'nothing in A'} / ${asked(snapB)?.id ?? 'nothing in B'}`);
+      if (asked(snapA) && asked(snapB)) {
+        ctl(snapA, 'portal', { id: asked(snapA).id, uris: ['file:///chosen/in/a'] });
+        ctl(snapB, 'portal', { id: asked(snapB).id, uris: ['file:///chosen/in/b'] });
+        const resultOf = (s) => {
+          try {
+            return JSON.parse(fs.readFileSync(path.join(portalDir, `${asked(s).id.split('/').pop()}.json`), 'utf8'));
+          } catch {
+            return null;
+          }
+        };
+        await until(() => resultOf(snapA) && resultOf(snapB), 10000);
+        check('and each application gets the answer its own window gave, not the other one\'s',
+          resultOf(snapA)?.uris?.[0] === 'file:///chosen/in/a' && resultOf(snapB)?.uris?.[0] === 'file:///chosen/in/b',
+          JSON.stringify([resultOf(snapA)?.uris, resultOf(snapB)?.uris]));
+        check('delivered to it without a match rule, the way GTK waits for it',
+          resultOf(snapA)?.code === 0 && resultOf(snapB)?.code === 0,
+          `codes ${resultOf(snapA)?.code} ${resultOf(snapB)?.code}`);
+      }
+      ws.send(JSON.stringify({ t: 'close', id: snapB.id }));
+    } else {
+      console.log('SKIP  the portal on the shared bus — compositor/build/subsurface-client is not built');
+    }
+    ws.send(JSON.stringify({ t: 'close', id: snapA.id }));
+    await sleep(300);
   } else {
     console.log(`SKIP  which bus a snap gets — ${
-      ids.has('wd-test-snap') ? (userBus ? 'no dbus-run-session' : 'no user bus') : 'no snap on PATH'}`);
+      ids.has('wd-test-snap') ? (hostBus ? 'no dbus-run-session' : 'no dbus-daemon for a test bus') : 'no snap on PATH'}`);
   }
 }
 

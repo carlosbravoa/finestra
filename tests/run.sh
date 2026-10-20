@@ -32,6 +32,27 @@ fixture wd-test-silent "WD Test Silent" /bin/true ""
 # reads to decide which bus this gets. Only offered where `snap` is installed,
 # and the suite skips the check when it is not.
 fixture wd-test-snap   "WD Test Snap"   "snap run wd-test-snap" ""
+# `snap` itself is a fake on the server's PATH, so the entry is offered on
+# every machine and nothing real is confined. It behaves as a snap does for
+# the one thing the suite is about: it runs the application on the machine's
+# session bus — here a private dbus-daemon handed to the server as that bus —
+# and the application asks the portal on it for a file dialog from inside
+# the session's process tree, which is how a request is traced to its window.
+export WD_TEST_PORTAL_DIR="$XDG_STATE_HOME/portal"
+mkdir -p "$WD_TEST_PORTAL_DIR"
+NODE_BIN="$(command -v node)"
+FAKE_BIN="$XDG_DATA_HOME/fakebin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/snap" <<EOF
+#!/bin/sh
+[ "\$1" = run ] && [ "\$2" = wd-test-snap ] || exit 1
+if [ -x "$PWD/compositor/build/subsurface-client" ]; then
+  "$NODE_BIN" "$PWD/tests/portal-app.mjs" &
+  exec "$PWD/compositor/build/subsurface-client"
+fi
+exit 0
+EOF
+chmod +x "$FAKE_BIN/snap"
 
 # Launch quirks are added on the way to spawn and written down nowhere, so the
 # only way to see one is to ask the thing that was launched what it was given.
@@ -151,9 +172,26 @@ if [ ! -f "$SERVER" ]; then
   exit 1
 fi
 
-WD_PORT="$PORT" node "$SERVER" >/dev/null 2>&1 &
+# The machine's session bus, as far as the server is concerned: a private
+# dbus-daemon, so the snap path — the shared portal, requests routed by pid —
+# runs on every machine and never touches the bus of whoever is logged in.
+# Handed over as WD_SNAP_BUS rather than DBUS_SESSION_BUS_ADDRESS: the latter
+# would also send the server's `systemctl --user` to a bus with no systemd on
+# it, and the Services section would fail for a reason that has nothing to
+# do with services.
+HOST_BUS_PID=""
+SNAP_BUS=""
+if command -v dbus-daemon >/dev/null 2>&1; then
+  SNAP_BUS="unix:path=$XDG_STATE_HOME/host-bus"
+  dbus-daemon --session --address="$SNAP_BUS" --nofork --nopidfile >/dev/null 2>&1 &
+  HOST_BUS_PID=$!
+  for _ in $(seq 1 50); do [ -S "$XDG_STATE_HOME/host-bus" ] && break; sleep 0.1; done
+  export WD_TEST_HOST_BUS="$SNAP_BUS"
+fi
+
+PATH="$FAKE_BIN:$PATH" WD_SNAP_BUS="$SNAP_BUS" WD_PORT="$PORT" node "$SERVER" >/dev/null 2>&1 &
 SERVER_PID=$!
-trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$XDG_STATE_HOME" "$XDG_DATA_HOME"' EXIT
+trap 'kill "$SERVER_PID" 2>/dev/null || true; [ -n "$HOST_BUS_PID" ] && kill "$HOST_BUS_PID" 2>/dev/null || true; rm -rf "$XDG_STATE_HOME" "$XDG_DATA_HOME"' EXIT
 
 # Wait for it to answer rather than sleeping a fixed amount.
 for _ in $(seq 1 50); do
