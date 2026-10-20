@@ -109,8 +109,10 @@ a download URL will not read as a space, and anything exotic makes the
 substitution a guess.
 `tests/version.mjs` pins the shape.
 
-Cutting a release is therefore: bump `package.json`, commit, `git tag v0.2.1`,
-build.
+Cutting a release is therefore: bump `package.json`, write the CHANGELOG entry,
+commit, `git tag v0.2.1`, build. The website repository's `web/release.sh`
+does the tag and everything after it — both architectures, the verifiers, the
+publish and the push — and is the way a release is actually cut.
 
 ### Where a version can be read
 
