@@ -178,7 +178,7 @@ export class FileChooserPortal {
         if (pending && pending.sender === msg.sender) {
           this.pending.delete(msg.path);
           pending.target.dismiss(msg.path);
-          this.emitResponse(msg.path, ENDED, []);
+          this.emitResponse(msg.path, pending.sender, ENDED, []);
         }
         bus.reply(msg);
         return;
@@ -241,11 +241,17 @@ export class FileChooserPortal {
     target.deliver(request);
   }
 
-  private emitResponse(path: string, code: number, uris: string[]): void {
+  /**
+   * Unicast, to the connection that asked. That is how xdg-desktop-portal
+   * sends it, and GTK counts on it: it subscribes with NO_MATCH_RULE and
+   * never asks the bus for the signal, so a broadcast Response — correct in
+   * every byte — went past zenity and Firefox without being delivered.
+   */
+  private emitResponse(path: string, sender: string, code: number, uris: string[]): void {
     if (this.closed) return;
     const results = new Map<string, Variant>();
     if (code === SUCCESS) results.set('uris', new Variant('as', uris));
-    this.bus.emitSignal(path, REQUEST, 'Response', 'ua{sv}', [code, results]);
+    this.bus.emitSignal(path, REQUEST, 'Response', 'ua{sv}', [code, results], sender);
   }
 
   /** The browser answered: chosen files as `file://` URIs, or nothing. */
@@ -253,7 +259,7 @@ export class FileChooserPortal {
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
-    this.emitResponse(id, uris ? SUCCESS : CANCELLED, uris ?? []);
+    this.emitResponse(id, pending.sender, uris ? SUCCESS : CANCELLED, uris ?? []);
   }
 
   /** The session behind these dialogs is gone; every open request ends. */
@@ -261,12 +267,12 @@ export class FileChooserPortal {
     for (const [id, pending] of [...this.pending]) {
       if (pending.target !== target) continue;
       this.pending.delete(id);
-      this.emitResponse(id, ENDED, []);
+      this.emitResponse(id, pending.sender, ENDED, []);
     }
   }
 
   close(): void {
-    for (const id of [...this.pending.keys()]) this.emitResponse(id, ENDED, []);
+    for (const [id, pending] of [...this.pending]) this.emitResponse(id, pending.sender, ENDED, []);
     this.pending.clear();
     this.closed = true;
     this.bus.close();

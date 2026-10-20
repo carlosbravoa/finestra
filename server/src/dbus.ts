@@ -601,8 +601,20 @@ export class DBus extends EventEmitter {
     });
   }
 
-  emitSignal(path: string, iface: string, member: string, signature = '', body: unknown[] = []): void {
-    this.send({ type: SIGNAL, path, interface: iface, member, signature, body });
+  /**
+   * With a destination the signal is unicast: delivered to that connection
+   * whether or not it holds a match rule. Without one it is a broadcast and
+   * reaches only connections that asked for it with AddMatch.
+   */
+  emitSignal(
+    path: string,
+    iface: string,
+    member: string,
+    signature = '',
+    body: unknown[] = [],
+    destination?: string,
+  ): void {
+    this.send({ type: SIGNAL, path, interface: iface, member, signature, body, destination });
   }
 
   /** 1 = primary owner, 2 = queued, 3 = exists, 4 = already owner. */

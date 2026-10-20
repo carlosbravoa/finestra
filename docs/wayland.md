@@ -672,6 +672,18 @@ emits `Response` on the request path the application predicted from its
 method returns. `uris` are `file://` URIs of paths on the server; anything
 that is not one is dropped on the way through.
 
+**The Response is unicast, and GTK never asks for it.** The first version
+emitted `Response` as an ordinary broadcast, and the suite — which adds a
+match rule, as any D-Bus client would — received it perfectly. zenity did
+not: it sat on its dialog for ever with the signal going past it on the bus.
+`dbus-monitor` showed why. GTK subscribes with `NO_MATCH_RULE` and never
+sends an `AddMatch`, because xdg-desktop-portal addresses the signal to the
+requester (`g_dbus_connection_emit_signal` with a destination), and a
+unicast signal is delivered whether or not the receiver has a rule. So the
+portal now sets the destination to the sender of the request. Test against
+a real GTK client and not only against your own: the suite's client was too
+well-behaved to catch this.
+
 **Two kinds of bus, one portal each.** An ordinary application runs under
 `dbus-run-session`, and only the compositor ever knew that bus's address, so
 `wdcomp` now reports it over IPC (`IPC_BUS`) before it spawns the client and
