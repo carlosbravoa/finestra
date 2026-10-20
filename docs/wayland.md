@@ -457,6 +457,16 @@ was a snap — naming the handoff as the likely reason. The exit code is
 deliberately not repeated: it is `wdcomp`'s, and `wdcomp` returns 1 for "no
 frame streamed" whatever the cause, so quoting it describes the wrong process.
 
+**The copy it handed off to is looked for, not inferred.** The bus guess
+needed three things to agree — a graphical login session, a shared bus and an
+exit within fifteen seconds — and a snap's slow first start ran out the
+third, so Firefox open on the machine's own screen got "exited without opening
+a window" and nothing more. `runningElsewhere()` now walks `/proc` for a
+process with the application's comm outside this service's own tree, and the
+message names it by pid: "already running on this machine outside this
+desktop". `tests/wayland.mjs` starts such a twin itself and expects the pid
+back.
+
 **Preventing it was tried, and rejected.** Snaps only need the host bus because
 `snap-confine` asks `systemd --user` for a tracking scope, and it skips that if
 it finds itself already inside a cgroup named `snap.<snap>.<app>*`. Creating
@@ -625,12 +635,18 @@ application's *Open File* dialog at the Files app.
 6. **Subsurfaces.** ✅ Each one its own canvas, positioned and stacked by CSS,
    synchronized commits held for the parent's. Firefox demanded it: it and
    Thunderbird draw their entire interface in one.
-7. **Later, if something demands it.** dmabuf import for GPU applications;
+7. **Portals.** ⏭ Next. Firefox's *Open File* dialog does not appear: the
+   snap asks `xdg-desktop-portal` for one over the session bus, and nothing
+   answers. The same gap stops DOSBox-X at its first-run directory picker (a
+   `zenity` waiting on a portal) and takes *Save As*, screenshots and
+   notifications with it in every confined application. The fix is a portal
+   backend of our own on the session's private bus, answering the
+   `FileChooser` interface with the Files app. Once a browser can open and
+   save a file, the "snaps are experimental" caveat shrinks to audio and
+   Xwayland.
+8. **Later, if something demands it.** dmabuf import for GPU applications;
    H.264 for animated content; Xwayland (it is just another Wayland client, but
-   it drags a full X11 window-management job behind it); audio over PipeWire;
-   an `xdg-desktop-portal` so an application's *Open File* dialog opens the
-   Files app — DOSBox-X's first-run directory picker is a `zenity` waiting on
-   one today, and the application never gets past it.
+   it drags a full X11 window-management job behind it); audio over PipeWire.
 
 Stages 1–3 are the small half. Stage 4 is where the time goes, and it is what
 decides whether this feels like a desktop or a demo.

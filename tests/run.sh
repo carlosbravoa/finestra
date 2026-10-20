@@ -68,6 +68,19 @@ EOF
 chmod +x "$BIN_DIR/wd-birth"
 fixture wd-test-birth "WD Test Birth" "$BIN_DIR/wd-birth" ""
 
+# Exits at once, like a single-instance application handing its window to a
+# copy already running. The suite starts that copy itself (`hold`), outside
+# the server's process tree, and expects it to be named by pid. A plain shell
+# loop rather than exec: comm has to stay the script's own name.
+export WD_TEST_BIN="$BIN_DIR"
+cat > "$BIN_DIR/wd-test-twin" <<'EOF'
+#!/bin/sh
+[ "$1" = hold ] && sleep 60
+exit 0
+EOF
+chmod +x "$BIN_DIR/wd-test-twin"
+fixture wd-test-twin "WD Test Twin" "$BIN_DIR/wd-test-twin" ""
+
 # Lives until asked to stop, and writes down how it went. SIGTERM reaching it
 # at all is the point: children used to be born with it blocked, so every
 # shutdown was secretly a SIGKILL and the trap never ran.

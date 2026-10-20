@@ -845,6 +845,31 @@
   margin-top: 12px;
 }
 
+.sysman-detail-tools {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+/* Under the two red buttons: which one is the gentle one. */
+.sysman-detail-hint {
+  margin-top: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Terminate was sent and the process is still here. */
+.sysman-detail-note {
+  margin-top: 12px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--warning);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .sysman-log-wrap {
   display: flex;
   flex: 1 1 auto;

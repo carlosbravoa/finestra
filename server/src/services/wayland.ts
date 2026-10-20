@@ -185,6 +185,58 @@ function lastComplaint(tail: string): string | null {
  * lands on a launch that works, and a missing `loginctl` means we decline to
  * make the claim rather than making it anyway.
  */
+/**
+ * Pids of this application running outside every session of ours. A
+ * single-instance application that exits at once without a window has almost
+ * always handed its window to one of these — a copy open in the machine's own
+ * desktop session — and naming the process beats guessing from the bus. The
+ * guess needed a login session, a shared bus and a stopwatch to agree, and a
+ * snap's slow first start ran the stopwatch out, so Firefox open on the screen
+ * was reported as "exited without opening a window" and nothing more.
+ *
+ * Matched on comm, the executable's basename cut at 15 characters, which is
+ * the same for the .deb, the snap and the wrapper script between them.
+ */
+function runningElsewhere(argv: string[]): number[] {
+  const words = argv.filter((w, i) => !(i === 0 && w === 'env') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+  const command = words[0] === 'snap' && words[1] === 'run' ? words[2] : words[0];
+  if (!command) return [];
+  const comm = path.basename(command).slice(0, 15);
+
+  const parent = new Map<number, number>();
+  const named: number[] = [];
+  let entries: string[];
+  try {
+    entries = fs.readdirSync('/proc');
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    let stat: string;
+    try {
+      stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    } catch {
+      continue; // Gone while we looked.
+    }
+    const open = stat.indexOf('(');
+    const close = stat.lastIndexOf(')');
+    if (open < 0 || close < 0) continue;
+    parent.set(pid, Number(stat.slice(close + 1).trim().split(/\s+/)[1]));
+    if (stat.slice(open + 1, close) === comm) named.push(pid);
+  }
+  // A copy under this service — another tab's session, or a straggler of the
+  // one that just exited — is not "elsewhere".
+  const ours = (pid: number): boolean => {
+    for (let p = pid, hops = 0; p > 1 && hops < 64; p = parent.get(p) ?? 0, hops++) {
+      if (p === process.pid) return true;
+    }
+    return false;
+  };
+  return named.filter((pid) => !ours(pid));
+}
+
 function hasGraphicalSession(): boolean {
   const list = spawnSync('loginctl', ['list-sessions', '--no-legend'], { encoding: 'utf8' });
   if (list.status !== 0 || !list.stdout) return false;
@@ -1353,6 +1405,18 @@ export const waylandService: Service = {
           return (
             `${opening} It is already running in another window of this desktop — possibly ` +
             `in another tab's session. Close it there first, or find its window.`
+          );
+        }
+
+        // The same application, running on this machine but not under us: the
+        // one on the screen, usually. That is a fact read from /proc, and it
+        // outranks every guess below.
+        const twins = runningElsewhere(app.argv);
+        if (twins.length > 0) {
+          return (
+            `${opening} ${app.name} is already running on this machine outside this desktop ` +
+            `(pid ${twins[0]}), and this copy handed its window to it. Close that one, then ` +
+            `start it here again.`
           );
         }
 

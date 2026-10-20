@@ -6,7 +6,7 @@
 //
 // Skips itself when the compositor is not built, or when the host has no
 // desktop application to run — a server usually has neither.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -193,6 +193,23 @@ if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))
   // explanation and must not be offered as one.
   check('the handoff is only blamed when the machine\'s own bus was shared',
     !/session bus/.test(silent.error ?? ''), silent.error ?? '');
+
+  // When the same application *is* running on this machine — on the screen,
+  // in the owner's own session — that is a fact in /proc, and the message
+  // names it by pid. Firefox open on the desktop used to get the sentence
+  // above and nothing more, and the person went looking for a bug.
+  if (process.env.WD_TEST_BIN) {
+    const holder = spawn(path.join(process.env.WD_TEST_BIN, 'wd-test-twin'), ['hold'], {
+      stdio: 'ignore',
+    });
+    await until(() => fs.existsSync(`/proc/${holder.pid}/stat`), 2000);
+    const twin = open('wayland', 'session', { appId: 'wd-test-twin' });
+    await until(() => twin.closed, 12000);
+    check('a copy already running outside the desktop is named by pid',
+      new RegExp(`already running on this machine.*\\(pid ${holder.pid}\\)`).test(twin.error ?? ''),
+      twin.error ?? 'never closed');
+    holder.kill('SIGKILL');
+  }
 
   // The application usually says why it went, and for an afternoon the shell
   // answered Chrome's "Aborting now to avoid profile corruption" with a guess

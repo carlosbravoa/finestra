@@ -320,7 +320,10 @@ export class DataTable<T> {
         );
       }
 
-      tr.addEventListener('click', () => this.select(key));
+      // A second click on the selected row deselects it: that, and Escape,
+      // are how the detail panel is put away. select() itself stays a no-op
+      // for a repeated key, because a refresh calls it too.
+      tr.addEventListener('click', () => this.select(key === this.selectedKey ? null : key));
       tr.addEventListener('dblclick', () => this.options.onActivate?.(row));
       tr.addEventListener('contextmenu', (ev) => {
         ev.preventDefault();
@@ -381,6 +384,11 @@ export class DataTable<T> {
   }
 
   private onKeyDown(ev: KeyboardEvent): void {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      this.select(null);
+      return;
+    }
     if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
     ev.preventDefault();
     const index = this.rows.findIndex((r) => this.options.key(r) === this.selectedKey);

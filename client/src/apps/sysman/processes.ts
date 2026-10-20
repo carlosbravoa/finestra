@@ -65,14 +65,23 @@ const STATES: Record<string, string> = {
   I: 'idle',
 };
 
-const SIGNALS: Array<{ label: string; signal: string; danger?: boolean }> = [
-  { label: 'Terminate (SIGTERM)', signal: 'SIGTERM' },
-  { label: 'Interrupt (SIGINT)', signal: 'SIGINT' },
-  { label: 'Hang up (SIGHUP)', signal: 'SIGHUP' },
-  { label: 'Stop (SIGSTOP)', signal: 'SIGSTOP' },
-  { label: 'Continue (SIGCONT)', signal: 'SIGCONT' },
-  { label: 'Kill (SIGKILL)', signal: 'SIGKILL', danger: true },
+/**
+ * Signals in the words of what they do, with the name second. "Terminate" and
+ * "Kill" side by side say nothing about which is the gentle one, and the
+ * person choosing is often not the person who knows.
+ */
+const SIGNALS: Array<{ label: string; what: string; signal: string; danger?: boolean }> = [
+  { label: 'Terminate', what: 'asks it to exit, so it can save its work and clean up', signal: 'SIGTERM' },
+  { label: 'Kill', what: 'ends it at once; it cannot save anything', signal: 'SIGKILL', danger: true },
+  { label: 'Interrupt', what: 'what Ctrl+C sends in a terminal', signal: 'SIGINT' },
+  { label: 'Hang up', what: 'many services reload their configuration on this', signal: 'SIGHUP' },
+  { label: 'Pause', what: 'freezes it until it is resumed', signal: 'SIGSTOP' },
+  { label: 'Resume', what: 'lets a paused process continue', signal: 'SIGCONT' },
 ];
+const bySignal = (name: string) => SIGNALS.find((s) => s.signal === name)!;
+
+/** How long a terminated process gets before the panel suggests Kill. */
+const TERMINATE_PATIENCE_MS = 5000;
 
 interface ProcessParams {
   filter?: string;
@@ -90,6 +99,12 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
   let filter = typeof params.filter === 'string' ? params.filter : '';
   let ownOnly = false;
   let selectedPid: number | null = null;
+  /** The selected process's name, for the sentence that says it has ended. */
+  let selectedName = '';
+  /** A pid handed over by another section, selected once the list has it. */
+  let wantSelect: number | null = null;
+  /** When Terminate was sent to the selected process, if it is still there. */
+  let terminatedAt: number | null = null;
 
   const detailBody = h('div', { class: 'sysman-detail-body' });
   const detailPanel = h(
@@ -99,7 +114,14 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
       'div',
       { class: 'sysman-detail-head' },
       h('span', { class: 'sysman-detail-title', text: 'No process selected' }),
-      button('Refresh', () => void loadDetail(selectedPid, true)),
+      h(
+        'div',
+        { class: 'sysman-detail-tools' },
+        button('Refresh', () => void loadDetail(selectedPid, true)),
+        // The list is still there beside the panel, but nothing said how to
+        // put the panel away; this does, as does Escape or a second click.
+        button('✕', () => table.select(null), { title: 'Deselect' }),
+      ),
     ),
     detailBody,
   );
@@ -186,6 +208,8 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
     key: (r) => String(r.pid),
     onSelect: (row) => {
       selectedPid = row?.pid ?? null;
+      selectedName = row?.name ?? '';
+      terminatedAt = null;
       void loadDetail(selectedPid, false);
     },
     onContext: (row, at) => desktop.contextMenu(rowMenu(row), at),
@@ -211,13 +235,29 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
   const banner = h('div', { class: 'sysman-banner' });
   banner.hidden = true;
 
+  // Arriving from Network or the Journal puts one pid in the search box and
+  // one row in the list, and a number in a search box does not read as the
+  // thing to clear. The way back has to be a button that says so.
+  const showAll = h('button', {
+    class: 'sysman-jchip',
+    text: 'Show all ✕',
+    title: 'Clear the filter',
+    on: { click: () => setFilter('') },
+  });
+
   const element = h(
     'div',
     { class: 'sysman-section' },
-    toolbar(search, ownToggle, status),
+    toolbar(search, ownToggle, showAll, status),
     banner,
     h('div', { class: 'sysman-split' }, table.element, detailPanel),
   );
+
+  function setFilter(value: string): void {
+    filter = value;
+    search.value = value;
+    render();
+  }
 
   /* ---------------------------------------------------------------- */
   /* Data                                                              */
@@ -272,6 +312,7 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
       previous = list;
       render();
       ctx.setStatus(`${list.rows.length} processes · ${list.cores} cores`);
+      afterPoll();
     } catch (err) {
       if (ctx.isDisposed()) return;
       banner.hidden = false;
@@ -300,10 +341,49 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
   function render(): void {
     const shown = visible();
     table.setRows(shown);
+    showAll.hidden = filter.trim() === '';
     status.textContent =
       shown.length === rows.length
         ? `${rows.length} processes`
         : `${shown.length} of ${rows.length} processes`;
+  }
+
+  /**
+   * What a fresh list means for the selection. A pid handed over by another
+   * section is selected as soon as it is in the list. A selected process that
+   * is no longer there has ended — usually because the button beside it was
+   * just pressed — so the panel is put away, a filter that showed only that
+   * pid is cleared, and the full list is back without anyone asking for it.
+   */
+  function afterPoll(): void {
+    if (wantSelect !== null && rows.some((r) => r.pid === wantSelect)) {
+      table.select(String(wantSelect));
+      wantSelect = null;
+    }
+    if (selectedPid === null) return;
+    const live = rows.find((r) => r.pid === selectedPid);
+    if (live) {
+      if (terminatedAt !== null && Date.now() - terminatedAt >= TERMINATE_PATIENCE_MS) {
+        showStillRunning();
+      }
+      return;
+    }
+    const ended = `${selectedName} (${selectedPid})`;
+    if (filter.trim() === String(selectedPid)) setFilter('');
+    table.select(null);
+    desktop.notify({ kind: 'info', message: `${ended} has ended.`, timeout: 3000 });
+  }
+
+  /** Terminate was sent and politely ignored; say so where the buttons are. */
+  function showStillRunning(): void {
+    if (detailBody.querySelector('.sysman-detail-note')) return;
+    const actions = detailBody.querySelector('.sysman-detail-actions');
+    actions?.before(
+      h('div', {
+        class: 'sysman-detail-note',
+        text: 'Still running after being asked to terminate. Kill ends it at once.',
+      }),
+    );
   }
 
   async function loadDetail(pid: number | null, force: boolean): Promise<void> {
@@ -362,15 +442,31 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
       if (openFiles) {
         parts.push(h('div', { class: 'sysman-field-label', text: 'File descriptors' }), openFiles);
       }
+      const terminate = bySignal('SIGTERM');
+      const kill = bySignal('SIGKILL');
       parts.push(
         h(
           'div',
           { class: 'sysman-detail-actions' },
-          button('Terminate', () => void signal(detail.pid, detail.name, 'SIGTERM'), { danger: true }),
-          button('Kill', () => void signal(detail.pid, detail.name, 'SIGKILL'), { danger: true }),
+          button(terminate.label, () => void signal(detail.pid, detail.name, 'SIGTERM'), {
+            danger: true,
+            title: `${terminate.signal}: ${terminate.what}`,
+          }),
+          button(kill.label, () => void signal(detail.pid, detail.name, 'SIGKILL'), {
+            danger: true,
+            title: `${kill.signal}: ${kill.what}`,
+          }),
         ),
+        // The one sentence that tells the two buttons apart, where they are.
+        h('div', {
+          class: 'sysman-detail-hint',
+          text: 'Terminate asks it to exit. Kill ends it at once, with nothing saved.',
+        }),
       );
       detailBody.replaceChildren(...parts);
+      if (terminatedAt !== null && Date.now() - terminatedAt >= TERMINATE_PATIENCE_MS) {
+        showStillRunning();
+      }
     } catch (err) {
       if (ctx.isDisposed() || selectedPid !== pid) return;
       detailBody.replaceChildren(placeholder('Could not inspect this process', describeError(err)));
@@ -378,14 +474,18 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
   }
 
   async function signal(pid: number, name: string, sig: string): Promise<void> {
+    const which = bySignal(sig);
     const destructive = sig !== 'SIGCONT';
     if (destructive) {
       const ok = await desktop.confirm({
-        title: `Send ${sig}?`,
-        message: `${name} (pid ${pid}) will be sent ${sig}.${
-          sig === 'SIGKILL' ? ' It cannot save its work or clean up.' : ''
-        }`,
-        confirmLabel: 'Send',
+        title: `${which.label} ${name}?`,
+        message:
+          sig === 'SIGTERM'
+            ? `${name} (pid ${pid}) will be asked to exit. It can save its work and clean up first. If it does not go, Kill ends it at once.`
+            : sig === 'SIGKILL'
+              ? `${name} (pid ${pid}) will be ended at once. It cannot save its work or clean up.`
+              : `${name} (pid ${pid}) will be sent ${sig}: ${which.what}.`,
+        confirmLabel: which.label,
         danger: true,
       });
       if (!ok || ctx.isDisposed()) return;
@@ -394,7 +494,17 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
     try {
       await desktop.rpc.call('proc', 'kill', { pid, signal: sig });
       if (ctx.isDisposed()) return;
-      desktop.notify({ kind: 'success', message: `Sent ${sig} to ${name} (${pid}).`, timeout: 2500 });
+      if (sig === 'SIGTERM' && pid === selectedPid) terminatedAt = Date.now();
+      desktop.notify({
+        kind: 'success',
+        message:
+          sig === 'SIGTERM'
+            ? `${name} (${pid}) was asked to exit.`
+            : sig === 'SIGKILL'
+              ? `${name} (${pid}) was killed.`
+              : `Sent ${sig} to ${name} (${pid}).`,
+        timeout: 2500,
+      });
       void poll();
     } catch (err) {
       if (ctx.isDisposed()) return;
@@ -410,7 +520,9 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
     return [
       { type: 'header', label: `${row.name} (${row.pid})` },
       ...SIGNALS.map((s) => ({
-        label: s.label,
+        // "Terminate (SIGTERM)" told nobody which of the two to press; the
+        // plain words are the label and the signal name is the detail.
+        label: `${s.label} — ${s.what}`,
         danger: s.danger,
         onSelect: () => void signal(row.pid, row.name, s.signal),
       })),
@@ -422,11 +534,7 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
       },
       {
         label: 'Filter to this process',
-        onSelect: () => {
-          filter = String(row.pid);
-          search.value = filter;
-          render();
-        },
+        onSelect: () => setFilter(String(row.pid)),
       },
     ];
   }
@@ -444,11 +552,15 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
   return {
     element,
 
+    /** "Show me this pid", from Network or the Journal. */
     applyParams(next: ProcessParams) {
       if (typeof next.filter === 'string') {
-        filter = next.filter;
-        search.value = filter;
-        render();
+        setFilter(next.filter);
+        // The row the filter was made for is what they came to see, so it is
+        // selected too, once a poll has brought it in.
+        const pid = Number(next.filter);
+        wantSelect = Number.isInteger(pid) && pid > 0 ? pid : null;
+        afterPoll();
       }
     },
 
@@ -479,11 +591,7 @@ function createProcesses(ctx: SectionContext, params: ProcessParams): Section {
       {
         label: 'Clear filter',
         disabled: filter === '',
-        onSelect: () => {
-          filter = '';
-          search.value = '';
-          render();
-        },
+        onSelect: () => setFilter(''),
       },
     ],
 
