@@ -32,6 +32,21 @@ static struct wl_surface *surface, *child;
 static struct wl_subsurface *subsurface;
 static bool running = true;
 static int configures;
+/* What the output says its density is: a toolkit draws scale times as many
+ * pixels into the same logical size, and says so with set_buffer_scale. */
+static int32_t scale = 1;
+
+static void output_geometry(void *d, struct wl_output *o, int32_t x, int32_t y,
+		int32_t pw, int32_t ph, int32_t sub, const char *make, const char *model,
+		int32_t transform) {}
+static void output_mode(void *d, struct wl_output *o, uint32_t flags, int32_t w,
+		int32_t h, int32_t refresh) {}
+static void output_done(void *d, struct wl_output *o) {}
+static void output_scale(void *d, struct wl_output *o, int32_t factor) {
+	scale = factor;
+}
+static const struct wl_output_listener output_listener = {
+	output_geometry, output_mode, output_done, output_scale, NULL, NULL};
 
 static struct wl_buffer *solid(int32_t w, int32_t h, uint32_t argb) {
 	size_t size = (size_t)w * h * 4;
@@ -86,8 +101,9 @@ static void surface_configure(void *data, struct xdg_surface *xdg,
 		struct wl_region *empty = wl_compositor_create_region(compositor);
 		wl_surface_set_input_region(child, empty);
 		wl_region_destroy(empty);
-		wl_surface_attach(child, solid(120, 80, 0xff00ff00), 0, 0);
-		wl_surface_damage_buffer(child, 0, 0, 120, 80);
+		wl_surface_set_buffer_scale(child, scale);
+		wl_surface_attach(child, solid(120 * scale, 80 * scale, 0xff00ff00), 0, 0);
+		wl_surface_damage_buffer(child, 0, 0, 120 * scale, 80 * scale);
 		wl_surface_commit(child);
 		wl_display_flush(wl_proxy_get_display((struct wl_proxy *)child));
 		usleep(300 * 1000);
@@ -96,8 +112,9 @@ static void surface_configure(void *data, struct xdg_surface *xdg,
 		wl_subsurface_set_position(subsurface, 60, 50);
 	}
 
-	wl_surface_attach(surface, solid(width, height, 0xffff0000), 0, 0);
-	wl_surface_damage_buffer(surface, 0, 0, width, height);
+	wl_surface_set_buffer_scale(surface, scale);
+	wl_surface_attach(surface, solid(width * scale, height * scale, 0xffff0000), 0, 0);
+	wl_surface_damage_buffer(surface, 0, 0, width * scale, height * scale);
 	wl_surface_commit(surface);
 }
 static const struct xdg_surface_listener surface_listener = {surface_configure};
@@ -113,6 +130,10 @@ static void global(void *data, struct wl_registry *registry, uint32_t name,
 	} else if (!strcmp(interface, xdg_wm_base_interface.name)) {
 		wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
 		xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
+	} else if (!strcmp(interface, wl_output_interface.name)) {
+		struct wl_output *output = wl_registry_bind(registry, name,
+			&wl_output_interface, version < 2 ? version : 2);
+		wl_output_add_listener(output, &output_listener, NULL);
 	}
 }
 static void global_remove(void *data, struct wl_registry *registry, uint32_t name) {}
@@ -126,6 +147,8 @@ int main(void) {
 	}
 	struct wl_registry *registry = wl_display_get_registry(display);
 	wl_registry_add_listener(registry, &registry_listener, NULL);
+	wl_display_roundtrip(display);
+	/* The output's scale arrives after the bind; one more round brings it. */
 	wl_display_roundtrip(display);
 	if (!compositor || !subcompositor || !shm || !wm_base) {
 		fprintf(stderr, "wd-subsurface-client: the compositor lacks a global\n");

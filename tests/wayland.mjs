@@ -570,6 +570,29 @@ if (subApp) {
 
   ws.send(JSON.stringify({ t: 'close', id: sub.id }));
   await sleep(300);
+
+  // A 2x screen. The size the shell asks for is logical — xdg configure and
+  // wl_output speak nothing else — and the application paints twice as many
+  // pixels into it. Sending physical pixels as the configure was the bug that
+  // put a 6904x3900 Firefox into a 1728-pixel window: told to be twice its
+  // size, it drew that at 2x, and the window that followed its size doubled
+  // on every round.
+  const hi = open('wayland', 'session', { appId: subApp.id, width: 320, height: 240, scale: 2 });
+  await until(() => hi.data.some((d) => d.t === 'subsurface') && hi.frames.length >= 2);
+  const hiWin = hi.data.find((d) => d.t === 'window');
+  const hiPlaced = hi.data.find((d) => d.t === 'subsurface');
+  const hiFrames = hi.frames.map(decodeFrame);
+  const hiMain = hiFrames.find((f) => f.id === hiWin?.id);
+  const hiChild = hiFrames.find((f) => f.id === hiPlaced?.id);
+  check('at scale 2 the window is announced at the logical size asked for',
+    hiWin?.width === 320 && hiWin?.height === 240, hiWin ? `${hiWin.width}x${hiWin.height}` : 'no window');
+  check('and the frame carries twice as many pixels each way',
+    hiMain?.fullWidth === 640 && hiMain?.fullHeight === 480, hiMain ? `${hiMain.fullWidth}x${hiMain.fullHeight}` : 'no frame');
+  check('the subsurface keeps its logical position and doubles its pixels',
+    hiPlaced?.x === 40 && hiPlaced?.y === 30 && hiChild?.fullWidth === 240 && hiChild?.fullHeight === 160,
+    hiChild ? `${hiPlaced?.x},${hiPlaced?.y} ${hiChild.fullWidth}x${hiChild.fullHeight}` : 'no frame');
+  ws.send(JSON.stringify({ t: 'close', id: hi.id }));
+  await sleep(300);
 } else {
   console.log('SKIP  subsurfaces — compositor/build/subsurface-client is not built (needs libwayland-client)');
 }

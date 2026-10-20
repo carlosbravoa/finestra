@@ -7,6 +7,17 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.12 — 2026-10-20
+
+- **HiDPI screens no longer get a runaway window.** On a scaled display
+  (150%, 166%, 200%…) every application was asked to be twice its size and
+  drew four times its box; with 0.3.11 following an application's own size,
+  the window then doubled on every round until Firefox stopped at
+  6904×3900, taking seconds per frame and dropping the connection. The size
+  the shell asks for is now in the application's logical pixels, as the
+  protocol expects, and the window only follows a size the application
+  actually chose for itself. Update from 0.3.11 if your screen is scaled.
+
 ## 0.3.11 — 2026-10-20
 
 - **Firefox and Thunderbird draw.** Both put their entire interface in a

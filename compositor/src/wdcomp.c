@@ -692,8 +692,12 @@ static void surface_damage(struct wl_client *client,
 		struct wl_resource *resource, int32_t x, int32_t y, int32_t width,
 		int32_t height) {
 	struct wdc_surface *surface = wl_resource_get_user_data(resource);
-	/* Surface-local; identical to buffer-local while scale is 1. */
-	surface_add_damage(surface, x, y, width, height);
+	/* Surface-local, so a buffer at scale 2 has twice as many pixels dirty
+	 * as this says. The scale that applies is the one this commit will carry. */
+	int32_t scale = surface->pending_scale > 0 ? surface->pending_scale
+		: surface->scale > 0 ? surface->scale : 1;
+	surface_add_damage(surface, x * scale, y * scale, width * scale,
+		height * scale);
 }
 
 static void surface_frame(struct wl_client *client,
@@ -1764,11 +1768,14 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
 		: server->width > 0 ? server->width : 1920;
 	int32_t out_h = server->out_height > 0 ? server->out_height
 		: server->height > 0 ? server->height : 1080;
+	/* -g and --output are logical, like every configure; a mode is in the
+	 * screen's own pixels, which at scale 2 is twice as many. */
+	int32_t scale = server->scale > 0 ? server->scale : 1;
 	wl_output_send_geometry(resource, 0, 0, 0, 0, WL_OUTPUT_SUBPIXEL_UNKNOWN,
 		"Finestra", "wdcomp", WL_OUTPUT_TRANSFORM_NORMAL);
 	wl_output_send_mode(resource,
-		WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, out_w,
-		out_h, 60000);
+		WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, out_w * scale,
+		out_h * scale, 60000);
 	if (version >= WL_OUTPUT_SCALE_SINCE_VERSION) {
 		wl_output_send_scale(resource, server->scale > 0 ? server->scale : 1);
 	}

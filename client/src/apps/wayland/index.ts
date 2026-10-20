@@ -238,6 +238,9 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
 
   let resizeTimer: number | undefined;
   const cleanups: Array<() => void> = [];
+  /** The logical size last asked of the window, so a frame can be told apart
+   *  as "what we asked for" or "what the application decided". */
+  let asked: { width: number; height: number } | null = null;
 
   /* The size the window was opened at, or the one last taken from an
    * application. See windowIsUnclaimed(). */
@@ -528,20 +531,25 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
   }
 
   /**
-   * The same box in the pixels the application should actually paint.
+   * The same box in the application's *logical* pixels, which is what
+   * xdg_toplevel.configure and wl_output speak. The screen's density is told
+   * to the application separately (the output scale), and it paints `scale`
+   * times as many pixels into this box on its own; `/ zoom` is how much of
+   * its interface is asked to fit. Zooming never costs sharpness, because the
+   * pixels-per-CSS-pixel ratio is unchanged by it.
    *
-   * `* scale` is the density of the screen; `/ zoom` is how much of the
-   * application's interface is asked to fit in it. The two are independent on
-   * purpose — zooming never costs sharpness, because the pixels-per-CSS-pixel
-   * ratio is unchanged by it.
+   * It used to multiply by the scale as well, which is right for a canvas and
+   * wrong for a configure: at 2x the application was told to be twice its
+   * logical size, drew that at 2x, and every window came back four times its
+   * box — and once the window followed the application's size (below), that
+   * doubled on each round until Firefox stopped at 6904x3900.
    */
   function frameSize(): { width: number; height: number } | null {
     const css = contentSize();
     if (!css) return null;
-    const scale = displayScale();
     return {
-      width: Math.round((css.width * scale) / zoom),
-      height: Math.round((css.height * scale) / zoom),
+      width: Math.round(css.width / zoom),
+      height: Math.round(css.height / zoom),
     };
   }
 
@@ -558,12 +566,15 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
    * never feeds back into the size we ask for.
    */
   function updateScrolling(): void {
-    // In the application's pixels, because that is what canvas.width counts.
+    // canvas.width counts the application's painted pixels; the box is in its
+    // logical ones, so the two meet at the scale.
     const size = frameSize();
+    const scale = displayScale();
     const canvas = mainId === null ? undefined : surfaces.get(mainId)?.canvas;
     stage.classList.toggle(
       'is-scrollable',
-      !!size && !!canvas && (canvas.width > size.width || canvas.height > size.height),
+      !!size && !!canvas &&
+        (canvas.width > size.width * scale || canvas.height > size.height * scale),
     );
   }
 
@@ -618,13 +629,21 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
           // window for it — and until the person has sized the window, what
           // the application wants is what it gets. The window follows; a
           // claimed window does not, and the frame scrolls instead.
-          if (resized) {
-            const box = contentSize();
-            const css = {
-              width: (header.fullWidth * zoom) / scale,
-              height: (header.fullHeight * zoom) / scale,
+          //
+          // Only a size the application *chose* counts: one that differs from
+          // the last size it was asked for. A frame at the asked size is the
+          // application agreeing, however the box happens to measure, and
+          // following it anyway is how a mismatch becomes a runaway.
+          if (resized && asked) {
+            const logical = {
+              width: Math.round(header.fullWidth / scale),
+              height: Math.round(header.fullHeight / scale),
             };
-            if (box && (Math.abs(box.width - css.width) > 1 || Math.abs(box.height - css.height) > 1)) {
+            const box = contentSize();
+            const css = { width: logical.width * zoom, height: logical.height * zoom };
+            const disagrees = logical.width !== asked.width || logical.height !== asked.height;
+            if (disagrees && box &&
+                (Math.abs(box.width - css.width) > 1 || Math.abs(box.height - css.height) > 1)) {
               adoptSize(css.width, css.height);
             }
           }
@@ -679,7 +698,11 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
           root.replaceChildren(stage);
           if (message.title) win.setTitle(message.title);
           if (win.focused) surface.canvas.focus();
-          adoptSize(message.width, message.height);
+          // Logical pixels from the compositor; the box is in CSS ones.
+          adoptSize(
+            message.width === undefined ? undefined : message.width * zoom,
+            message.height === undefined ? undefined : message.height * zoom,
+          );
         }
         break;
       }
@@ -822,11 +845,8 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     updateScrolling();
     // The compositor clamps to the application's own minimum anyway; not
     // asking for less avoids a round of configure churn on every drag.
-    channel.ctl('configure', {
-      id: mainId,
-      width: Math.max(size.width, minWidth),
-      height: Math.max(size.height, minHeight),
-    });
+    asked = { width: Math.max(size.width, minWidth), height: Math.max(size.height, minHeight) };
+    channel.ctl('configure', { id: mainId, ...asked });
   }
 
   /* ---------------------------------------------------------------- */
@@ -1054,6 +1074,7 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
   /* ---------------------------------------------------------------- */
 
   function reset(): void {
+    asked = null;
     for (const id of [...surfaces.keys()]) destroySurface(id);
     stage.replaceChildren();
     mainId = null;
