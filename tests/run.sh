@@ -112,6 +112,9 @@ fi
 if [ -x compositor/build/subsurface-client ]; then
   fixture wd-test-subsurface "WD Test Subsurface" "$PWD/compositor/build/subsurface-client" ""
 fi
+# Where that client writes the pointer position the compositor delivered, so
+# the suite can click in the browser's pixels and read where it landed.
+export WD_TEST_POINTER="$XDG_STATE_HOME/pointer"
 
 export WD_TOKEN="test-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
 TOKEN="$WD_TOKEN"

@@ -591,6 +591,19 @@ if (subApp) {
   check('the subsurface keeps its logical position and doubles its pixels',
     hiPlaced?.x === 40 && hiPlaced?.y === 30 && hiChild?.fullWidth === 240 && hiChild?.fullHeight === 160,
     hiChild ? `${hiPlaced?.x},${hiPlaced?.y} ${hiChild.fullWidth}x${hiChild.fullHeight}` : 'no frame');
+  // A click is measured by the browser in the frame's pixels — 2x as many as
+  // the surface has coordinates — and must arrive in the surface's. Passed
+  // through unscaled, every click on a HiDPI screen landed at twice its
+  // distance from the corner, which read as "draws, never responds".
+  const pointerFile = process.env.WD_TEST_POINTER;
+  if (pointerFile && hiWin) {
+    try { fs.unlinkSync(pointerFile); } catch { /* not there yet */ }
+    ctl(hi, 'pointer', { id: hiWin.id, kind: 0, x: 80, y: 60, arg: 0, value: 0 });
+    const landed = await until(() => fs.existsSync(pointerFile) && fs.readFileSync(pointerFile, 'utf8').trim());
+    const where = landed ? fs.readFileSync(pointerFile, 'utf8').trim() : '';
+    check('a click at 80,60 in the 2x frame arrives at 40,30 on the surface',
+      where === 'window 40 30', where || 'the application saw no pointer');
+  }
   ws.send(JSON.stringify({ t: 'close', id: hi.id }));
   await sleep(300);
 } else {

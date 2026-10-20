@@ -7,6 +7,16 @@ reasoning behind a change is in its commit; the failures that cost time are in
 Entries are written for the person running this, not for the person who wrote
 it: what now works that did not, and what to expect if it bites.
 
+## 0.3.13 — 2026-10-20
+
+- **Clicks land where you aim on HiDPI screens.** On a scaled display every
+  click and scroll reached the application at twice its distance from the
+  window's corner — past the middle, outside the window altogether — so an
+  application drew but never responded. The browser measures in the frame's
+  pixels and the application listens in its own coordinates; the
+  compositor now converts between them. With 0.3.12 this completes the fix
+  for scaled screens.
+
 ## 0.3.12 — 2026-10-20
 
 - **HiDPI screens no longer get a runaway window.** On a scaled display

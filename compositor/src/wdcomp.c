@@ -3043,11 +3043,23 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 
 		/*
 		 * The browser measures against the image it was sent, which is the
-		 * buffer cropped to the window geometry. Pointer events are
-		 * surface-local, and the surface still includes the invisible shadow
-		 * margin around that window — so without this offset every click
-		 * lands about 25 pixels up and to the left of where it was aimed,
-		 * which looks exactly like input being broken.
+		 * buffer: at scale 2 that is twice as many pixels as the surface has
+		 * coordinates, and wl_pointer speaks surface coordinates. Without
+		 * this division every click lands at twice its distance from the
+		 * corner — past the middle it leaves the window altogether — which
+		 * on a HiDPI screen read as "it draws but never responds".
+		 */
+		int32_t bscale = surface->scale > 0 ? surface->scale : 1;
+		x /= bscale;
+		y /= bscale;
+		if (kind == IPC_POINTER_AXIS) value /= bscale;
+
+		/*
+		 * Then the window geometry: the image is the buffer cropped to it,
+		 * and the surface still includes the invisible shadow margin around
+		 * the window — so without this offset every click lands about 25
+		 * pixels up and to the left of where it was aimed, which looks
+		 * exactly like input being broken.
 		 */
 		if (xdg && xdg->has_geometry) {
 			x += xdg->geometry.x;

@@ -66,6 +66,40 @@ static struct wl_buffer *solid(int32_t w, int32_t h, uint32_t argb) {
 	return buffer;
 }
 
+/* Where the compositor says the pointer entered, in surface coordinates,
+ * written to the file WD_TEST_POINTER names: the suite sends a click in the
+ * browser's pixels and reads back where it landed. */
+static void pointer_enter(void *d, struct wl_pointer *p, uint32_t serial,
+		struct wl_surface *s, wl_fixed_t sx, wl_fixed_t sy) {
+	const char *path = getenv("WD_TEST_POINTER");
+	if (!path) return;
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	fprintf(f, "%s %d %d\n", s == child ? "child" : "window",
+		wl_fixed_to_int(sx), wl_fixed_to_int(sy));
+	fclose(f);
+}
+static void pointer_leave(void *d, struct wl_pointer *p, uint32_t serial,
+		struct wl_surface *s) {}
+static void pointer_motion(void *d, struct wl_pointer *p, uint32_t time,
+		wl_fixed_t sx, wl_fixed_t sy) {}
+static void pointer_button(void *d, struct wl_pointer *p, uint32_t serial,
+		uint32_t time, uint32_t button, uint32_t state) {}
+static void pointer_axis(void *d, struct wl_pointer *p, uint32_t time,
+		uint32_t axis, wl_fixed_t value) {}
+static void pointer_frame(void *d, struct wl_pointer *p) {}
+static const struct wl_pointer_listener pointer_listener = {
+	pointer_enter, pointer_leave, pointer_motion, pointer_button, pointer_axis,
+	pointer_frame, NULL, NULL, NULL, NULL, NULL};
+
+static void seat_capabilities(void *d, struct wl_seat *seat, uint32_t caps) {
+	if (caps & WL_SEAT_CAPABILITY_POINTER) {
+		wl_pointer_add_listener(wl_seat_get_pointer(seat), &pointer_listener, NULL);
+	}
+}
+static void seat_name(void *d, struct wl_seat *seat, const char *name) {}
+static const struct wl_seat_listener seat_listener = {seat_capabilities, seat_name};
+
 static void wm_base_ping(void *data, struct xdg_wm_base *base, uint32_t serial) {
 	xdg_wm_base_pong(base, serial);
 }
@@ -130,6 +164,10 @@ static void global(void *data, struct wl_registry *registry, uint32_t name,
 	} else if (!strcmp(interface, xdg_wm_base_interface.name)) {
 		wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
 		xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
+	} else if (!strcmp(interface, wl_seat_interface.name)) {
+		struct wl_seat *seat = wl_registry_bind(registry, name,
+			&wl_seat_interface, version < 5 ? version : 5);
+		wl_seat_add_listener(seat, &seat_listener, NULL);
 	} else if (!strcmp(interface, wl_output_interface.name)) {
 		struct wl_output *output = wl_registry_bind(registry, name,
 			&wl_output_interface, version < 2 ? version : 2);
