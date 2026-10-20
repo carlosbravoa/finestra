@@ -9,45 +9,26 @@ it: what now works that did not, and what to expect if it bites.
 
 ## 0.3.13 — 2026-10-20
 
-- **Clicks land where you aim on HiDPI screens.** On a scaled display every
-  click and scroll reached the application at twice its distance from the
-  window's corner — past the middle, outside the window altogether — so an
-  application drew but never responded. The browser measures in the frame's
-  pixels and the application listens in its own coordinates; the
-  compositor now converts between them. With 0.3.12 this completes the fix
-  for scaled screens.
-
-## 0.3.12 — 2026-10-20
-
-- **HiDPI screens no longer get a runaway window.** On a scaled display
-  (150%, 166%, 200%…) every application was asked to be twice its size and
-  drew four times its box; with 0.3.11 following an application's own size,
-  the window then doubled on every round until Firefox stopped at
-  6904×3900, taking seconds per frame and dropping the connection. The size
-  the shell asks for is now in the application's logical pixels, as the
-  protocol expects, and the window only follows a size the application
-  actually chose for itself. Update from 0.3.11 if your screen is scaled.
-
-## 0.3.11 — 2026-10-20
-
-- **Firefox and Thunderbird draw.** Both put their entire interface in a
+- **Firefox and Thunderbird work.** Both draw their entire interface in a
   Wayland subsurface over an empty window, and the compositor dropped
   subsurfaces: the window opened at the right size with the right title and
   stayed blank. Subsurfaces now reach the browser as their own canvases,
   placed and stacked the way menus are, with synchronized commits held for
   the parent's — so a player that draws controls over a video changes both
-  together. Clicks and keys reach the application the way its toolkit
-  expects. Chrome never needed any of this, which is why it worked first.
+  together. Chrome never needed any of this, which is why it worked first.
+- **Scaled (HiDPI) screens.** At 150%, 166% or 200% every application was
+  asked to be twice its size and clicks landed twice as far from the
+  window's corner — an application that drew but never responded, and with
+  Firefox a window that grew to 6904×3900 and crawled. Sizes and clicks are
+  now in the application's own coordinates and the window paints at the
+  screen's density.
 - **An application that picks its own size no longer picks a screen's
   worth.** Launched without a size, Firefox opened at 1920×1080 — the
-  imaginary screen the compositor advertised — and had to be shrunk to fit.
-  The shell now tells the compositor how much room there is, so a browser
-  opens filling the window and a calculator still opens calculator-sized. A
-  window the application resizes on its own after opening is followed too,
-  until you resize it yourself.
-- **Menus open in the right place at any zoom.** A menu's position was in the
-  application's pixels and placed in the browser's, which only agree at
-  zoom 1.
+  imaginary screen the compositor advertised. The shell now tells the
+  compositor how much room there is, so a browser opens filling the window
+  and a calculator still opens calculator-sized; a window the application
+  resizes on its own is followed until you resize it yourself.
+- **Menus open in the right place at any zoom.**
 
 ## 0.3.10 — 2026-10-11
 
