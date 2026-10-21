@@ -4,7 +4,7 @@ What changed in each release, for someone deciding whether to update. The
 reasoning behind a change is in its commit; the failures that cost time are in
 `docs/`.
 
-## 0.3.15 — 2026-10-20
+## 0.3.15 — 2026-10-21
 
 - **Open and Save dialogs work in Firefox and other snaps, on every machine.**
   0.3.14 said this worked; it worked only on a machine with no desktop
