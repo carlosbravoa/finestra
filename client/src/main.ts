@@ -3,7 +3,7 @@ import { pickUpRunningTerminals, terminalApp } from './apps/terminal';
 import { filesApp } from './apps/files';
 import { settingsApp } from './apps/settings';
 import { sysmanApp } from './apps/sysman';
-import { registerPinnedApps, waylandApp } from './apps/wayland';
+import { pickUpRunningApps, registerPinnedApps, waylandApp } from './apps/wayland';
 import { Desktop } from './core/desktop';
 import type { AppManifest } from './core/types';
 import { probeAccess } from './core/access';
@@ -191,10 +191,11 @@ async function boot(): Promise<void> {
   // connected, so a restored terminal can spawn its shell immediately.
   const restored = await desktop.restoreSession();
 
-  // Shells still running on the server that no window here is showing — a
-  // job left going from another machine, or before the session was cleared.
-  // After restore, so the windows it reopened have claimed theirs first.
-  const pickedUp = await pickUpRunningTerminals(desktop);
+  // Shells and applications still running on the server that no window here
+  // is showing — a job left going from another machine, or before the
+  // session was cleared. After restore, so the windows it reopened have
+  // claimed theirs first.
+  const pickedUp = (await pickUpRunningTerminals(desktop)) + (await pickUpRunningApps(desktop));
 
   // Only greet a genuinely first-time visitor. Someone who closed every window
   // and reloaded meant to have an empty desktop.

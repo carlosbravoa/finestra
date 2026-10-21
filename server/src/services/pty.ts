@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import * as pty from 'node-pty';
+import { childEnvironment } from '../child-env.js';
 import { isDirectory, isInside } from '../paths.js';
 import { ServiceError, type ChannelContext, type OpenedChannel, type Service } from '../service.js';
 
@@ -28,7 +29,7 @@ const SCROLLBACK_BYTES = 1024 * 1024;
  *
  * A terminal outlives its channel: when the socket drops the shell is kept —
  * running, its output banked — until a window claims it by id or the grace
- * period runs out. The id is a capability: only the browser that started the
+ * period, if there is one, runs out. The id is a capability: only the browser that started the
  * shell (or restored it from its saved session) knows it, and nothing lists
  * them. `owner` is the connection currently allowed to ask `cwd` and `status`
  * about it, which used to be a per-connection set of pids and is now a
@@ -45,7 +46,10 @@ interface Term {
   ctx: ChannelContext | null;
   ring: Ring;
   grace: ReturnType<typeof setTimeout> | null;
-  /** Marked to outlive the grace period: it waits until someone comes back. */
+  /**
+   * Marked to outlive the grace period: it waits until someone comes back.
+   * Meaningless, and not offered, when the grace is unlimited.
+   */
   keep: boolean;
   /** When the last window left, for a list to say how long it has been alone. */
   detachedAt: number | null;
@@ -287,7 +291,7 @@ export const ptyService: Service = {
           // Buffers rather than strings: we forward the bytes untouched.
           encoding: null as unknown as undefined,
           env: {
-            ...(process.env as Record<string, string>),
+            ...childEnvironment(),
             ...(args?.env ?? {}),
             TERM: 'xterm-256color',
             COLORTERM: 'truecolor',
@@ -399,6 +403,9 @@ function attach(term: Term, ctx: ChannelContext, since: number): OpenedChannel {
       shell: term.shell,
       cwd: currentCwd(term),
       keep: term.keep,
+      /* How long the shell waits without a window, or null for as long as it
+       * takes — in which case a window has nothing to offer about keeping it. */
+      grace: Number.isFinite(ctx.config.terminalGrace) ? ctx.config.terminalGrace : null,
       replay: mode,
       offset,
     },
@@ -441,7 +448,7 @@ function attach(term: Term, ctx: ChannelContext, since: number): OpenedChannel {
       const grace = ctx.config.terminalGrace;
       if (lost && (term.keep || grace > 0)) {
         term.detachedAt = Date.now();
-        if (!term.keep) {
+        if (!term.keep && Number.isFinite(grace)) {
           term.grace = setTimeout(() => hangUp(term), grace * 1000);
           term.grace.unref();
         }

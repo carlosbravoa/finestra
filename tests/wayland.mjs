@@ -604,6 +604,42 @@ if (resized) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Frames are paced by the browser, not by the application             */
+/* ------------------------------------------------------------------ */
+
+// On a link that takes fifteen seconds to carry one frame, every commit the
+// application made meanwhile used to be a further frame queued behind it —
+// a page load was dozens of frames, each showing a state already gone by the
+// time it arrived. Now one frame is out per surface until the browser
+// acknowledges it; what the application draws meanwhile lands on the
+// compositor's canvas and goes out once, as whatever is newest.
+{
+  ackAll();
+  await sleep(500);
+  ackAll();
+  const start = session.frames.length;
+  ctl(session, 'configure', { id: windowMessage.id, width: 460, height: 340 });
+  const one = await until(() => session.frames.length > start, 5000);
+  // Not acknowledged. Two more redraws, which the application gets to make:
+  // its frame callbacks are released after two seconds regardless.
+  ctl(session, 'configure', { id: windowMessage.id, width: 480, height: 350 });
+  await sleep(2500);
+  ctl(session, 'configure', { id: windowMessage.id, width: 520, height: 360 });
+  await sleep(3000);
+  check('while a frame is unacknowledged, nothing more is sent for that window',
+    one && session.frames.length === start + 1, `${session.frames.length - start} frames`);
+  ackAll();
+  const flushed = await until(
+    () => session.frames.slice(start + 1).some((f) => decodeFrame(f).fullWidth === 520), 8000);
+  await sleep(1000);
+  const since = session.frames.slice(start + 1).map(decodeFrame);
+  check('the acknowledgement brings one frame, with the newest drawing',
+    flushed && since.length === 1,
+    since.map((f) => `${f.fullWidth}x${f.fullHeight}`).join(', ') || 'none');
+  ackAll();
+}
+
+/* ------------------------------------------------------------------ */
 /* Subsurfaces: a surface drawn inside another, shown as its own canvas */
 /* ------------------------------------------------------------------ */
 
@@ -1022,8 +1058,9 @@ if (idle) {
 // closed channel killed the application. On a link that drops every few
 // minutes nothing with a slow start ever got used: Firefox was killed four
 // times in five minutes without once reaching the point of a keystroke. Now
-// the session is kept for WD_WINDOW_GRACE seconds (3 in the suite) and a
-// window picks it back up by id, from the same tab or from a reload.
+// the session is kept — for ever by default, WD_WINDOW_GRACE seconds when
+// set, 3 in the suite — and a window picks it back up by id, from the same
+// tab, from a reload, or from a desktop that found it in the list.
 
 /** Another browser connection, with the same bookkeeping as the first. */
 const connectAnother = () =>
@@ -1087,6 +1124,10 @@ const connectAnother = () =>
   await sleep(1000);
   check('the application survives the loss of its connection',
     matching(`wdcomp --ipc -s ${heldSocket}`).length > 0);
+  const listed = (await call('wayland', 'list')).find((s) => s.id === heldId);
+  check('and a desktop that never saw it can find it, left without a window',
+    listed?.attached === false && listed?.appId === target.id && typeof listed?.detachedAt === 'number',
+    JSON.stringify(listed));
 
   const second = await connectAnother();
   const picked = second.open('wayland', 'attach', { id: heldId });
@@ -1097,6 +1138,8 @@ const connectAnother = () =>
   check('and it is the same session, not a new launch',
     picked.info?.id === heldId && picked.info?.socket === heldSocket,
     `${picked.info?.socket} vs ${heldSocket}`);
+  const relisted = (await call('wayland', 'list')).find((s) => s.id === heldId);
+  check('the list now shows it has a window', relisted?.attached === true, JSON.stringify(relisted));
   if (shown) {
     const announced = picked.data.find((d) => d.t === 'window');
     const frame = decodeFrame(picked.frames[0]);

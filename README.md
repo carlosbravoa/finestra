@@ -80,9 +80,10 @@ serving the last production build.
 | `WD_DIAL_TICKET` | unset | Presented to the relay when dialling. |
 | `WD_SESSION_TTL` | unlimited | Seconds from start, then the server exits whatever else is happening. |
 | `WD_SESSION_IDLE` | unlimited | Seconds without a message from the far side, then exit. |
-| `WD_TERMINAL_GRACE` | `3600` | Seconds a terminal's shell keeps running after its browser disappears, waiting to be picked up again. `0` hangs up at once. |
+| `WD_TERMINAL_GRACE` | unlimited | Seconds a terminal's shell keeps running after its browser disappears, waiting to be picked up again. Unset keeps it until its window is closed; `0` hangs up at once. |
+| `WD_WINDOW_GRACE` | unlimited | The same for a native application's window. |
 
-The last four matter for a desktop opened *by instruction* rather than by hand.
+`WD_DIAL`, its ticket and the two session limits matter for a desktop opened *by instruction* rather than by hand.
 `WD_DIAL` inverts the connection so the machine needs no open port at all, and
 the two session limits are enforced inside the process — so a control plane that
 is hacked, hung or simply forgotten cannot leave a root-capable desktop running
@@ -513,22 +514,29 @@ the last megabyte. Full-screen programs repaint on the resize that follows.
 So a build, a download or a `vim` session carries on through a dropped
 connection exactly as it would under `tmux`, with nothing to type.
 
-What ends the shell is the same as before: closing its window, `exit`, or
-nobody coming back. The last is `WD_TERMINAL_GRACE`, an hour by default —
-after that an unclaimed shell gets the SIGHUP a closed window would have
-sent. A restart of the service ends every shell too, as it always did; the
-terminal is a child of the server, and only `tmux` or `screen` inside it
-survives an update.
+What ends the shell is what ended it before there was any of this: closing
+its window, `exit`, or a restart of the service — the terminal is a child of
+the server, and only `tmux` or `screen` inside it survives an update. Nobody
+coming back does not end it. A model training overnight is still there in
+the morning; so is the shell you forgot about, which is the price, and the
+one a desktop on a real machine charges too. Come back the next day, from
+any browser, and the desktop opens a terminal onto it: at startup, after the
+saved session is restored, every shell on the server that no window is
+showing gets one. **Shell → Pick up a terminal** lists the rest — what each
+is running, how long it has been alone, whether another window has it — for
+taking one over by hand.
 
-For a job that has to outlast the hour — a model training overnight —
-**Shell → Keep running while I am away** marks the shell to wait as long as
-it takes. The status bar says *kept while away*, and the mark travels with
-the shell, not the window. Come back the next day, from any browser, and the
-desktop opens a terminal onto it: at startup, after the saved session is
-restored, every shell on the server that no window is showing gets one.
-**Shell → Pick up a terminal** lists the rest — what each is running, how
-long it has been alone, whether another window has it — for taking one over
-by hand.
+`WD_TERMINAL_GRACE` puts a limit back, in seconds: after that long without
+a window the shell gets the SIGHUP a closed window would have sent. Under a
+limit, **Shell → Keep running while I am away** exempts one shell from it;
+the status bar says *kept while away*, and the mark travels with the shell,
+not the window. Without a limit the item is not offered, since there is
+nothing for it to do. Up to 0.3.15 the limit was an hour, and the shells
+lost to it were the ones nobody remembered to mark — on a poor connection,
+most of them.
+
+A native application's window works the same way, with `WD_WINDOW_GRACE`,
+and an application left running is picked up at startup as a shell is.
 
 If two windows claim the same shell the newest wins, as with
 `tmux attach -d`, and the other is told it was displaced rather than left

@@ -646,7 +646,9 @@ application's *Open File* dialog at the Files app.
    (`client/src/apps/wayland/chooser.ts`). See "What stage 7 settled".
 8. **The connection.** ✅ A dropped socket no longer ends the application,
    and a slow one no longer freezes the desktop or gets cut off. The session
-   waits `WD_WINDOW_GRACE` for its window to come back and the compositor
+   waits for its window to come back — for ever unless `WD_WINDOW_GRACE`
+   says otherwise, and a desktop that never saw it finds it in
+   `wayland.list` — and the compositor
    redraws everything on request (`IPC_RESYNC`); frames travel in 16 KB
    pieces with the terminal and the keepalive allowed in between. See "What
    stage 8 settled".
@@ -708,8 +710,9 @@ terminal used it to keep the shell for an hour (stage "0.3.7"), and the
 Wayland service ignored it and called `stop()` either way. Now a session
 registers under an id its window holds, sends through a replaceable `out`
 rather than the channel context it was opened with, and on a lost channel
-waits `WD_WINDOW_GRACE` seconds (an hour by default, three in the suite)
-for `wayland.attach {id}`. The application needs no telling: it has a frame
+waits for `wayland.attach {id}` — for ever by default since 0.3.16, or
+`WD_WINDOW_GRACE` seconds when set (an hour in 0.3.15, three in the suite).
+The application needs no telling: it has a frame
 outstanding that nobody will acknowledge, so its frame callback is held and
 it stops drawing on its own. The window saves the id with its state, so a
 reload restores onto the running application instead of launching a second
@@ -738,6 +741,39 @@ snap through the shell in headless Chromium with a TCP relay in front of
 the server: every connection destroyed mid-session, the page reloaded, then
 Ctrl+O. Firefox was drawn again after both, the file dialog opened, and the
 journal showed one `snap.firefox` scope started for the whole run.
+
+**One frame out per surface, and the newest picture wins.** Frame callbacks
+were supposed to pace the application: it does not draw again until the
+browser acknowledges. But only an application that waits for its callback is
+paced by it, and even that one is let go after two seconds so a browser that
+never answers cannot wedge it — after which, on a link that takes fifteen
+seconds to carry a frame, every commit was another frame queued behind the
+last, each showing a state already gone by the time it arrived. A page load
+in Firefox was dozens of them. Now `send_frame` marks the surface
+`frame_in_flight`, a commit made while that is set lands on the canvas only
+and widens a `pending` rectangle, and the acknowledgement sends the union
+as one frame cut from the canvas (`emit_canvas_rect`, which every frame now
+leaves through). Thirty seconds without an acknowledgement gives the frame
+up and sends what is pending, so a browser whose ack was lost rather than
+slow sees the window move again; the browser, for its part, acknowledges a
+frame it could not apply too, since the alternative is a window that never
+moves again. The suite's check: a window with one frame unacknowledged is
+resized twice and sends nothing; the acknowledgement brings exactly one
+frame, at the last size. Measured with the Firefox snap through the shell
+behind a relay capped at 40 KB/s and left alone for 90 s: before, 52
+frames (3.3 MB), one every 1.9 s — the two-second release, and Firefox
+redrawing on each — with the link still busy 89 s after the window was on
+screen; after, 7 frames (0.2 MB) and the link idle six seconds after the
+window appeared, with the same picture at the end of both.
+
+**Nothing you leave running is closed for you (0.3.16).** The grace was an
+hour, with *Keep running while I am away* to exempt a shell, and the shells
+lost were the ones nobody had marked. `WD_TERMINAL_GRACE` and
+`WD_WINDOW_GRACE` unset now mean for ever; a number is seconds; `0` is the
+pre-0.3.7 behaviour. Because an application can now outlive every browser
+that knew its id, `wayland.list` names what is running and the desktop
+opens a window onto each unattached session at startup, as it does for
+shells.
 
 ## What stage 7 settled
 

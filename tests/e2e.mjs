@@ -130,6 +130,13 @@ sendToPty(`mkdir -p /tmp/${marker} && cd /tmp/${marker} && echo hello-from-pty >
 await new Promise((r) => setTimeout(r, 500));
 sendToPty('pwd && cat proof.txt && whoami && echo "COLS=$COLUMNS" && echo TERM=$TERM\r');
 await new Promise((r) => setTimeout(r, 900));
+// The service's own settings stay with the service. This server was started
+// with WD_PORT and WD_TOKEN at least; a shell that could see them could also
+// start a second copy of the product that quietly adopts them — which is how
+// a suite run from inside a Finestra terminal once tested an installed
+// compositor with no token check.
+sendToPty('echo "SERVICE-VARS=$(env | grep -c "^WD_\\(TOKEN\\|PORT\\|TERMINAL_GRACE\\|WINDOW_GRACE\\|SNAP_BUS\\)=")" && echo "DESKTOP=$WEB_DESKTOP"\r');
+await new Promise((r) => setTimeout(r, 700));
 
 check('pty output reaches the client', ptyOutput.length > 0, `${ptyOutput.length} bytes`);
 check('shell ran in the created directory', ptyOutput.includes(`/tmp/${marker}`));
@@ -137,6 +144,9 @@ check('file written by the shell is readable', ptyOutput.includes('hello-from-pt
 check('shell runs as the server user', ptyOutput.includes(hello.host.user));
 check('pty honours the requested width', /COLS=100/.test(ptyOutput), (ptyOutput.match(/COLS=\d+/) ?? [])[0]);
 check('TERM is set for full-screen apps', ptyOutput.includes('TERM=xterm-256color'));
+check('the shell is not told how the service is configured', /SERVICE-VARS=0\b/.test(ptyOutput),
+  (ptyOutput.match(/SERVICE-VARS=\d+/) ?? ['no answer'])[0]);
+check('but knows it is in this desktop', ptyOutput.includes('DESKTOP=1'));
 
 // The file must exist on the actual disk, verified outside the socket.
 const { existsSync, readFileSync, rmSync } = await import('node:fs');

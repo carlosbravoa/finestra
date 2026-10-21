@@ -4,6 +4,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# A shell opened in a Finestra terminal used to inherit the service's own
+# settings, and a suite run from one then tested an installed compositor with
+# no token check. The server launched here gets only what this file sets.
+unset WD_NO_AUTH WD_TOKEN WD_HOST WD_PORT WD_STATIC WD_WDCOMP WD_ROOT WD_DIAL \
+  WD_DIAL_TICKET WD_SESSION_TTL WD_SESSION_IDLE WD_SERVICES_DIR WD_DEV
 PORT="${WD_TEST_PORT:-7199}"
 SERVER="server/dist/server/src/index.js"
 
@@ -243,6 +248,7 @@ run "host registry"               npx tsx tests/hosts.test.ts
 run "standalone stays standalone" npx tsx tests/standalone.test.ts
 run "session deadman"             npx tsx tests/deadman.test.ts
 run "the session's socket"        npx tsx tests/session.test.ts
+run "what outlives the browser"   npx tsx tests/grace.test.ts
 run "session store"               npx tsx tests/session-store.test.ts
 run "file associations"           npx tsx tests/assoc.test.ts
 run "the desktop clipboard"       npx tsx tests/clipboard.test.ts

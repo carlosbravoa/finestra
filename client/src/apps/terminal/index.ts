@@ -54,6 +54,11 @@ interface TerminalInfo {
   shell?: string;
   cwd?: string;
   keep?: boolean;
+  /**
+   * Seconds the shell waits without a window; null for as long as it takes,
+   * which is the default and leaves nothing to offer about keeping it.
+   */
+  grace?: number | null;
   /** Whether what follows continues the output already drawn, or replaces it. */
   replay?: 'partial' | 'full';
   /** Stream offset of the first byte about to arrive. */
@@ -187,6 +192,8 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
   let received = 0;
   /** Whether the server holds this shell indefinitely for us, or only for the grace period. */
   let keep = false;
+  /** Whether the server would hang the shell up after a while without a window. */
+  let graceLimited = true;
   /** Other shells on the server, for the menu that picks one up. Refreshed on focus. */
   let others: RunningTerminal[] = [];
   /** Set when the socket went away under a live shell, to reattach on reconnect. */
@@ -291,6 +298,8 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
         if (got.replay === 'full') term.reset();
         received = got.offset ?? 0;
         keep = Boolean(got.keep);
+        // An older server says nothing and has the hour, so the choice stays.
+        graceLimited = got.grace !== null;
         showStatus();
         win.setTitle(titleFor(shell, lastCwd));
         // Resize unconditionally rather than waiting for `onResize`: if the
@@ -576,12 +585,17 @@ async function mount(ctx: AppContext): Promise<AppInstance> {
           },
         },
         { type: 'separator' },
-        {
-          label: 'Keep running while I am away',
-          checked: keep,
-          disabled: !termId,
-          onSelect: () => void setKeep(!keep),
-        },
+        // Only where there is a limit to lift: by default the shell is kept
+        // until this window closes, and a toggle that changes nothing would
+        // suggest otherwise.
+        ...(graceLimited
+          ? [{
+              label: 'Keep running while I am away',
+              checked: keep,
+              disabled: !termId,
+              onSelect: () => void setKeep(!keep),
+            } satisfies MenuItem]
+          : []),
         {
           label: 'Pick up a terminal',
           disabled: others.length === 0,

@@ -590,10 +590,11 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
   }
 
   function applyFrame(bytes: Uint8Array): void {
+    if (bytes.length < FRAME_HEADER_BYTES) return;
+    const header = readHeader(bytes);
     applying = applying
       .then(async () => {
-        if (disposed || bytes.length < FRAME_HEADER_BYTES) return;
-        const header = readHeader(bytes);
+        if (disposed) return;
 
         const payload = bytes.subarray(FRAME_HEADER_BYTES);
         const pixels = header.deflated ? await inflate(payload) : payload;
@@ -660,11 +661,17 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
           }
         }
 
-        // Acknowledging is what releases the application's frame callback.
-        channel?.ctl('ack', { id: header.id });
       })
       .catch((err) => {
         if (!disposed) console.error('[wayland] could not apply a frame:', err);
+      })
+      .finally(() => {
+        // Acknowledging is what releases the application's frame callback,
+        // and what lets the compositor send the next frame for this surface:
+        // it holds everything the application draws until then. So a frame
+        // that could not be applied is acknowledged too — the alternative
+        // is a window that never moves again.
+        if (!disposed) channel?.ctl('ack', { id: header.id });
       });
   }
 
@@ -1538,6 +1545,46 @@ export const waylandApp: AppManifest = {
   minSize: { width: 320, height: 240 },
   mount,
 };
+
+/** One application still running on the server, as `wayland.list` describes it. */
+interface RunningApp {
+  id: string;
+  appId: string;
+  name: string;
+  attached: boolean;
+}
+
+/**
+ * Opens a window onto every native application on this server that no
+ * window is showing — the counterpart of the terminal's pick-up, and run at
+ * the same moment. The same browser gets its windows back from the saved
+ * session; this is for a different machine or a cleared session, where an
+ * application kept running (by default, for ever) would otherwise run on
+ * unseen with no way to reach or close it. Returns how many were picked up.
+ */
+export async function pickUpRunningApps(desktop: DesktopAPI): Promise<number> {
+  if (!desktop.rpc.hasService('wayland')) return 0;
+  let sessions: RunningApp[];
+  try {
+    sessions = await desktop.rpc.call<RunningApp[]>('wayland', 'list');
+  } catch {
+    // An older server without the method: nothing to pick up that way.
+    return 0;
+  }
+  const registered = new Set(desktop.apps().map((a) => a.id));
+  let opened = 0;
+  for (const s of sessions) {
+    if (s.attached) continue;
+    // Under its own name when it is pinned, so the taskbar and a later
+    // restore know it as that application; as a generic window otherwise.
+    const pinnedId = `wayland:${s.appId}`;
+    const asApp = registered.has(pinnedId) ? pinnedId : 'wayland';
+    if (!desktop.isAppEnabled(asApp)) continue;
+    const win = await desktop.launch(asApp, { params: { appId: s.appId, attach: s.id } });
+    if (win) opened++;
+  }
+  return opened;
+}
 
 /** What `pins` returns: enough to build an app manifest from. */
 interface PinnedApp {

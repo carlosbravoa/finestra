@@ -4,6 +4,33 @@ What changed in each release, for someone deciding whether to update. The
 reasoning behind a change is in its commit; the failures that cost time are in
 `docs/`.
 
+## 0.3.16 — 2026-10-21
+
+- **What you leave running stays running.** A terminal or a native
+  application whose browser went away was kept for an hour and then closed,
+  unless the shell had been marked *Keep running while I am away*; the ones
+  lost were the ones nobody remembered to mark, and on a poor connection that
+  was most of them. Both are now kept until their window is closed or the
+  service restarts, like windows on a real desktop. `WD_TERMINAL_GRACE` and
+  `WD_WINDOW_GRACE` put a limit back, in seconds; `0` closes at once, as
+  before 0.3.7. The *Keep running* item appears only under a limit.
+- **Applications left running are picked up.** Opening the desktop from
+  another browser, or after clearing the saved session, opens a window onto
+  every native application still running on the server, as it already did
+  for shells. Before, such an application ran on with no window and no way
+  to reach or close it.
+- **A slow connection is shown the newest picture, not every one.** While a
+  window's frame was still on its way to the browser, every further redraw
+  the application made was queued behind it; a page loading in Firefox over
+  a slow link was dozens of frames, each out of date on arrival. One frame
+  per window is now in flight at a time, and what the application draws
+  meanwhile goes out once, as a single frame, when the browser has the last.
+- **A terminal no longer inherits the service's own settings.** A shell
+  opened in the desktop could see how the service was configured
+  (`WD_PORT`, `WD_NO_AUTH`, ...), and anything started from it that reads
+  those settings — a second copy of Finestra, its test suite — quietly
+  adopted them. Shells and applications now start without them.
+
 ## 0.3.15 — 2026-10-21
 
 - **Open and Save dialogs work in Firefox and other snaps, on every machine.**

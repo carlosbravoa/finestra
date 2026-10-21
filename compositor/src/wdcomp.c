@@ -243,6 +243,20 @@ struct wdc_surface {
 	uint32_t frame_sent_ms;
 
 	/*
+	 * One frame out at a time. Frame callbacks only pace an application that
+	 * waits for them, and even one that does is let go after two seconds so
+	 * that a browser which never answers cannot wedge it — after which, on a
+	 * link that takes fifteen seconds to carry one frame, every commit was a
+	 * further frame queued behind the last for the whole of a page load.
+	 * While a frame is out and unacknowledged, commits land on the canvas
+	 * only and widen `pending`; the acknowledgement sends the union as one
+	 * frame. A slow browser is shown the newest picture, not every one.
+	 */
+	bool frame_in_flight;
+	bool pending_frame;
+	struct wdc_rect pending;
+
+	/*
 	 * What the browser has been shown, kept whole. A commit is copied out of
 	 * the client's buffer and the buffer released, so nothing else here can
 	 * draw the window again — and a browser that lost its connection and got
@@ -477,6 +491,9 @@ static struct wdc_rect damage_bounds(struct wdc_surface *surface,
 	return (struct wdc_rect){x0, y0, x1 - x0, y1 - y0};
 }
 
+static void emit_canvas_rect(struct wdc_surface *surface, struct wdc_rect d);
+static void surface_release_frames(struct wdc_surface *surface);
+
 /*
  * The rectangle `d` of a window `win_w` x `win_h`, whose pixels are `rgba`,
  * deflated and sent down the pipe. The one place a frame leaves from, so the
@@ -524,6 +541,7 @@ static void send_frame(struct wdc_surface *surface, struct wdc_rect d,
 	surface->sent_width = win_w;
 	surface->sent_height = win_h;
 	surface->awaiting_ack = true;
+	surface->frame_in_flight = true;
 	surface->frame_sent_ms = now_ms();
 	server->frames_written++;
 
@@ -570,7 +588,62 @@ static void emit_frame_ipc(struct wdc_surface *surface,
 	}
 
 	canvas_update(surface, d, win.width, win.height, rgba);
-	send_frame(surface, d, win.width, win.height, rgba);
+	free(rgba);
+
+	if (surface->frame_in_flight) {
+		/*
+		 * The browser has not yet taken the last one. The canvas has this
+		 * commit; remember how much of it is new, and send that once, when
+		 * the acknowledgement comes. A resize made `d` the whole window, and
+		 * a union with the whole window is the whole window.
+		 */
+		if (surface->pending_frame) {
+			int32_t x1 = surface->pending.x + surface->pending.width;
+			int32_t y1 = surface->pending.y + surface->pending.height;
+			if (d.x + d.width > x1) x1 = d.x + d.width;
+			if (d.y + d.height > y1) y1 = d.y + d.height;
+			if (d.x < surface->pending.x) surface->pending.x = d.x;
+			if (d.y < surface->pending.y) surface->pending.y = d.y;
+			surface->pending.width = x1 - surface->pending.x;
+			surface->pending.height = y1 - surface->pending.y;
+		} else {
+			surface->pending = d;
+			surface->pending_frame = true;
+		}
+		logdbg("frame w%u held: %d,%d %dx%d pending behind an unacknowledged one",
+			surface->id, surface->pending.x, surface->pending.y,
+			surface->pending.width, surface->pending.height);
+		return;
+	}
+
+	emit_canvas_rect(surface, d);
+}
+
+/*
+ * A rectangle of the window from the kept copy, which is where every frame
+ * leaves from: a commit lands there first, and what goes out is whatever of
+ * it the browser has not seen. Clamped, since a pending rectangle may date
+ * from before a resize.
+ */
+static void emit_canvas_rect(struct wdc_surface *surface, struct wdc_rect d) {
+	if (!surface->canvas || !surface->server->ipc) return;
+	if (d.x < 0) d.x = 0;
+	if (d.y < 0) d.y = 0;
+	if (d.x + d.width > surface->canvas_w) d.width = surface->canvas_w - d.x;
+	if (d.y + d.height > surface->canvas_h) d.height = surface->canvas_h - d.y;
+	if (d.width <= 0 || d.height <= 0) return;
+
+	size_t row = (size_t)d.width * 4;
+	unsigned char *rgba = malloc(row * (size_t)d.height);
+	if (!rgba) return;
+	for (int32_t y = 0; y < d.height; y++) {
+		memcpy(rgba + (size_t)y * row,
+			surface->canvas + ((size_t)(d.y + y) * (size_t)surface->canvas_w +
+				(size_t)d.x) * 4,
+			row);
+	}
+	surface->pending_frame = false;
+	send_frame(surface, d, surface->canvas_w, surface->canvas_h, rgba);
 	free(rgba);
 }
 
@@ -578,13 +651,19 @@ static void emit_frame_ipc(struct wdc_surface *surface,
  * The window again, whole, from the kept copy. For a browser that was away:
  * what it holds is gone with its page or stale, and the application will not
  * draw again until its last frame is acknowledged — which that browser never
- * did. A frame set to awaiting acknowledgement, exactly as a fresh one is.
+ * did. A frame set to awaiting acknowledgement, exactly as a fresh one is,
+ * and whatever was pending for the browser before is in this one.
  */
 static void emit_canvas_frame(struct wdc_surface *surface) {
-	if (!surface->canvas || !surface->server->ipc) return;
 	struct wdc_rect full = {0, 0, surface->canvas_w, surface->canvas_h};
-	send_frame(surface, full, surface->canvas_w, surface->canvas_h,
-		surface->canvas);
+	emit_canvas_rect(surface, full);
+}
+
+/** The browser has the last frame: let the application draw, and send what it drew meanwhile. */
+static void surface_acknowledged(struct wdc_surface *surface) {
+	surface->frame_in_flight = false;
+	surface_release_frames(surface);
+	if (surface->pending_frame) emit_canvas_rect(surface, surface->pending);
 }
 
 /* Stage 1 sink: a PNG per commit, for looking at without a browser. */
@@ -3069,7 +3148,7 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 	case IPC_ACK: {
 		if (len < 4) return;
 		struct wdc_surface *acked = find_surface(server, ipc_get_u32(payload));
-		if (acked) surface_release_frames(acked);
+		if (acked) surface_acknowledged(acked);
 		break;
 	}
 
@@ -3263,19 +3342,33 @@ static int handle_ipc_readable(int fd, uint32_t mask, void *data) {
 /*
  * A frame acknowledgement that never arrives — a wedged tab, a dropped
  * socket — would otherwise freeze the application forever, since it is
- * waiting on a frame callback we are holding.
+ * waiting on a frame callback we are holding. Two seconds, and it draws
+ * again; what it draws lands on the canvas and waits. Much later, the frame
+ * itself is given up on and whatever is pending goes out, so a browser whose
+ * acknowledgement was lost rather than slow sees the window move again. On
+ * a link that takes fifteen seconds to carry a frame this must not fire for
+ * one that is merely slow, which is why it is thirty and not two.
  */
+static void surface_check_stale(struct wdc_surface *surface, uint32_t now) {
+	if (!surface) return;
+	uint32_t age = now - surface->frame_sent_ms;
+	if (surface->frame_in_flight && age >= 30000) {
+		logdbg("w%u frame not acknowledged in 30s, giving up on it", surface->id);
+		surface_acknowledged(surface);
+	} else if (surface->awaiting_ack && age >= 2000) {
+		logdbg("w%u frame not acknowledged in 2s, releasing", surface->id);
+		surface_release_frames(surface);
+	}
+}
+
 static void release_stale_frames(struct wdc_server *server) {
 	uint32_t now = now_ms();
 	struct wdc_xdg_surface *xdg;
-	wl_list_for_each(xdg, &server->windows, link) {
-		if (!xdg->surface) continue;
-		struct wdc_surface *surface = xdg->surface;
-		if (!surface->awaiting_ack) continue;
-		if (now - surface->frame_sent_ms < 2000) continue;
-		logdbg("w%u frame not acknowledged in 2s, releasing", xdg->id);
-		surface_release_frames(surface);
-	}
+	wl_list_for_each(xdg, &server->windows, link)
+		surface_check_stale(xdg->surface, now);
+	struct wdc_subsurface *sub;
+	wl_list_for_each(sub, &server->subsurfaces, server_link)
+		surface_check_stale(sub->surface, now);
 }
 
 /* ------------------------------------------------------------------ */

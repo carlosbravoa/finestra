@@ -35,10 +35,12 @@ export interface Config {
   dialTicket: string | null;
   /**
    * Seconds a terminal's shell keeps running after the browser that owns it
-   * disappears, waiting to be picked up again. Zero hangs it up at once.
+   * disappears, waiting to be picked up again. Infinity, the default, keeps
+   * it until its window is closed or the service stops; zero hangs it up at
+   * once.
    */
   terminalGrace: number;
-  /** Seconds a native window's application is kept after its browser goes, waiting to be picked up. */
+  /** The same for a native window's application. */
   windowGrace: number;
 }
 
@@ -152,7 +154,22 @@ export function loadConfig(): Config {
     stateDir: dir,
     dial: process.env.WD_DIAL || null,
     dialTicket: process.env.WD_DIAL_TICKET || null,
-    terminalGrace: Math.max(0, Number(process.env.WD_TERMINAL_GRACE ?? 3600) || 0),
-    windowGrace: Math.max(0, Number(process.env.WD_WINDOW_GRACE ?? 3600) || 0),
+    terminalGrace: grace(process.env.WD_TERMINAL_GRACE),
+    windowGrace: grace(process.env.WD_WINDOW_GRACE),
   };
+}
+
+/**
+ * How long something outlives the browser that was showing it. Unset means
+ * for ever: this is a desktop, and a desktop does not close your editor
+ * because the laptop lid shut. It used to be an hour, with a per-shell
+ * "keep running while I am away" to opt out of the limit, and the shells
+ * lost were exactly the ones nobody remembered to mark — on a poor
+ * connection, the ones that mattered. A number is seconds, and zero ends
+ * things the moment the connection goes, which is what every version before
+ * 0.3.7 did.
+ */
+function grace(env: string | undefined): number {
+  if (env === undefined || env === '') return Infinity;
+  return Math.max(0, Number(env) || 0);
 }

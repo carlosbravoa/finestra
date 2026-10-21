@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Duplex } from 'node:stream';
+import { childEnvironment } from '../child-env.js';
 import { ServiceError, type ChannelContext, type OpenedChannel, type Service } from '../service.js';
 import { FileChooserPortal, type PortalTarget } from '../portal.js';
 import { BusProxy, abstractSocketsWork } from '../busproxy.js';
@@ -876,20 +877,36 @@ const liveApps = new Map<string, Set<Promise<void>>>();
  * Every session whose application is running, by the id its window holds.
  *
  * A session outlives its channel the way a terminal does (pty.ts): when the
- * browser's connection drops, the compositor and the application stay for a
- * grace period, and the window picks them back up by id when it is back —
- * from the same tab, or from a reload that restored it. The id is a
- * capability known to the browser that started the session and nobody else;
- * nothing lists these. Before this, a dropped connection was a closed
- * channel, and a closed channel killed the application: on a link that drops
- * for a second every few minutes, nothing with a slow start ever lived long
- * enough to be used.
+ * browser's connection drops, the compositor and the application stay —
+ * for ever by default, or for WD_WINDOW_GRACE seconds — and the window picks
+ * them back up by id when it is back: from the same tab, from a reload that
+ * restored it, or from a desktop that has never seen them, which `list`
+ * exists for (a cleared session, another machine). Before this, a dropped
+ * connection was a closed channel, and a closed channel killed the
+ * application: on a link that drops for a second every few minutes, nothing
+ * with a slow start ever lived long enough to be used.
  */
 interface RunningSession {
+  appId: string;
+  name: string;
+  startedAt: number;
   attach(ctx: ChannelContext): OpenedChannel;
   isAlive(): boolean;
+  /** Whether a window currently shows it, and if not, since when. */
+  attached(): boolean;
+  detachedAt(): number | null;
 }
 const running = new Map<string, RunningSession>();
+
+/** How a running session is described to a desktop looking for one to pick up. */
+interface SessionSummary {
+  id: string;
+  appId: string;
+  name: string;
+  startedAt: number;
+  attached: boolean;
+  detachedAt: number | null;
+}
 
 export const waylandService: Service = {
   name: 'wayland',
@@ -907,6 +924,25 @@ export const waylandService: Service = {
   },
 
   methods: {
+    /**
+     * Every application still running, whoever started it — the same rule,
+     * and the same reason, as pty.list: a desktop that has never seen them
+     * finding the application left running yesterday. Any connection here
+     * already holds the token, and with it the account these run as.
+     */
+    list(): SessionSummary[] {
+      return [...running.entries()]
+        .filter(([, s]) => s.isAlive())
+        .map(([id, s]) => ({
+          id,
+          appId: s.appId,
+          name: s.name,
+          startedAt: s.startedAt,
+          attached: s.attached(),
+          detachedAt: s.detachedAt(),
+        }));
+    },
+
     /** Whether this host can run the feature at all, and why not if it cannot. */
     available() {
       const binary = findCompositor();
@@ -1013,6 +1049,7 @@ export const waylandService: Service = {
       const grace = ctx.config.windowGrace;
       let out: ChannelContext | null = ctx;
       let graceTimer: NodeJS.Timeout | undefined;
+      let detachedAt: number | null = null;
       const send = (message: unknown) => out?.send(message);
       const sendBinary = (bytes: Uint8Array) => out?.sendBinary(bytes);
       /** The session is over, with a reason for whoever is listening. */
@@ -1140,7 +1177,7 @@ export const waylandService: Service = {
         }
       }
 
-      const env = { ...process.env };
+      const env = childEnvironment();
       // A bus of our own replaces this one; with no bus of our own, whatever
       // the server has is better than none at all — and for a snap, the
       // address may be one we worked out rather than one we were given, so it
@@ -1624,9 +1661,9 @@ export const waylandService: Service = {
          * "did it get cleaned up?" answerable. */
         socket: socketName,
         /* What a window keeps to pick this session back up, and for how long
-         * the session waits for it. */
+         * the session waits for it — null for as long as it takes. */
         id: sessionId,
-        grace,
+        grace: Number.isFinite(grace) ? grace : null,
       };
 
       /** The handlers for whichever channel currently shows this session. */
@@ -1702,8 +1739,11 @@ export const waylandService: Service = {
            * comes back is shown the picture again by the compositor.
            */
           if (lost && grace > 0) {
-            graceTimer = setTimeout(stop, grace * 1000);
-            graceTimer.unref();
+            detachedAt = Date.now();
+            if (Number.isFinite(grace)) {
+              graceTimer = setTimeout(stop, grace * 1000);
+              graceTimer.unref();
+            }
             return;
           }
           stop();
@@ -1729,13 +1769,22 @@ export const waylandService: Service = {
           graceTimer = undefined;
         }
         out = target;
+        detachedAt = null;
         sendToCompositor(MSG_RESYNC);
         if (ownPortal) ownPortal.redeliver(portalTarget);
         else proxy?.redeliver();
         return bind(target);
       };
 
-      running.set(sessionId, { attach, isAlive: () => alive });
+      running.set(sessionId, {
+        appId: app.id,
+        name: app.name,
+        startedAt,
+        attach,
+        isAlive: () => alive,
+        attached: () => out !== null,
+        detachedAt: () => detachedAt,
+      });
       return bind(ctx);
     },
 
