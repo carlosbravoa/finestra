@@ -19,34 +19,50 @@ before anything widens what runs.
      0.3.16 from inside a Finestra terminal.
    - *Checksums published somewhere other than beside the tarball.* A
      `.sha256` next to the file it checks proves only that both were uploaded
-     by the same person. Still open from the first install story.
+     by the same person. Still open from the first install story, and the
+     precondition for the updater below.
+   - *The desktop knows a newer version exists.* Settings shows the installed
+     version, asks finestra.dev for the latest, and offers the update: a
+     terminal opened with the `update.sh` command already typed, because the
+     service runs unprivileged and the install tree is root's, so somebody has
+     to give sudo a password. Today the only way to learn of a release is the
+     website.
 2. **0.3.18 — lossy encoding for photographic content.** Frames are few now
    (one in flight per window, the newest picture wins) but each is still a
    losslessly compressed bitmap, and a web page is mostly photographs. A
    JPEG or WebP path for the regions that do not deflate well cuts the
    remaining bytes several times over on the link this is actually used on.
    Text and flat UI stay lossless; the choice is per region, not per frame.
-3. **Xwayland.** The next limit after the link. X11-only programs fail with
+3. **Updating from the desktop without a password.** Not before releases are
+   signed. The updater grows a `--latest` mode that takes no URL, fetches only
+   from finestra.dev and verifies a signature rather than a checksum beside
+   the file; then `configure.sh` may install a sudoers rule allowing the
+   service user that one command and nothing else. A rule for the updater as
+   it is today would make the token worth root: anyone holding it could name
+   a URL and have it unpacked and started as root, which is the escalation
+   the SSH-boundary design exists to avoid. With signing, the token can only
+   ever install a release Finestra signed, the trust apt places in a repository.
+4. **Xwayland.** The next limit after the link. X11-only programs fail with
    `Failed to open display` today, and a snap shipping an X11-only toolkit is
    out of reach. Xwayland is just another Wayland client to `wdcomp`, but it
    drags a window-management job behind it: X windows do not announce their
    role or geometry the way `xdg_shell` does, so an X window manager has to be
    written inside the compositor. Medium effort, modest demand, and it is the
    last class of application that does not launch at all.
-4. **Audio, routed to nothing.** No sound server is offered to the session, so
+5. **Audio, routed to nothing.** No sound server is offered to the session, so
    an application that insists on one fails to start, and the rest are
    silent. The first step is **not** sound in the browser: it is a server that
    answers and discards, a PipeWire or PulseAudio null sink in the session,
    so launching never fails for want of audio. Only then is sound into the
    browser worth measuring, and it costs weeks while the null sink costs days.
-5. **The rest of the portal.** Notifications and the settings portal are small
+6. **The rest of the portal.** Notifications and the settings portal are small
    and common: Firefox asks the settings portal for the colour scheme and most
    applications want to post a notification, and the shell already has both.
    Screenshot is different, since the shell already owns every pixel.
-6. **More apps** from [`docs/apps-wanted.md`](docs/apps-wanted.md): process
+7. **More apps** from [`docs/apps-wanted.md`](docs/apps-wanted.md): process
    manager, disk usage, system monitor, network and ports. Each is a small app
    over services that mostly exist.
-7. **dmabuf import.** GPU-rendered clients that `force_shm` cannot rescue.
+8. **dmabuf import.** GPU-rendered clients that `force_shm` cannot rescue.
    Hardest and lowest payoff on a headless server; last on purpose.
 
 ## 1. Authentication — the token is deliberate, its storage is not
