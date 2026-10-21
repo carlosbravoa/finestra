@@ -1,6 +1,53 @@
 # Roadmap
 
-Ordered roughly by when each starts to hurt, not by size.
+Ordered by when each starts to hurt, not by size. The first section is the
+agreed order for the next releases; the numbered sections after it are the
+standing gaps, with the reasoning that put them where they are.
+
+## Next, in this order
+
+The connection is the thing a desktop in a browser is judged on, and 0.3.15
+and 0.3.16 made it survive a bad link. The next two releases finish that claim
+before anything widens what runs.
+
+1. **0.3.17 — the small ones found shipping 0.3.16.**
+   - *A terminal finds the session's SSH agent.* The service is a systemd unit,
+     not a login session, so a shell opened in the desktop has no
+     `SSH_AUTH_SOCK` and git over SSH falls back to passphrase-protected key
+     files. When the runtime directory holds a GNOME keyring (`gcr/ssh`) or
+     OpenSSH agent socket, the shell should be given it. Found releasing
+     0.3.16 from inside a Finestra terminal.
+   - *Checksums published somewhere other than beside the tarball.* A
+     `.sha256` next to the file it checks proves only that both were uploaded
+     by the same person. Still open from the first install story.
+2. **0.3.18 — lossy encoding for photographic content.** Frames are few now
+   (one in flight per window, the newest picture wins) but each is still a
+   losslessly compressed bitmap, and a web page is mostly photographs. A
+   JPEG or WebP path for the regions that do not deflate well cuts the
+   remaining bytes several times over on the link this is actually used on.
+   Text and flat UI stay lossless; the choice is per region, not per frame.
+3. **Xwayland.** The next limit after the link. X11-only programs fail with
+   `Failed to open display` today, and a snap shipping an X11-only toolkit is
+   out of reach. Xwayland is just another Wayland client to `wdcomp`, but it
+   drags a window-management job behind it: X windows do not announce their
+   role or geometry the way `xdg_shell` does, so an X window manager has to be
+   written inside the compositor. Medium effort, modest demand, and it is the
+   last class of application that does not launch at all.
+4. **Audio, routed to nothing.** No sound server is offered to the session, so
+   an application that insists on one fails to start, and the rest are
+   silent. The first step is **not** sound in the browser: it is a server that
+   answers and discards, a PipeWire or PulseAudio null sink in the session,
+   so launching never fails for want of audio. Only then is sound into the
+   browser worth measuring, and it costs weeks while the null sink costs days.
+5. **The rest of the portal.** Notifications and the settings portal are small
+   and common: Firefox asks the settings portal for the colour scheme and most
+   applications want to post a notification, and the shell already has both.
+   Screenshot is different, since the shell already owns every pixel.
+6. **More apps** from [`docs/apps-wanted.md`](docs/apps-wanted.md): process
+   manager, disk usage, system monitor, network and ports. Each is a small app
+   over services that mostly exist.
+7. **dmabuf import.** GPU-rendered clients that `force_shm` cannot rescue.
+   Hardest and lowest payoff on a headless server; last on purpose.
 
 ## 1. Authentication — the token is deliberate, its storage is not
 
@@ -79,16 +126,16 @@ See the sysadmin app list in [`docs/apps-wanted.md`](docs/apps-wanted.md).
 
 ## 6. Real Linux applications
 
-Not a gap so much as a different ceiling: run a Wayland compositor on the
-server and put an ordinary application — an editor, a Qt tool — into a window
-of this shell. Design and staging in [`docs/wayland.md`](docs/wayland.md).
-Stages 1–5 are done: **Native Desktop Applications** runs a real GTK program
-in a window of this desktop — damage-only frame streaming, mouse and keyboard,
-menus, tooltips and dialogs, cursor shapes, keyboard-layout detection, and
-copying text out of it. Browsing and pinning give an application its own
-desktop identity. What is left is stage 6, and none of it is needed yet:
-dmabuf for GPU applications, H.264 for animated content, Xwayland, audio, and
-a portal so an application's *Open File* dialog opens the Files app.
+Not a gap so much as a different ceiling: a Wayland compositor on the server
+puts an ordinary application into a window of this shell. Design and staging
+in [`docs/wayland.md`](docs/wayland.md). Stages 1–8 are done: **Native
+Desktop Applications** runs real GTK, Qt and Chromium-based programs, and the
+Firefox and Thunderbird snaps, in a window of this desktop — damage-only frame
+streaming, mouse and keyboard, menus, tooltips and dialogs, subsurfaces, cursor
+shapes, keyboard-layout detection, copying text out, the file-chooser portal
+answered by the shell, and a session that survives its connection being cut or
+starved. What is left is in the order at the top of this file: Xwayland, audio
+routed to nothing, the rest of the portal, dmabuf.
 
 ## Done
 
@@ -103,3 +150,9 @@ a portal so an application's *Open File* dialog opens the Files app.
 - Session restore, including app-contributed state.
 - File associations — apps declare what they open; the file manager routes
   double-clicks and offers "Open with".
+- Native Linux applications in a window (stages 1–8 of `docs/wayland.md`),
+  including snaps, their *Open File* dialog, and surviving a dropped or
+  starved connection: nothing left running is closed for you, and a slow link
+  is shown the newest frame rather than every one.
+- One-command install with a bundled runtime, verified on five distributions;
+  updates with rollback.

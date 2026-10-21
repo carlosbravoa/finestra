@@ -426,8 +426,8 @@ hit them sooner and harder.
 | --- | --- | --- |
 | **No dmabuf import** | A window that never paints, or an application that exits complaining about EGL | Anything on the GPU commits buffers we cannot read. `wdcomp` sets `GSK_RENDERER=cairo`, `QT_QUICK_BACKEND=software` and `LIBGL_ALWAYS_SOFTWARE=1` when it spawns the client (`force_shm`, on by default), which is what rescues GTK 4 and Qt Quick. **Whether those survive into a snap's own runtime is not something we control** — snapd rebuilds much of the environment — so the escape hatch that fixes a `.deb` may simply not apply. Electron-based snaps are the usual casualty |
 | **Only the file-chooser portal** | *Open File* and *Save As* work, drawn by the shell; screenshots, secrets and notifications fail | `xdg-desktop-portal` is the interface a confined application uses to reach anything outside itself. The service answers the `FileChooser` interface itself (stage 7); the rest of the portal is not there, which an application experiences as a machine with no portal |
-| **No Xwayland** | `Failed to open display` from anything X11-only | Stage 6, unstarted. A snap shipping an X11-only toolkit is out of reach for the same reason `dosbox-x` is |
-| **No audio** | Silence, or a startup failure in an application that insists on a sound server | No PipeWire or PulseAudio is offered to the session |
+| **No Xwayland** | `Failed to open display` from anything X11-only | Next after the link work in `ROADMAP.md`. A snap shipping an X11-only toolkit is out of reach for the same reason `dosbox-x` is |
+| **No audio** | Silence, or a startup failure in an application that insists on a sound server | No PipeWire or PulseAudio is offered to the session. The planned first step is a null sink, so the startup failure goes and only the silence remains (`ROADMAP.md`) |
 | **Single-instance handoff** | Starts, draws nothing, exits cleanly | Only on a machine that *has* a desktop session: snaps share this user's real session bus, so a copy already running there takes the window. The session says so rather than reporting a clean exit — see below. A headless server never sees this |
 | **snapd counts an open window as the snap running** | Refreshes held back while you work | `snap-confine`'s scope stays alive as long as the application does. Ordinary snapd behaviour, listed because it surprises people |
 | **A desktop entry that cannot work here** | The application is not offered at all | Deliberate: the Chromium snap ships one whose whole body is `OnlyShowIn=UbuntuFrame` and `Exec=/usr/bin/false`, and offering it would make its failure look like ours. `OnlyShowIn`/`NotShowIn` filtering is above |
@@ -652,9 +652,12 @@ application's *Open File* dialog at the Files app.
    redraws everything on request (`IPC_RESYNC`); frames travel in 16 KB
    pieces with the terminal and the keepalive allowed in between. See "What
    stage 8 settled".
-9. **Later, if something demands it.** dmabuf import for GPU applications;
-   H.264 for animated content; Xwayland (it is just another Wayland client, but
-   it drags a full X11 window-management job behind it); audio over PipeWire.
+9. **What comes next** is ordered in [`ROADMAP.md`](../ROADMAP.md): lossy
+   encoding for photographic regions, so the link is finished before anything
+   widens what runs; then Xwayland (just another Wayland client, but it drags a
+   full X11 window-management job behind it); then audio routed to a null sink
+   so no application fails to launch for want of a sound server, with sound in
+   the browser only after that; the rest of the portal; dmabuf import last.
 
 Stages 1–3 are the small half. Stage 4 is where the time goes, and it is what
 decides whether this feels like a desktop or a demo.
