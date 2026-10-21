@@ -40,6 +40,7 @@
 #define IPC_POINTER   'P' /* id u32, kind u8, x i32, y i32, arg u32, value i32 */
 #define IPC_KEY       'D' /* id u32, evdev keycode u32, pressed u8           */
 #define IPC_FOCUS     'G' /* id u32, focused u8                              */
+#define IPC_RESYNC    'Q' /* — announce every surface again, each window whole */
 #define IPC_PASTE     'Y' /* utf-8 — the browser's clipboard, for the app     */
 
 /* IPC_POINTER kinds. Button events carry the browser's button index in `arg`;

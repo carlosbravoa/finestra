@@ -10,7 +10,7 @@ import { buildServiceMap } from './services/index.js';
 import { hostInfo } from './services/sys.js';
 import { readDeadmanEnv, startDeadman } from './deadman.js';
 import { dialOut } from './outbound.js';
-import { Session } from './session.js';
+import { Session, liveSessions } from './session.js';
 
 const config = loadConfig();
 const serviceMap = buildServiceMap(await loadExtraServices());
@@ -141,9 +141,8 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    // With `noServer: true`, ws never emits 'connection' by itself, but it
-    // does add the socket to `wss.clients`. Emitting it here is what keeps
-    // the heartbeat below from treating every live connection as dead.
+    // With `noServer: true`, ws never emits 'connection' by itself; anything
+    // listening for one on the server still deserves to hear it.
     wss.emit('connection', ws, req);
     new Session(ws, serviceMap, config, host, {
       address: req.socket.remoteAddress ?? null,
@@ -153,21 +152,11 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 // Drop connections that stop answering, so dead tabs release their PTYs.
+// The session decides, not the socket: see Session.tick for what counts as
+// answering, which is more than a pong.
 const HEARTBEAT_MS = Number(process.env.WD_HEARTBEAT_MS || 30_000);
-const alive = new WeakSet<import('ws').WebSocket>();
-wss.on('connection', (ws) => {
-  alive.add(ws);
-  ws.on('pong', () => alive.add(ws));
-});
 const heartbeat = setInterval(() => {
-  for (const ws of wss.clients) {
-    if (!alive.has(ws)) {
-      ws.terminate();
-      continue;
-    }
-    alive.delete(ws);
-    ws.ping();
-  }
+  for (const session of liveSessions) session.tick(HEARTBEAT_MS);
 }, HEARTBEAT_MS);
 heartbeat.unref();
 

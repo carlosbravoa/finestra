@@ -5,7 +5,9 @@ import type { Config } from './config.js';
 import {
   decodeBinaryFrame,
   encodeBinaryFrame,
+  encodeSlice,
   PROTOCOL_VERSION,
+  SLICE_BYTES,
   type ClientMessage,
   type HostInfo,
   type ServerMessage,
@@ -48,6 +50,29 @@ export class Session {
   private readonly channels = new Map<number, OpenedChannel>();
   private closed = false;
 
+  /**
+   * When the far side last proved it was there: a message, a pong, or bytes
+   * of ours it accepted. The last one matters most. A keepalive that only
+   * counts pongs declares a slow link dead: the ping waits its turn behind
+   * whatever is queued, and a browser on a bad Wi-Fi that was still taking
+   * our frames at twenty kilobytes a second was cut off for not answering a
+   * question that had not reached it yet.
+   */
+  private lastSeen = Date.now();
+  private pinged = false;
+
+  /**
+   * Payloads too large to go out in one piece, waiting their turn. One piece
+   * is in flight at a time, and the next goes only once the socket has taken
+   * the last — so a JSON message sent meanwhile goes out between two pieces
+   * rather than behind the whole payload. Within a channel the order holds:
+   * once a channel has something queued, everything of its goes through the
+   * queue, however small.
+   */
+  private readonly bulk: Array<{ id: number; payload: Uint8Array; at: number }> = [];
+  private readonly bulkByChannel = new Map<number, number>();
+  private pumping = false;
+
   constructor(
     private readonly ws: WebSocket,
     private readonly services: Map<string, Service>,
@@ -60,8 +85,10 @@ export class Session {
       // The session's clock, when it has one, is fed from here — the only
       // place that knows the far side is still there.
       noteActivity();
+      this.seen();
       this.onMessage(data as Buffer, isBinary);
     });
+    ws.on('pong', () => this.seen());
     ws.on('close', () => this.dispose());
     ws.on('error', () => this.dispose());
     liveSessions.add(this);
@@ -84,7 +111,77 @@ export class Session {
 
   private sendBinary(channelId: number, payload: Uint8Array): void {
     if (this.closed || this.ws.readyState !== this.ws.OPEN) return;
-    this.ws.send(encodeBinaryFrame(channelId, payload), { binary: true });
+    if (payload.length <= SLICE_BYTES && !this.bulkByChannel.has(channelId)) {
+      this.ws.send(encodeBinaryFrame(channelId, payload), { binary: true });
+      return;
+    }
+    this.bulk.push({ id: channelId, payload, at: 0 });
+    this.bulkByChannel.set(channelId, (this.bulkByChannel.get(channelId) ?? 0) + 1);
+    this.pump();
+  }
+
+  private pump(): void {
+    if (this.pumping) return;
+    const head = this.bulk[0];
+    if (!head) return;
+    if (this.closed || this.ws.readyState !== this.ws.OPEN) {
+      this.bulk.length = 0;
+      this.bulkByChannel.clear();
+      return;
+    }
+    const end = Math.min(head.at + SLICE_BYTES, head.payload.length);
+    const last = end >= head.payload.length;
+    this.pumping = true;
+    // The callback fires once the socket has taken the bytes. On a link that
+    // is slow but alive that is the throttle; on one that is gone it never
+    // fires, the queue stands still, and tick() draws the conclusion.
+    this.ws.send(encodeSlice(head.id, head.payload.subarray(head.at, end), last), { binary: true }, (err) => {
+      this.pumping = false;
+      if (err) return;
+      this.seen();
+      if (this.bulk[0] === head) {
+        head.at = end;
+        // A channel closed under its own payload: the rest is waste, and the
+        // client has forgotten the pieces it already holds.
+        if (last || !this.channels.has(head.id)) this.dequeue();
+      }
+      this.pump();
+    });
+  }
+
+  private dequeue(): void {
+    const head = this.bulk.shift();
+    if (!head) return;
+    const left = (this.bulkByChannel.get(head.id) ?? 1) - 1;
+    if (left <= 0) this.bulkByChannel.delete(head.id);
+    else this.bulkByChannel.set(head.id, left);
+  }
+
+  private seen(): void {
+    this.lastSeen = Date.now();
+    this.pinged = false;
+  }
+
+  /**
+   * The liveness check, asked once per heartbeat interval. Nothing is asked
+   * of a connection that has shown signs of life since the last tick; one
+   * that has not is pinged, and one that has still shown none a tick later
+   * is cut off. "Signs of life" include taking our bytes, so a connection
+   * that is slow is never mistaken for one that is gone.
+   */
+  tick(intervalMs: number): void {
+    if (this.closed) return;
+    if (Date.now() - this.lastSeen < intervalMs) return;
+    if (this.pinged) {
+      this.ws.terminate();
+      return;
+    }
+    this.pinged = true;
+    try {
+      this.ws.ping();
+    } catch {
+      // Closing under us; the close event finishes the job.
+    }
   }
 
   private onMessage(data: Buffer, isBinary: boolean): void {
@@ -187,6 +284,16 @@ export class Session {
     const channel = this.channels.get(id);
     if (!channel) return;
     this.channels.delete(id);
+    // Queued payloads for a channel that is gone: everything but the piece in
+    // flight, which the pump drops when its callback comes back.
+    for (let i = this.bulk.length - 1; i >= 1; i--) {
+      if (this.bulk[i].id === id) {
+        this.bulk.splice(i, 1);
+        const left = (this.bulkByChannel.get(id) ?? 1) - 1;
+        if (left <= 0) this.bulkByChannel.delete(id);
+        else this.bulkByChannel.set(id, left);
+      }
+    }
     try {
       channel.onClose?.(lost);
     } catch {

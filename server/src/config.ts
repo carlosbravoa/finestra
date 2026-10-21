@@ -38,6 +38,8 @@ export interface Config {
    * disappears, waiting to be picked up again. Zero hangs it up at once.
    */
   terminalGrace: number;
+  /** Seconds a native window's application is kept after its browser goes, waiting to be picked up. */
+  windowGrace: number;
 }
 
 /**
@@ -151,5 +153,6 @@ export function loadConfig(): Config {
     dial: process.env.WD_DIAL || null,
     dialTicket: process.env.WD_DIAL_TICKET || null,
     terminalGrace: Math.max(0, Number(process.env.WD_TERMINAL_GRACE ?? 3600) || 0),
+    windowGrace: Math.max(0, Number(process.env.WD_WINDOW_GRACE ?? 3600) || 0),
   };
 }

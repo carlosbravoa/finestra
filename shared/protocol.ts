@@ -215,7 +215,43 @@ export interface AccessStatus {
 /** Byte 0 of a binary frame: raw payload for the channel named in bytes 1..5. */
 export const BIN_CHANNEL_DATA = 0x01;
 
+/**
+ * Byte 0 of a slice: one piece of a larger payload for the channel named in
+ * bytes 1..5, and byte 5 is 1 on the last piece. A payload is sliced so that
+ * everything else on the socket can get a word in between the pieces — a
+ * half-megabyte window frame used to sit in front of every keystroke, every
+ * terminal byte and the keepalive for as long as the link took to carry it.
+ * Pieces of one channel arrive in order and never interleave with each
+ * other; a reader concatenates them until the last.
+ */
+export const BIN_CHANNEL_SLICE = 0x02;
+
 export const BIN_HEADER_BYTES = 5;
+export const SLICE_HEADER_BYTES = 6;
+
+/**
+ * How much of a payload goes in one piece. Small enough that a terminal's
+ * echo waits at most this long behind a picture on a link doing tens of
+ * kilobytes a second; large enough that a frame on a fast link is a few dozen
+ * messages rather than thousands.
+ */
+export const SLICE_BYTES = 16 * 1024;
+
+export function encodeSlice(
+  channelId: number,
+  piece: Uint8Array,
+  last: boolean,
+): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(new ArrayBuffer(SLICE_HEADER_BYTES + piece.length));
+  out[0] = BIN_CHANNEL_SLICE;
+  out[1] = (channelId >>> 24) & 0xff;
+  out[2] = (channelId >>> 16) & 0xff;
+  out[3] = (channelId >>> 8) & 0xff;
+  out[4] = channelId & 0xff;
+  out[5] = last ? 1 : 0;
+  out.set(piece, SLICE_HEADER_BYTES);
+  return out;
+}
 
 /** Prefix `payload` with the 5-byte channel header. */
 // Typed as a Uint8Array over a plain ArrayBuffer, not ArrayBufferLike: the
@@ -235,12 +271,58 @@ export function encodeBinaryFrame(channelId: number, payload: Uint8Array): Uint8
 export interface BinaryFrame {
   channelId: number;
   payload: Uint8Array;
+  /** More of this payload follows; hold it and wait. */
+  partial: boolean;
 }
 
 /** Returns null when the frame is too short or carries an unknown opcode. */
 export function decodeBinaryFrame(buf: Uint8Array): BinaryFrame | null {
   if (buf.length < BIN_HEADER_BYTES) return null;
-  if (buf[0] !== BIN_CHANNEL_DATA) return null;
-  const channelId = (buf[1] << 24) | (buf[2] << 16) | (buf[3] << 8) | buf[4];
-  return { channelId: channelId >>> 0, payload: buf.subarray(BIN_HEADER_BYTES) };
+  const channelId = ((buf[1] << 24) | (buf[2] << 16) | (buf[3] << 8) | buf[4]) >>> 0;
+  if (buf[0] === BIN_CHANNEL_DATA) {
+    return { channelId, payload: buf.subarray(BIN_HEADER_BYTES), partial: false };
+  }
+  if (buf[0] === BIN_CHANNEL_SLICE && buf.length >= SLICE_HEADER_BYTES) {
+    return { channelId, payload: buf.subarray(SLICE_HEADER_BYTES), partial: buf[5] === 0 };
+  }
+  return null;
+}
+
+/**
+ * Puts sliced payloads back together, per channel. Feed it every decoded
+ * frame; it returns the whole payload when one is complete and null while
+ * pieces are still arriving.
+ */
+export class SliceAssembler {
+  private readonly held = new Map<number, Uint8Array[]>();
+
+  push(frame: BinaryFrame): Uint8Array | null {
+    const pieces = this.held.get(frame.channelId);
+    if (frame.partial) {
+      if (pieces) pieces.push(frame.payload);
+      else this.held.set(frame.channelId, [frame.payload]);
+      return null;
+    }
+    if (!pieces) return frame.payload;
+    this.held.delete(frame.channelId);
+    pieces.push(frame.payload);
+    let length = 0;
+    for (const p of pieces) length += p.length;
+    const whole = new Uint8Array(length);
+    let at = 0;
+    for (const p of pieces) {
+      whole.set(p, at);
+      at += p.length;
+    }
+    return whole;
+  }
+
+  /** The channel is gone; whatever was held for it is waste. */
+  forget(channelId: number): void {
+    this.held.delete(channelId);
+  }
+
+  clear(): void {
+    this.held.clear();
+  }
 }

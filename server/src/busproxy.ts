@@ -120,7 +120,7 @@ export class BusProxy implements Endpoint {
     private readonly control: DBus,
     private readonly hostPath: string,
     private readonly at: ProxyAddress,
-    target: PortalTarget,
+    private readonly target: PortalTarget,
   ) {
     this.portal = FileChooserPortal.attach(this, target);
   }
@@ -415,6 +415,11 @@ export class BusProxy implements Endpoint {
   /** The browser answered a dialog. */
   respond(id: string, uris: string[] | null): void {
     this.portal.respond(id, uris);
+  }
+
+  /** A window came back: show it the dialogs still waiting. */
+  redeliver(): void {
+    this.portal.redeliver(this.target);
   }
 
   close(): void {

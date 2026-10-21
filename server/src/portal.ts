@@ -64,6 +64,8 @@ interface Pending {
   path: string;
   sender: string;
   target: PortalTarget;
+  /** What was asked, so a window that comes back can be shown it again. */
+  request: PortalRequest;
 }
 
 /* Response codes, from the Request interface. */
@@ -255,7 +257,7 @@ export class FileChooserPortal {
       files,
     };
 
-    this.pending.set(path, { path, sender, target });
+    this.pending.set(path, { path, sender, target, request });
     bus.reply(msg, 'o', [path]);
     target.deliver(request);
   }
@@ -284,6 +286,17 @@ export class FileChooserPortal {
   /** Whether `id` is a request of ours still waiting for an answer. */
   has(id: string): boolean {
     return this.pending.has(id);
+  }
+
+  /**
+   * Shows a target everything still waiting on it. For a window that lost its
+   * browser and got it back: the dialog the application asked for in between
+   * was delivered to nobody, and the application is still waiting on it.
+   */
+  redeliver(target: PortalTarget): void {
+    for (const pending of this.pending.values()) {
+      if (pending.target === target) target.deliver(pending.request);
+    }
   }
 
   /** A connection went away; its dialogs come down and nobody is told. */

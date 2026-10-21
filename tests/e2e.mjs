@@ -50,8 +50,10 @@ const call = (svc, m, a) =>
 const helloSeen = new Promise((resolve) => {
   ws.on('message', (data, isBinary) => {
     if (isBinary) {
-      // Binary frame: [opcode][4-byte channel id][payload]
+      // Binary frame: [opcode][4-byte channel id][payload]; a slice (0x02)
+      // carries a piece of a larger payload after a sixth header byte.
       if (data[0] === 0x01) ptyOutput += decoder.decode(data.subarray(5));
+      else if (data[0] === 0x02) ptyOutput += decoder.decode(data.subarray(6));
       return;
     }
     const msg = JSON.parse(data.toString());

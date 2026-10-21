@@ -2,6 +2,7 @@ import {
   CLOSE_REVOKED,
   decodeBinaryFrame,
   encodeBinaryFrame,
+  SliceAssembler,
   type ClientMessage,
   type HostInfo,
   type ServerMessage,
@@ -108,6 +109,7 @@ const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 15000];
  */
 export class RpcClient {
   readonly events = new Emitter<RpcEvents>();
+  private readonly slices = new SliceAssembler();
   services: ServiceDescriptor[] = [];
   host: HostInfo | null = null;
   state: ConnectionState = 'closed';
@@ -239,12 +241,17 @@ export class RpcClient {
   /** @internal */
   releaseChannel(id: number): void {
     this.channels.delete(id);
+    this.slices.forget(id);
   }
 
   private onMessage(ev: MessageEvent): void {
     if (ev.data instanceof ArrayBuffer) {
       const frame = decodeBinaryFrame(new Uint8Array(ev.data));
-      if (frame) this.channels.get(frame.channelId)?.handlers.onBinary?.(frame.payload);
+      if (!frame) return;
+      // A large payload arrives in pieces, with everything else allowed in
+      // between them; the channel sees it whole.
+      const payload = this.slices.push(frame);
+      if (payload) this.channels.get(frame.channelId)?.handlers.onBinary?.(payload);
       return;
     }
 
@@ -306,6 +313,7 @@ export class RpcClient {
 
     for (const channel of [...this.channels.values()]) channel.markClosed(reason);
     this.channels.clear();
+    this.slices.clear();
 
     // A fresh `ready()` should wait for the next hello, not resolve instantly.
     this.readyPromise = null;

@@ -242,6 +242,16 @@ struct wdc_surface {
 	bool awaiting_ack;
 	uint32_t frame_sent_ms;
 
+	/*
+	 * What the browser has been shown, kept whole. A commit is copied out of
+	 * the client's buffer and the buffer released, so nothing else here can
+	 * draw the window again — and a browser that lost its connection and got
+	 * it back needs exactly that (IPC_RESYNC). One RGBA copy per surface at
+	 * the window's size; damage rectangles land on it as they go out.
+	 */
+	unsigned char *canvas;
+	int32_t canvas_w, canvas_h;
+
 	struct wdc_xdg_surface *xdg;
 	struct wdc_subsurface *sub;
 
@@ -467,25 +477,15 @@ static struct wdc_rect damage_bounds(struct wdc_surface *surface,
 	return (struct wdc_rect){x0, y0, x1 - x0, y1 - y0};
 }
 
-/* Stage 2 sink: the damaged rectangle, deflated, down the pipe. */
-static void emit_frame_ipc(struct wdc_surface *surface,
-		struct wl_shm_buffer *shm, struct wdc_rect win) {
+/*
+ * The rectangle `d` of a window `win_w` x `win_h`, whose pixels are `rgba`,
+ * deflated and sent down the pipe. The one place a frame leaves from, so the
+ * pacing state is kept here too.
+ */
+static void send_frame(struct wdc_surface *surface, struct wdc_rect d,
+		int32_t win_w, int32_t win_h, const unsigned char *rgba) {
 	struct wdc_server *server = surface->server;
-
-	surface_announce(surface);
-
-	bool resized = surface->sent_width != win.width ||
-		surface->sent_height != win.height;
-	struct wdc_rect d = damage_bounds(surface, win, resized);
-
 	size_t raw_len = (size_t)d.width * (size_t)d.height * 4;
-	unsigned char *rgba = malloc(raw_len);
-	if (!rgba) return;
-	if (!convert_to_rgba(shm, win.x + d.x, win.y + d.y, d.width, d.height,
-			rgba)) {
-		free(rgba);
-		return;
-	}
 
 	/*
 	 * Interface pixels deflate to a fraction of their size, and level 1 costs
@@ -511,8 +511,8 @@ static void emit_frame_ipc(struct wdc_surface *surface,
 	ipc_put_u32(head + 8, (uint32_t)d.y);
 	ipc_put_u32(head + 12, (uint32_t)d.width);
 	ipc_put_u32(head + 16, (uint32_t)d.height);
-	ipc_put_u32(head + 20, (uint32_t)win.width);
-	ipc_put_u32(head + 24, (uint32_t)win.height);
+	ipc_put_u32(head + 20, (uint32_t)win_w);
+	ipc_put_u32(head + 24, (uint32_t)win_h);
 	head[28] = flags;
 
 	if (ipc_send(server->ipc, IPC_FRAME, head, sizeof head, payload,
@@ -521,18 +521,70 @@ static void emit_frame_ipc(struct wdc_surface *surface,
 		server->running = false;
 	}
 
-	surface->sent_width = win.width;
-	surface->sent_height = win.height;
+	surface->sent_width = win_w;
+	surface->sent_height = win_h;
 	surface->awaiting_ack = true;
 	surface->frame_sent_ms = now_ms();
 	server->frames_written++;
 
 	logdbg("frame w%u  %d,%d %dx%d of %dx%d  %zu -> %zu bytes", surface->id,
-		d.x, d.y, d.width, d.height, win.width, win.height, raw_len,
-		payload_len);
+		d.x, d.y, d.width, d.height, win_w, win_h, raw_len, payload_len);
 
 	free(comp);
+}
+
+/* Lands the rectangle just converted on the kept copy of the window. */
+static void canvas_update(struct wdc_surface *surface, struct wdc_rect d,
+		int32_t win_w, int32_t win_h, const unsigned char *rgba) {
+	if (surface->canvas_w != win_w || surface->canvas_h != win_h) {
+		free(surface->canvas);
+		surface->canvas = calloc((size_t)win_w * (size_t)win_h, 4);
+		surface->canvas_w = win_w;
+		surface->canvas_h = win_h;
+	}
+	if (!surface->canvas) return;
+	for (int32_t y = 0; y < d.height; y++) {
+		memcpy(surface->canvas + ((size_t)(d.y + y) * (size_t)win_w +
+				(size_t)d.x) * 4,
+			rgba + (size_t)y * (size_t)d.width * 4,
+			(size_t)d.width * 4);
+	}
+}
+
+/* Stage 2 sink: the damaged rectangle, deflated, down the pipe. */
+static void emit_frame_ipc(struct wdc_surface *surface,
+		struct wl_shm_buffer *shm, struct wdc_rect win) {
+	surface_announce(surface);
+
+	bool resized = surface->sent_width != win.width ||
+		surface->sent_height != win.height;
+	struct wdc_rect d = damage_bounds(surface, win, resized);
+
+	size_t raw_len = (size_t)d.width * (size_t)d.height * 4;
+	unsigned char *rgba = malloc(raw_len);
+	if (!rgba) return;
+	if (!convert_to_rgba(shm, win.x + d.x, win.y + d.y, d.width, d.height,
+			rgba)) {
+		free(rgba);
+		return;
+	}
+
+	canvas_update(surface, d, win.width, win.height, rgba);
+	send_frame(surface, d, win.width, win.height, rgba);
 	free(rgba);
+}
+
+/*
+ * The window again, whole, from the kept copy. For a browser that was away:
+ * what it holds is gone with its page or stale, and the application will not
+ * draw again until its last frame is acknowledged — which that browser never
+ * did. A frame set to awaiting acknowledgement, exactly as a fresh one is.
+ */
+static void emit_canvas_frame(struct wdc_surface *surface) {
+	if (!surface->canvas || !surface->server->ipc) return;
+	struct wdc_rect full = {0, 0, surface->canvas_w, surface->canvas_h};
+	send_frame(surface, full, surface->canvas_w, surface->canvas_h,
+		surface->canvas);
 }
 
 /* Stage 1 sink: a PNG per commit, for looking at without a browser. */
@@ -896,6 +948,7 @@ static void surface_resource_destroy(struct wl_resource *resource) {
 	wl_resource_for_each_safe(cb, tmp, &surface->pending_frames) {
 		wl_resource_destroy(cb);
 	}
+	free(surface->canvas);
 	if (surface->xdg) surface->xdg->surface = NULL;
 	if (surface->sub) {
 		/* The role object may outlive the surface; it must not point here. */
@@ -3017,6 +3070,36 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		if (len < 4) return;
 		struct wdc_surface *acked = find_surface(server, ipc_get_u32(payload));
 		if (acked) surface_release_frames(acked);
+		break;
+	}
+
+	case IPC_RESYNC: {
+		/*
+		 * A browser that was away is back and holds nothing: every window,
+		 * popup and subsurface is announced again, parents before the things
+		 * placed against them, and then each is drawn whole from the kept
+		 * copy. Announcing is idempotent on the other side; drawing is what
+		 * costs, one full frame per surface, once.
+		 */
+		struct wdc_xdg_surface *w;
+		wl_list_for_each(w, &server->windows, link) {
+			if (!w->announced) continue;
+			w->announced = false;
+			window_announce(w);
+			if (w->toplevel) toplevel_send_bounds(w->toplevel);
+		}
+		struct wdc_subsurface *sub;
+		wl_list_for_each(sub, &server->subsurfaces, server_link) {
+			if (!sub->announced || !sub->surface || !sub->parent) continue;
+			sub->announced = false;
+			subsurface_announce(sub);
+		}
+		wl_list_for_each(w, &server->windows, link) {
+			if (w->announced && w->surface) emit_canvas_frame(w->surface);
+		}
+		wl_list_for_each(sub, &server->subsurfaces, server_link) {
+			if (sub->announced && sub->surface) emit_canvas_frame(sub->surface);
+		}
 		break;
 	}
 

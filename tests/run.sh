@@ -166,6 +166,8 @@ export WD_TOKEN="test-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
 TOKEN="$WD_TOKEN"
 # Short enough that "nobody came back for it" can be checked in a test.
 export WD_TERMINAL_GRACE=3
+# The same for a native window left without its browser; see tests/wayland.mjs.
+export WD_WINDOW_GRACE=3
 
 if [ ! -f "$SERVER" ]; then
   echo "Server is not built. Run: npm run build" >&2
@@ -240,6 +242,7 @@ run "outbound session + relay"    node tests/outbound.mjs
 run "host registry"               npx tsx tests/hosts.test.ts
 run "standalone stays standalone" npx tsx tests/standalone.test.ts
 run "session deadman"             npx tsx tests/deadman.test.ts
+run "the session's socket"        npx tsx tests/session.test.ts
 run "session store"               npx tsx tests/session-store.test.ts
 run "file associations"           npx tsx tests/assoc.test.ts
 run "the desktop clipboard"       npx tsx tests/clipboard.test.ts

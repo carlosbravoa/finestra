@@ -16,6 +16,20 @@ reasoning behind a change is in its commit; the failures that cost time are in
 - **Files chosen in a snap are handed over as paths.** A snap reads them
   through its home interface: files in hidden directories or outside the home
   directory are not readable to it.
+- **An application survives losing the browser's connection.** The
+  connection dropping used to close the application at once; on a link that
+  drops for a second every few minutes, nothing with a slow start was ever
+  usable. The application now keeps running for an hour after the connection
+  goes, and the window picks it back up when the connection is back, or when
+  the page is reloaded. `WD_WINDOW_GRACE` changes the hour, and `0` restores
+  the old behaviour. Closing the window still closes the application.
+- **A slow connection no longer freezes the whole desktop, and no longer
+  gets cut off.** A window's picture went to the browser as one message, and
+  the terminal, the keyboard and the server's own keepalive all waited
+  behind it; on a slow link the keepalive gave up and the server dropped the
+  connection. Pictures now travel in small pieces with everything else
+  allowed in between, and a connection that is still taking data is never
+  mistaken for a dead one.
 
 ## 0.3.14 — 2026-10-20
 

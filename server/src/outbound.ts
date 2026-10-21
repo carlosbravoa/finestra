@@ -58,28 +58,22 @@ export function dialOut(opts: OutboundOptions): { stop: () => void } {
     socket = ws;
 
     // The relay is the only thing that can tell us the far end went away, so
-    // keep the connection provably alive rather than trusting it.
-    let alive = true;
+    // keep the connection provably alive rather than trusting it. The session
+    // judges, once there is one: it knows about bytes the far side took, not
+    // only about pongs.
+    let session: Session | null = null;
     const ping = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) return;
-      if (!alive) {
-        ws.terminate();
-        return;
-      }
-      alive = false;
-      ws.ping();
+      session?.tick(PING_MS);
     }, PING_MS);
     ping.unref();
-    ws.on('pong', () => {
-      alive = true;
-    });
 
     ws.on('open', () => {
       retry = RETRY_MIN_MS;
       opts.onState?.('connected', opts.url);
       // From here it is an ordinary session. Nothing below this line knows
       // which way the connection was opened.
-      new Session(ws, opts.services, opts.config, opts.host, { viaRelay: true });
+      session = new Session(ws, opts.services, opts.config, opts.host, { viaRelay: true });
     });
 
     const reconnect = (why: string) => {

@@ -41,7 +41,9 @@ const hello = await new Promise((resolve, reject) => {
     if (isBinary) {
       const buf = Buffer.from(raw);
       const channel = channels.get(buf.readUInt32BE(1));
-      if (channel) channel.binary.push(buf.subarray(5));
+      if (!channel) return;
+      // A piece of something larger (0x02) has one more header byte.
+      channel.binary.push(buf.subarray(buf[0] === 0x02 ? 6 : 5));
       return;
     }
     const msg = JSON.parse(raw.toString());

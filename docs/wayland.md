@@ -644,12 +644,92 @@ application's *Open File* dialog at the Files app.
    machine's own bus that snaps share — and answers `FileChooser` with a
    dialog drawn by the shell over the application's window
    (`client/src/apps/wayland/chooser.ts`). See "What stage 7 settled".
-8. **Later, if something demands it.** dmabuf import for GPU applications;
+8. **The connection.** ✅ A dropped socket no longer ends the application,
+   and a slow one no longer freezes the desktop or gets cut off. The session
+   waits `WD_WINDOW_GRACE` for its window to come back and the compositor
+   redraws everything on request (`IPC_RESYNC`); frames travel in 16 KB
+   pieces with the terminal and the keepalive allowed in between. See "What
+   stage 8 settled".
+9. **Later, if something demands it.** dmabuf import for GPU applications;
    H.264 for animated content; Xwayland (it is just another Wayland client, but
    it drags a full X11 window-management job behind it); audio over PipeWire.
 
 Stages 1–3 are the small half. Stage 4 is where the time goes, and it is what
 decides whether this feels like a desktop or a demo.
+
+## What stage 8 settled
+
+**The complaint was a frozen terminal clock, and the cause was Firefox.**
+From a remote link — Tailscale, 150 ms round trips, about 1% loss — a
+terminal showing the time every two seconds stopped the moment Firefox drew
+its first frame, and stayed stopped until Firefox was killed thirty to eighty
+seconds later. `ss -tnio` on the listening port told the story the browser
+could not: a congestion window that had collapsed to two segments, so the
+link was carrying 15 to 60 KB/s, and a Firefox frame deflates to about half a
+megabyte. One socket carries everything a desktop says, in order. The frame
+went out as one message, the terminal's hundred bytes waited behind it, and
+so did the server's keepalive ping, which gave up after thirty seconds, cut
+the connection, and tore the session down — which killed the application
+that had drawn the frame. Then the browser reconnected, session restore
+relaunched Firefox, and the cycle began again. Nothing in this is visible on
+a local connection: loopback has no congestion window to collapse, which is
+why the only honest measurement is on the port while the person is
+connected.
+
+**Frames go out in pieces, one at a time.** `Session.sendBinary` slices any
+payload over 16 KB and sends the next piece only when the socket has taken
+the last (`ws.send`'s callback). A JSON message or a small frame sent
+meanwhile goes out between two pieces instead of behind the whole payload.
+Within a channel the order holds — once a channel has something queued,
+everything of its goes through the queue — and across channels it does not
+need to. The browser puts the pieces back together before the channel sees
+them (`SliceAssembler` in `shared/protocol.ts`). The frame itself is not
+smaller, so on a slow link Firefox is slow; what changes is that the
+terminal keeps ticking beside it and nobody is cut off.
+
+**The keepalive counts bytes taken, not only pongs.** The ping is a frame in
+the same stream, so it waits in the same jam as everything else. `Session`
+now keeps a `lastSeen` fed by messages, pongs *and* every piece the socket
+accepts; `tick()` pings only a connection that has shown none of these for a
+whole interval, and cuts one that has still shown none an interval later. A
+slow link that is still moving is alive by definition.
+
+**A lost connection is not a closed window.** `Session.dispose()` had
+always told every channel whether it was lost rather than closed; the
+terminal used it to keep the shell for an hour (stage "0.3.7"), and the
+Wayland service ignored it and called `stop()` either way. Now a session
+registers under an id its window holds, sends through a replaceable `out`
+rather than the channel context it was opened with, and on a lost channel
+waits `WD_WINDOW_GRACE` seconds (an hour by default, three in the suite)
+for `wayland.attach {id}`. The application needs no telling: it has a frame
+outstanding that nobody will acknowledge, so its frame callback is held and
+it stops drawing on its own. The window saves the id with its state, so a
+reload restores onto the running application instead of launching a second
+copy — which also retires the reload-into-a-dying-twin race from 0.3.0 for
+the common case.
+
+**The compositor keeps a copy, because it threw the original away.** A
+commit is copied out of the client's buffer and the buffer released at once,
+so until now nothing could draw a window again without the application
+drawing it. A window that comes back after a drop, or after a reload, holds
+nothing. `wdcomp` now lands every damage rectangle on a per-surface
+`canvas` as it goes out, and `IPC_RESYNC` announces every window, popup and
+subsurface again, parents first, and resends each whole from its canvas —
+set to awaiting acknowledgement exactly as a fresh frame is, so the first
+ack from the returning browser is what lets the application draw again.
+Announcing twice is harmless on the browser side; the one cost is a full
+frame per surface, once. Dialogs the application asked for while nobody was
+watching are kept by the portal and shown again on attach.
+
+**Verified with the Firefox snap, behind a relay that can be cut.** The
+suite checks the mechanism with its fixture application: drop the socket,
+the compositor survives; attach, the window and a whole frame arrive, a
+resize is drawn; a newer window displaces the older one and is told; nobody
+comes back and the grace period ends it. The real check runs the Firefox
+snap through the shell in headless Chromium with a TCP relay in front of
+the server: every connection destroyed mid-session, the page reloaded, then
+Ctrl+O. Firefox was drawn again after both, the file dialog opened, and the
+journal showed one `snap.firefox` scope started for the whole run.
 
 ## What stage 7 settled
 

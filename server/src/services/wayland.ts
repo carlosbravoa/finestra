@@ -1,9 +1,10 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Duplex } from 'node:stream';
-import { ServiceError, type Service } from '../service.js';
+import { ServiceError, type ChannelContext, type OpenedChannel, type Service } from '../service.js';
 import { FileChooserPortal, type PortalTarget } from '../portal.js';
 import { BusProxy, abstractSocketsWork } from '../busproxy.js';
 
@@ -43,6 +44,7 @@ const MSG_POINTER = 'P';
 const MSG_KEY = 'D';
 const MSG_FOCUS = 'G';
 const MSG_PASTE = 'Y';
+const MSG_RESYNC = 'Q';
 
 /** A clipboard is text, not a file transfer. */
 const MAX_CLIPBOARD_BYTES = 1024 * 1024;
@@ -870,6 +872,25 @@ let sessionCounter = 0;
  */
 const liveApps = new Map<string, Set<Promise<void>>>();
 
+/**
+ * Every session whose application is running, by the id its window holds.
+ *
+ * A session outlives its channel the way a terminal does (pty.ts): when the
+ * browser's connection drops, the compositor and the application stay for a
+ * grace period, and the window picks them back up by id when it is back —
+ * from the same tab, or from a reload that restored it. The id is a
+ * capability known to the browser that started the session and nobody else;
+ * nothing lists these. Before this, a dropped connection was a closed
+ * channel, and a closed channel killed the application: on a link that drops
+ * for a second every few minutes, nothing with a slow start ever lived long
+ * enough to be used.
+ */
+interface RunningSession {
+  attach(ctx: ChannelContext): OpenedChannel;
+  isAlive(): boolean;
+}
+const running = new Map<string, RunningSession>();
+
 export const waylandService: Service = {
   name: 'wayland',
 
@@ -982,6 +1003,28 @@ export const waylandService: Service = {
       if (!app) throw new ServiceError('Unknown application', 'ENOAPP');
 
       /*
+       * Where this session speaks to. A channel context until the browser
+       * goes away, nothing while it is away, and the next window's context
+       * once one attaches — so everything below sends through these and
+       * never holds `ctx` itself. Frames sent to nobody are dropped: the
+       * compositor keeps the picture and draws it again on resync.
+       */
+      const sessionId = randomUUID();
+      const grace = ctx.config.windowGrace;
+      let out: ChannelContext | null = ctx;
+      let graceTimer: NodeJS.Timeout | undefined;
+      const send = (message: unknown) => out?.send(message);
+      const sendBinary = (bytes: Uint8Array) => out?.sendBinary(bytes);
+      /** The session is over, with a reason for whoever is listening. */
+      const finish = (error?: string) => {
+        running.delete(sessionId);
+        if (graceTimer) clearTimeout(graceTimer);
+        const target = out;
+        out = null;
+        target?.close(error);
+      };
+
+      /*
        * Never launch alongside a doomed twin. Reloading the tab relaunches
        * the application via session restore *before* the dead tab's close is
        * even seen — so the new instance found the old one's singleton socket
@@ -1076,8 +1119,8 @@ export const waylandService: Service = {
        * suite's fake snap, on a developer's machine.
        */
       const portalTarget: PortalTarget = {
-        deliver: (request) => ctx.send({ t: 'portal', ...request }),
-        dismiss: (id) => ctx.send({ t: 'portal-close', id }),
+        deliver: (request) => send({ t: 'portal', ...request }),
+        dismiss: (id) => send({ t: 'portal-close', id }),
       };
       let proxy: BusProxy | null = null;
       const snapName = hostBus ? snapNameOf(app.argv) : null;
@@ -1093,7 +1136,7 @@ export const waylandService: Service = {
             proxy = await BusProxy.open(hostBus, { path: path.join(dir, `wd-bus-${socketName}`) }, portalTarget);
           }
         } catch (err) {
-          ctx.send({ t: 'log', message: `bus proxy: ${(err as Error).message}` });
+          send({ t: 'log', message: `bus proxy: ${(err as Error).message}` });
         }
       }
 
@@ -1231,7 +1274,7 @@ export const waylandService: Service = {
           if (buffered.length < 4) break;
           const length = buffered.readUInt32BE(0);
           if (length === 0 || length > MAX_MESSAGE) {
-            ctx.close('The compositor sent a malformed message');
+            finish('The compositor sent a malformed message');
             stop();
             return;
           }
@@ -1257,7 +1300,7 @@ export const waylandService: Service = {
         switch (type) {
           case MSG_FRAME:
             // Straight through: header plus pixels, no JSON in the way.
-            ctx.sendBinary(body);
+            sendBinary(body);
             break;
 
           case MSG_WINDOW: {
@@ -1266,7 +1309,7 @@ export const waylandService: Service = {
             liveWindows.add(body.readUInt32BE(0));
             const [title, next] = readString(body, 16);
             const [appId] = readString(body, next);
-            ctx.send({
+            send({
               t: 'window',
               id: body.readUInt32BE(0),
               width: body.readUInt32BE(4),
@@ -1281,7 +1324,7 @@ export const waylandService: Service = {
 
           case MSG_POPUP:
             if (body.length < 24) return;
-            ctx.send({
+            send({
               t: 'popup',
               id: body.readUInt32BE(0),
               parent: body.readUInt32BE(4),
@@ -1295,7 +1338,7 @@ export const waylandService: Service = {
 
           case MSG_SUBSURFACE:
             if (body.length < 21) return;
-            ctx.send({
+            send({
               t: 'subsurface',
               id: body.readUInt32BE(0),
               parent: body.readUInt32BE(4),
@@ -1313,7 +1356,7 @@ export const waylandService: Service = {
 
           case MSG_BOUNDS:
             if (body.length < 20) return;
-            ctx.send({
+            send({
               t: 'bounds',
               id: body.readUInt32BE(0),
               minWidth: body.readUInt32BE(4),
@@ -1325,21 +1368,21 @@ export const waylandService: Service = {
 
           case MSG_MOVE:
             if (body.length < 4) return;
-            ctx.send({ t: 'move', id: body.readUInt32BE(0) });
+            send({ t: 'move', id: body.readUInt32BE(0) });
             break;
 
           case MSG_CURSOR:
             if (body.length < 4) return;
-            ctx.send({ t: 'cursor', shape: body.readUInt32BE(0) });
+            send({ t: 'cursor', shape: body.readUInt32BE(0) });
             break;
 
           case MSG_COPY:
-            ctx.send({ t: 'copy', text: body.toString('utf8') });
+            send({ t: 'copy', text: body.toString('utf8') });
             break;
 
           case MSG_RESIZE:
             if (body.length < 8) return;
-            ctx.send({
+            send({
               t: 'resize',
               id: body.readUInt32BE(0),
               edges: body.readUInt32BE(4),
@@ -1349,18 +1392,18 @@ export const waylandService: Service = {
           case MSG_TITLE: {
             if (body.length < 4) return;
             const [title] = readString(body, 4);
-            ctx.send({ t: 'title', id: body.readUInt32BE(0), title });
+            send({ t: 'title', id: body.readUInt32BE(0), title });
             break;
           }
 
           case MSG_CLOSED:
             if (body.length < 4) return;
             liveWindows.delete(body.readUInt32BE(0));
-            ctx.send({ t: 'closed', id: body.readUInt32BE(0) });
+            send({ t: 'closed', id: body.readUInt32BE(0) });
             break;
 
           case MSG_LOG:
-            ctx.send({ t: 'log', message: body.toString('utf8') });
+            send({ t: 'log', message: body.toString('utf8') });
             break;
 
           case MSG_CLIENT:
@@ -1383,7 +1426,7 @@ export const waylandService: Service = {
                 ownPortal = portal;
               },
               (err: Error) => {
-                ctx.send({ t: 'log', message: `portal: ${err.message}` });
+                send({ t: 'log', message: `portal: ${err.message}` });
               },
             );
             break;
@@ -1457,7 +1500,7 @@ export const waylandService: Service = {
         const text = chunk.toString('utf8');
         stderrTail = (stderrTail + text).slice(-4000);
         for (const line of text.split('\n')) {
-          if (line.trim()) ctx.send({ t: 'log', message: line.trim() });
+          if (line.trim()) send({ t: 'log', message: line.trim() });
         }
       });
 
@@ -1466,7 +1509,7 @@ export const waylandService: Service = {
         markStopped();
         releasePortal();
         liveApps.get(app.id)?.delete(stopped);
-        ctx.close(`Could not start the compositor: ${err.message}`);
+        finish(`Could not start the compositor: ${err.message}`);
       });
 
       /*
@@ -1545,7 +1588,7 @@ export const waylandService: Service = {
         if (killTimer) clearTimeout(killTimer);
         // We asked, so there is nothing to explain.
         if (stopping) {
-          ctx.close();
+          finish();
           return;
         }
         /*
@@ -1555,23 +1598,22 @@ export const waylandService: Service = {
          * unhelpful and about the wrong process.
          */
         if (!sawWindow) {
-          ctx.close(explainSilentExit());
+          finish(explainSilentExit());
           return;
         }
         if (code === 0) {
-          ctx.close();
+          finish();
           return;
         }
         const how = signal ? `killed by ${signal}` : `exited (${code})`;
-        ctx.close(`The application ${how}`);
+        finish(`The application ${how}`);
       });
 
       channel.on('error', () => {
         // The pipe dies with the process; `exit` reports the real reason.
       });
 
-      return {
-        info: {
+      const info = {
         app: app.id,
         name: app.name,
         width,
@@ -1581,7 +1623,15 @@ export const waylandService: Service = {
         /* Names this session's processes exactly, which is what makes
          * "did it get cleaned up?" answerable. */
         socket: socketName,
-      },
+        /* What a window keeps to pick this session back up, and for how long
+         * the session waits for it. */
+        id: sessionId,
+        grace,
+      };
+
+      /** The handlers for whichever channel currently shows this session. */
+      const bind = (target: ChannelContext): OpenedChannel => ({
+        info,
 
         onCtl(method: string, ctlArgs: any) {
           if (!alive) return;
@@ -1640,13 +1690,66 @@ export const waylandService: Service = {
           }
         },
 
-        onClose() {
+        onClose(lost?: boolean) {
+          // Displaced by a newer window: the session is theirs now.
+          if (out !== target) return;
+          out = null;
+          if (!alive) return;
+          /*
+           * The socket went, not the window. Keep everything for the grace
+           * period: the application has a frame outstanding that nobody will
+           * acknowledge, so it stops drawing on its own, and a window that
+           * comes back is shown the picture again by the compositor.
+           */
+          if (lost && grace > 0) {
+            graceTimer = setTimeout(stop, grace * 1000);
+            graceTimer.unref();
+            return;
+          }
           stop();
           if (stderrTail && process.env.WD_DEV === '1') {
             console.error(`[wayland] session ended:\n${stderrTail}`);
           }
         },
+      });
+
+      /**
+       * A window picks the session up. The newest window wins, as with a
+       * terminal; the compositor is asked for every surface again and the
+       * dialogs the application is still waiting on are shown again.
+       */
+      const attach = (target: ChannelContext): OpenedChannel => {
+        const previous = out;
+        if (previous) {
+          out = null;
+          previous.close('Attached from another window');
+        }
+        if (graceTimer) {
+          clearTimeout(graceTimer);
+          graceTimer = undefined;
+        }
+        out = target;
+        sendToCompositor(MSG_RESYNC);
+        if (ownPortal) ownPortal.redeliver(portalTarget);
+        else proxy?.redeliver();
+        return bind(target);
       };
+
+      running.set(sessionId, { attach, isAlive: () => alive });
+      return bind(ctx);
+    },
+
+    /**
+     * Picks up a session left running by a window that went away — a dropped
+     * connection, or a reload restoring the window. Refused once the
+     * application has exited or the grace period has run out.
+     */
+    attach(args: { id?: unknown }, ctx) {
+      const entry = typeof args?.id === 'string' ? running.get(args.id) : undefined;
+      if (!entry || !entry.isAlive()) {
+        throw new ServiceError('That application is gone', 'ENOSESSION');
+      }
+      return entry.attach(ctx);
     },
   },
 };

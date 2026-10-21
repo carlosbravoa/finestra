@@ -57,7 +57,10 @@ async function connect() {
     ws.on('message', (data, isBinary) => {
       if (isBinary) {
         const ch = channels.get(data.readUInt32BE(1));
+        // Whole (0x01) or a piece of something larger (0x02, one more header
+        // byte); for a byte stream, appending the pieces in order is the whole.
         if (ch && data[0] === 0x01) ch.bytes.push(Buffer.from(data.subarray(5)));
+        else if (ch && data[0] === 0x02) ch.bytes.push(Buffer.from(data.subarray(6)));
         return;
       }
       const msg = JSON.parse(data.toString());

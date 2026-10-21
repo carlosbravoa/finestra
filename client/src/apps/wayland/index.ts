@@ -202,6 +202,16 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
   let mainId: number | null = null;
   let currentApp: string | null =
     typeof params.appId === 'string' ? params.appId : null;
+  /**
+   * The server-side session this window shows, once it has one. It outlives
+   * the connection: when the socket drops the application keeps running for
+   * a grace period, and this is what picks it back up — from here when the
+   * client reconnects, or from a restored window after a reload, which is
+   * why it is saved with the state.
+   */
+  let sessionId: string | null = typeof params.attach === 'string' ? params.attach : null;
+  /** The socket went under a live session; attach again once it is back. */
+  let awaitingReconnect = false;
   let minWidth = 0;
   let minHeight = 0;
 
@@ -1124,8 +1134,82 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     closeAskedAt = 0;
   }
 
+  /**
+   * The handlers both ways of getting a session use — starting one, and
+   * picking one back up. `resuming` is the id being picked up, so a refusal
+   * can be told from an application that ran and then closed.
+   */
+  function sessionHandlers(appId: string, resuming: string | null) {
+    let opened = false;
+    return {
+      onOpen: (info: unknown) => {
+        opened = true;
+        const got = info as { name?: string; id?: string } | undefined;
+        currentName = got?.name ?? appId;
+        sessionId = got?.id ?? null;
+        if (resuming) {
+          // The compositor announces every surface again and draws each one
+          // whole; what this window held is from before and goes.
+          reset();
+          showMessage('Reconnecting…', 'Waiting for the application to draw again.');
+          win.setStatus('Reconnecting…');
+        }
+      },
+      onData: handleMessage,
+      onBinary: applyFrame,
+      onClose: (error?: string) => {
+        channel = null;
+        if (disposed) return;
+
+        // The socket went, not the application: the server keeps it for a
+        // while, so keep the picture and pick it back up on reconnect.
+        if (!desktop.rpc.isOpen() && sessionId) {
+          awaitingReconnect = true;
+          win.setStatus('Disconnected — the application keeps running until you are back');
+          return;
+        }
+
+        // The session we meant to pick up is gone — the application exited
+        // while we were away, or the grace period ran out. Start it afresh.
+        if (resuming && !opened) {
+          sessionId = null;
+          start(appId);
+          return;
+        }
+
+        sessionId = null;
+        const started = mainId !== null;
+        reset();
+        showMessage(
+          started ? 'The application closed' : 'The application did not start',
+          error ?? (started ? 'It exited normally.' : 'It exited before opening a window.'),
+          () => start(appId),
+        );
+      },
+    };
+  }
+
+  /** Picks the session back up, from this tab or a restored window. */
+  function attach(appId: string, id: string): void {
+    currentApp = appId;
+    win.setStatus('Picking the application back up…');
+    channel = desktop.rpc.openChannel('wayland', 'attach', { id }, sessionHandlers(appId, id));
+  }
+
+  // Pick the session back up once the client is back, so a dropped connection
+  // heals itself: the compositor draws every window again.
+  cleanups.push(
+    desktop.rpc.events.on('state', (state) => {
+      if (state !== 'open' || disposed || !awaitingReconnect || channel) return;
+      awaitingReconnect = false;
+      if (sessionId && currentApp) attach(currentApp, sessionId);
+      else if (currentApp) start(currentApp);
+    }),
+  );
+
   function start(appId: string): void {
     currentApp = appId;
+    sessionId = null;
     reset();
 
     showMessage('Starting…', 'Waiting for the application to draw its first frame.');
@@ -1156,25 +1240,7 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         layout: layout || undefined,
         scale: displayScale(),
       },
-      {
-        onOpen: (info) => {
-          const opened = info as { name?: string } | undefined;
-          currentName = opened?.name ?? appId;
-        },
-        onData: handleMessage,
-        onBinary: applyFrame,
-        onClose: (error) => {
-          channel = null;
-          if (disposed) return;
-          const started = mainId !== null;
-          reset();
-          showMessage(
-            started ? 'The application closed' : 'The application did not start',
-            error ?? (started ? 'It exited normally.' : 'It exited before opening a window.'),
-            () => start(appId),
-          );
-        },
-      },
+      sessionHandlers(appId, null),
     );
   }
 
@@ -1375,6 +1441,9 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         // The window closed while we were asking.
       } else if (!status.available) {
         showUnavailable(status, () => void checkAndStart());
+      } else if (currentApp && sessionId) {
+        // Restored after a reload: the application may well still be running.
+        attach(currentApp, sessionId);
       } else if (currentApp) {
         start(currentApp);
       } else {
@@ -1425,7 +1494,8 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
       if (mainId !== null) channel?.ctl('focus', { id: mainId, focused: false });
     },
 
-    saveState: () => (currentApp ? { appId: currentApp } : undefined),
+    saveState: () =>
+      currentApp ? { appId: currentApp, attach: sessionId ?? undefined } : undefined,
 
     onClose: () => {
       // Nothing running, or it already went: close for real. The teardown

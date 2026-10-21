@@ -80,6 +80,7 @@ const hello = await new Promise((resolve, reject) => {
     if (isBinary) {
       const buf = Buffer.from(data);
       if (buf[0] === 0x01) ptyOut += decoder.decode(buf.subarray(5));
+      else if (buf[0] === 0x02) ptyOut += decoder.decode(buf.subarray(6));
       return;
     }
     const msg = JSON.parse(data.toString());

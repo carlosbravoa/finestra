@@ -34,7 +34,7 @@ const call = (svc, m, a) =>
 
 const open = (svc, m, a) => {
   const id = nextId++;
-  const state = { id, info: null, data: [], frames: [], closed: false, error: undefined };
+  const state = { id, info: null, data: [], frames: [], pieces: [], closed: false, error: undefined };
   channels.set(id, state);
   ws.send(JSON.stringify({ t: 'open', id, svc, m, a }));
   return state;
@@ -49,7 +49,18 @@ const hello = await new Promise((resolve, reject) => {
     if (isBinary) {
       const buf = Buffer.from(raw);
       const channel = channels.get(buf.readUInt32BE(1));
-      if (channel) channel.frames.push(buf.subarray(5));
+      if (!channel) return;
+      // A frame larger than a slice arrives in pieces (opcode 0x02, byte 5
+      // set on the last) so that other channels get a word in between; it
+      // is one frame once the last piece has landed.
+      if (buf[0] === 0x02) {
+        channel.pieces.push(buf.subarray(6));
+        if (buf[5] === 0) return;
+        channel.frames.push(Buffer.concat(channel.pieces));
+        channel.pieces = [];
+        return;
+      }
+      channel.frames.push(buf.subarray(5));
       return;
     }
     const msg = JSON.parse(raw.toString());
@@ -1001,6 +1012,143 @@ if (idle) {
   const cursors = messagesOf('cursor');
   check('the application drives the cursor shape', cursors.length > 0,
     cursors.map((c) => c.shape).join(','));
+}
+
+/* ------------------------------------------------------------------ */
+/* Surviving the browser's connection                                   */
+/* ------------------------------------------------------------------ */
+
+// A connection that dropped for a second used to be a closed channel, and a
+// closed channel killed the application. On a link that drops every few
+// minutes nothing with a slow start ever got used: Firefox was killed four
+// times in five minutes without once reaching the point of a keystroke. Now
+// the session is kept for WD_WINDOW_GRACE seconds (3 in the suite) and a
+// window picks it back up by id, from the same tab or from a reload.
+
+/** Another browser connection, with the same bookkeeping as the first. */
+const connectAnother = () =>
+  new Promise((resolve, reject) => {
+    const sock = new WebSocket(`ws://127.0.0.1:${PORT}/ws?t=${TOKEN}`);
+    let next = 1;
+    const chans = new Map();
+    const conn = {
+      ws: sock,
+      open: (svc, m, a) => {
+        const id = next++;
+        const state = { id, info: null, data: [], frames: [], pieces: [], closed: false, error: undefined };
+        chans.set(id, state);
+        sock.send(JSON.stringify({ t: 'open', id, svc, m, a }));
+        return state;
+      },
+      ctl: (channel, m, a) => sock.send(JSON.stringify({ t: 'ctl', id: channel.id, m, a })),
+    };
+    sock.on('error', reject);
+    sock.on('message', (raw, isBinary) => {
+      if (isBinary) {
+        const buf = Buffer.from(raw);
+        const channel = chans.get(buf.readUInt32BE(1));
+        if (!channel) return;
+        if (buf[0] === 0x02) {
+          channel.pieces.push(buf.subarray(6));
+          if (buf[5] === 0) return;
+          channel.frames.push(Buffer.concat(channel.pieces));
+          channel.pieces = [];
+          return;
+        }
+        channel.frames.push(buf.subarray(5));
+        return;
+      }
+      const msg = JSON.parse(raw.toString());
+      if (msg.t === 'hello') resolve(conn);
+      const c = chans.get(msg.id);
+      if (!c) return;
+      if (msg.t === 'opened') c.info = msg.d ?? {};
+      else if (msg.t === 'data') c.data.push(msg.d);
+      else if (msg.t === 'close') {
+        c.closed = true;
+        c.error = msg.e;
+      }
+    });
+  });
+
+{
+  const first = await connectAnother();
+  const held = first.open('wayland', 'session', { appId: target.id, width: 400, height: 300 });
+  const drew = await until(() => held.data.some((d) => d.t === 'window') && held.frames.length > 0, 15000);
+  check('a session to be dropped opened a window', drew, held.error ?? '');
+  const heldId = held.info?.id;
+  const heldSocket = held.info?.socket;
+  check('a session names itself, for a window to pick it back up by',
+    typeof heldId === 'string' && heldId.length > 0);
+  check('and says how long it waits for one', held.info?.grace === 3, String(held.info?.grace));
+
+  // The browser's connection drops mid-session: no close, just gone.
+  first.ws.terminate();
+  await sleep(1000);
+  check('the application survives the loss of its connection',
+    matching(`wdcomp --ipc -s ${heldSocket}`).length > 0);
+
+  const second = await connectAnother();
+  const picked = second.open('wayland', 'attach', { id: heldId });
+  const shown = await until(
+    () => picked.data.some((d) => d.t === 'window') && picked.frames.length > 0, 10000);
+  check('a window that comes back is shown the application again', shown,
+    picked.error ?? `${picked.data.length} messages, ${picked.frames.length} frames`);
+  check('and it is the same session, not a new launch',
+    picked.info?.id === heldId && picked.info?.socket === heldSocket,
+    `${picked.info?.socket} vs ${heldSocket}`);
+  if (shown) {
+    const announced = picked.data.find((d) => d.t === 'window');
+    const frame = decodeFrame(picked.frames[0]);
+    check('the frame it is shown is the whole window',
+      frame.x === 0 && frame.y === 0 && frame.width === frame.fullWidth && frame.height === frame.fullHeight,
+      `${frame.width}x${frame.height} of ${frame.fullWidth}x${frame.fullHeight}`);
+    check('of the window that was announced', frame.id === announced.id);
+    check('with pixels in it', frame.pixels.length === frame.width * frame.height * 4 &&
+      frame.pixels.some((b) => b !== 0));
+    // The application was holding its frame callback for an acknowledgement
+    // nobody sent; acknowledging now is what lets it draw again.
+    const before = picked.frames.length;
+    second.ctl(picked, 'ack', { id: frame.id });
+    second.ctl(picked, 'configure', { id: announced.id, width: 360, height: 280 });
+    const redrew = await until(() => {
+      for (const f of picked.frames.slice(before)) second.ctl(picked, 'ack', { id: f.readUInt32BE(0) });
+      return picked.frames.slice(before).some((f) => decodeFrame(f).fullWidth === 360);
+    }, 10000);
+    check('and the application is alive to its input: a resize comes back drawn', redrew);
+  }
+
+  // A third window picks it up: the second is told, as a terminal's is.
+  const third = await connectAnother();
+  const again = third.open('wayland', 'attach', { id: heldId });
+  await until(() => again.info !== null || again.closed, 5000);
+  await until(() => picked.closed, 3000);
+  check('a newer window displaces the one before, which is told',
+    picked.closed && /another window/i.test(picked.error ?? ''), picked.error ?? 'still open');
+  const wrong = third.open('wayland', 'attach', { id: 'no-such-session' });
+  await until(() => wrong.closed, 3000);
+  check('picking up a session that does not exist is refused',
+    wrong.closed && /gone/i.test(wrong.error ?? ''), wrong.error ?? '');
+
+  // Closing the window — not losing it — ends the session as it always did.
+  third.ws.send(JSON.stringify({ t: 'close', id: again.id }));
+  const ended = await until(() => matching(`wdcomp --ipc -s ${heldSocket}`).length === 0, 10000);
+  check('closing the window that holds a picked-up session ends it', ended);
+  second.ws.close();
+  third.ws.close();
+
+  // Nobody comes back.
+  const lone = await connectAnother();
+  const orphan = lone.open('wayland', 'session', { appId: target.id, width: 400, height: 300 });
+  await until(() => orphan.frames.length > 0, 15000);
+  const orphanSocket = orphan.info?.socket;
+  lone.ws.terminate();
+  await sleep(1500);
+  check('a session nobody has come back for is kept through the grace period',
+    matching(`wdcomp --ipc -s ${orphanSocket}`).length > 0);
+  const reapedOrphan = await until(() => matching(`wdcomp --ipc -s ${orphanSocket}`).length === 0, 10000);
+  check('and ended when it runs out', reapedOrphan,
+    reapedOrphan ? '' : `still alive: ${matching(`wdcomp --ipc -s ${orphanSocket}`).join(',')}`);
 }
 
 /* ------------------------------------------------------------------ */
