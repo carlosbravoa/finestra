@@ -285,6 +285,56 @@ await check('a connection that stops taking our bytes is cut off like any other'
   assert.equal(ws.terminated, true);
 });
 
+await check('once the browser confirms pieces, the server sends no more than its window ahead', async () => {
+  // The socket takes everything at once, as a kernel buffer does; what must
+  // hold the pump back is the browser.
+  const { ws, contexts } = makeHarness(0);
+  ws.receive({ t: 'open', id: 1, svc: 'echo', m: 'open' });
+  await sleep(10);
+  contexts.get(1)!.sendBinary(new Uint8Array(SLICE_BYTES * 2));
+  await sleep(20);
+  const pieces = () => ws.wire.filter((w) => w.bytes && w.bytes[0] === 0x02);
+  assert.equal(pieces().length, 2);
+  // The browser confirms both, quickly: the window grows a little.
+  for (const p of pieces()) ws.receive({ t: 'took', n: p.bytes!.length });
+  ws.wire.length = 0;
+  contexts.get(1)!.sendBinary(new Uint8Array(SLICE_BYTES * 40));
+  await sleep(50);
+  const ahead = pieces().length;
+  assert.ok(ahead >= 4 && ahead <= 7, `${ahead} pieces out with nothing confirmed; the window is about four`);
+  // Confirming two lets two more go — or a little more, since quick
+  // confirmations are what the window grows on.
+  const two = pieces().slice(0, 2);
+  for (const p of two) ws.receive({ t: 'took', n: p.bytes!.length });
+  await sleep(20);
+  const released = pieces().length - ahead;
+  assert.ok(released >= 2 && released <= 4, `${released} released by two confirmations`);
+});
+
+await check('slow confirmations shrink the window down to a single piece', async () => {
+  const { ws, contexts } = makeHarness(0);
+  ws.receive({ t: 'open', id: 1, svc: 'echo', m: 'open' });
+  await sleep(10);
+  const pieces = () => ws.wire.filter((w) => w.bytes && w.bytes[0] === 0x02);
+  // Four pieces go out kernel-paced, nothing having been confirmed yet. The
+  // browser confirms them late: that is a slow link, and each late
+  // confirmation halves the window, down to one piece.
+  contexts.get(1)!.sendBinary(new Uint8Array(SLICE_BYTES * 4));
+  await sleep(560);
+  for (const p of pieces()) ws.receive({ t: 'took', n: p.bytes!.length });
+  ws.wire.length = 0;
+  contexts.get(1)!.sendBinary(new Uint8Array(SLICE_BYTES * 20));
+  await sleep(20);
+  assert.equal(pieces().length, 1, `${pieces().length} pieces ahead on a link that confirms slowly`);
+  for (let round = 0; round < 3; round++) {
+    const out = pieces().length;
+    await sleep(560);
+    ws.receive({ t: 'took', n: pieces()[out - 1].bytes!.length });
+    await sleep(20);
+    assert.equal(pieces().length - out, 1, `round ${round}: one slow confirmation released ${pieces().length - out}`);
+  }
+});
+
 console.log('');
 const passed = results.filter(Boolean).length;
 console.log(`${passed}/${results.length} checks passed`);

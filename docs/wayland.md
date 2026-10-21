@@ -676,10 +676,18 @@ a local connection: loopback has no congestion window to collapse, which is
 why the only honest measurement is on the port while the person is
 connected.
 
-**Frames go out in pieces, one at a time.** `Session.sendBinary` slices any
-payload over 16 KB and sends the next piece only when the socket has taken
-the last (`ws.send`'s callback). A JSON message or a small frame sent
-meanwhile goes out between two pieces instead of behind the whole payload.
+**Frames go out in pieces, and the browser says when it has them.**
+`Session.sendBinary` slices any payload over 16 KB. The first version paced
+the pieces on `ws.send`'s callback, which fires when the *kernel* takes the
+bytes — and the kernel took a hundred kilobytes before blocking, three
+seconds of queue on the link in question, so the clock still stuck. The
+browser now confirms every piece it receives (`took`), and the pump keeps
+at most a window of pieces unconfirmed: 64 KB to start, halved whenever a
+piece took over half a second to be confirmed, grown by a piece when one
+came back inside 200 ms, never below one piece or above 512 KB. A JSON
+message or a small frame sent meanwhile goes out between two pieces instead
+of behind the whole payload. A page from before credits existed never
+confirms, and gets the kernel-paced behaviour rather than a stall.
 Within a channel the order holds — once a channel has something queued,
 everything of its goes through the queue — and across channels it does not
 need to. The browser puts the pieces back together before the channel sees

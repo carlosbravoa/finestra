@@ -64,12 +64,26 @@ export interface CloseMessage {
   e?: string;
 }
 
+/**
+ * The browser took `n` bytes of sliced payload. Receive credit: the server
+ * keeps only a small window of pieces unconfirmed, so what sits in the
+ * kernel's send buffer on a slow link is bounded by what the browser has
+ * actually received, not by what the kernel was willing to accept — which
+ * was a hundred kilobytes, and three seconds of queue in front of everything
+ * else.
+ */
+export interface TookMessage {
+  t: 'took';
+  n: number;
+}
+
 export type ClientMessage =
   | ReqMessage
   | OpenMessage
   | DataMessage
   | CtlMessage
-  | CloseMessage;
+  | CloseMessage
+  | TookMessage;
 
 /* ------------------------------------------------------------------ */
 /* Server -> Client                                                    */
@@ -237,6 +251,20 @@ export const SLICE_HEADER_BYTES = 6;
  */
 export const SLICE_BYTES = 16 * 1024;
 
+/**
+ * How many bytes of pieces may be out without the browser's confirmation.
+ * Starts in the middle and moves: halved whenever a piece took longer than
+ * `SLOW_PIECE_MS` to be confirmed, grown by one piece when one came back
+ * quickly. The floor is a single piece, which on a link doing twenty
+ * kilobytes a second is under a second of queue in front of a keystroke;
+ * the ceiling keeps a fast link fast.
+ */
+export const CREDIT_WINDOW_START = 64 * 1024;
+export const CREDIT_WINDOW_MIN = SLICE_BYTES;
+export const CREDIT_WINDOW_MAX = 512 * 1024;
+export const SLOW_PIECE_MS = 500;
+export const QUICK_PIECE_MS = 200;
+
 export function encodeSlice(
   channelId: number,
   piece: Uint8Array,
@@ -273,6 +301,8 @@ export interface BinaryFrame {
   payload: Uint8Array;
   /** More of this payload follows; hold it and wait. */
   partial: boolean;
+  /** A piece of a sliced payload (the last one included), to be credited back. */
+  sliced: boolean;
 }
 
 /** Returns null when the frame is too short or carries an unknown opcode. */
@@ -280,10 +310,10 @@ export function decodeBinaryFrame(buf: Uint8Array): BinaryFrame | null {
   if (buf.length < BIN_HEADER_BYTES) return null;
   const channelId = ((buf[1] << 24) | (buf[2] << 16) | (buf[3] << 8) | buf[4]) >>> 0;
   if (buf[0] === BIN_CHANNEL_DATA) {
-    return { channelId, payload: buf.subarray(BIN_HEADER_BYTES), partial: false };
+    return { channelId, payload: buf.subarray(BIN_HEADER_BYTES), partial: false, sliced: false };
   }
   if (buf[0] === BIN_CHANNEL_SLICE && buf.length >= SLICE_HEADER_BYTES) {
-    return { channelId, payload: buf.subarray(SLICE_HEADER_BYTES), partial: buf[5] === 0 };
+    return { channelId, payload: buf.subarray(SLICE_HEADER_BYTES), partial: buf[5] === 0, sliced: true };
   }
   return null;
 }

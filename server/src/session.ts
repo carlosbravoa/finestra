@@ -8,6 +8,11 @@ import {
   encodeSlice,
   PROTOCOL_VERSION,
   SLICE_BYTES,
+  CREDIT_WINDOW_START,
+  CREDIT_WINDOW_MIN,
+  CREDIT_WINDOW_MAX,
+  SLOW_PIECE_MS,
+  QUICK_PIECE_MS,
   type ClientMessage,
   type HostInfo,
   type ServerMessage,
@@ -73,6 +78,21 @@ export class Session {
   private readonly bulkByChannel = new Map<number, number>();
   private pumping = false;
 
+  /**
+   * Pieces sent and not yet confirmed by the browser, oldest first, with
+   * when each went out. The kernel accepting a write says nothing about the
+   * far side: on a slow link it took a hundred kilobytes before blocking,
+   * three seconds of queue that every keystroke waited in. So once a
+   * browser has confirmed anything (`took`), the pump stops at `window`
+   * unconfirmed bytes, and the window follows how long confirmations take.
+   * A browser that never confirms — a page from before this existed — gets
+   * the kernel-paced behaviour instead of a stall.
+   */
+  private readonly unconfirmed: Array<{ bytes: number; at: number }> = [];
+  private inflight = 0;
+  private window = CREDIT_WINDOW_START;
+  private credited = false;
+
   constructor(
     private readonly ws: WebSocket,
     private readonly services: Map<string, Service>,
@@ -129,13 +149,18 @@ export class Session {
       this.bulkByChannel.clear();
       return;
     }
+    if (this.credited && this.inflight >= this.window) return;
     const end = Math.min(head.at + SLICE_BYTES, head.payload.length);
     const last = end >= head.payload.length;
+    const piece = encodeSlice(head.id, head.payload.subarray(head.at, end), last);
+    this.unconfirmed.push({ bytes: piece.length, at: Date.now() });
+    this.inflight += piece.length;
     this.pumping = true;
-    // The callback fires once the socket has taken the bytes. On a link that
-    // is slow but alive that is the throttle; on one that is gone it never
-    // fires, the queue stands still, and tick() draws the conclusion.
-    this.ws.send(encodeSlice(head.id, head.payload.subarray(head.at, end), last), { binary: true }, (err) => {
+    // The callback fires once the socket has taken the bytes. Until the
+    // browser has ever confirmed a piece that is the only throttle; on a
+    // link that is gone it never fires, the queue stands still, and tick()
+    // draws the conclusion.
+    this.ws.send(piece, { binary: true }, (err) => {
       this.pumping = false;
       if (err) return;
       this.seen();
@@ -160,6 +185,31 @@ export class Session {
   private seen(): void {
     this.lastSeen = Date.now();
     this.pinged = false;
+  }
+
+  /** The browser took `n` bytes of pieces; the oldest unconfirmed are theirs. */
+  private took(n: number): void {
+    if (!Number.isFinite(n) || n <= 0) return;
+    this.credited = true;
+    const now = Date.now();
+    let left = n;
+    while (left > 0 && this.unconfirmed.length > 0) {
+      const oldest = this.unconfirmed[0];
+      const age = now - oldest.at;
+      if (oldest.bytes <= left) {
+        left -= oldest.bytes;
+        this.unconfirmed.shift();
+      } else {
+        oldest.bytes -= left;
+        left = 0;
+      }
+      // The age of a piece is the queue it sat in: shrink on a slow one,
+      // grow on a quick one, and let a mixed bag settle where it settles.
+      if (age > SLOW_PIECE_MS) this.window = Math.max(CREDIT_WINDOW_MIN, this.window >>> 1);
+      else if (age < QUICK_PIECE_MS) this.window = Math.min(CREDIT_WINDOW_MAX, this.window + SLICE_BYTES);
+    }
+    this.inflight = Math.max(0, this.inflight - n);
+    this.pump();
   }
 
   /**
@@ -215,6 +265,9 @@ export class Session {
         break;
       case 'close':
         this.closeChannel(msg.id);
+        break;
+      case 'took':
+        this.took(msg.n);
         break;
     }
   }

@@ -28,7 +28,8 @@ reasoning behind a change is in its commit; the failures that cost time are in
   the terminal, the keyboard and the server's own keepalive all waited
   behind it; on a slow link the keepalive gave up and the server dropped the
   connection. Pictures now travel in small pieces with everything else
-  allowed in between, and a connection that is still taking data is never
+  allowed in between, the server sends no further ahead than the browser has
+  confirmed receiving, and a connection that is still taking data is never
   mistaken for a dead one.
 
 ## 0.3.14 — 2026-10-20

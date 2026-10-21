@@ -248,6 +248,10 @@ export class RpcClient {
     if (ev.data instanceof ArrayBuffer) {
       const frame = decodeBinaryFrame(new Uint8Array(ev.data));
       if (!frame) return;
+      // Receive credit: what the server may have in flight is what this
+      // page has confirmed, so a slow link queues little in front of the
+      // next keystroke. Upstream is the quiet direction, so this is cheap.
+      if (frame.sliced) this.sendMessage({ t: 'took', n: ev.data.byteLength });
       // A large payload arrives in pieces, with everything else allowed in
       // between them; the channel sees it whole.
       const payload = this.slices.push(frame);
