@@ -1116,6 +1116,9 @@ export const waylandService: Service = {
         '-l',
         layout,
         ...(variant ? ['--variant', variant] : []),
+        // The Xwayland spike (ROADMAP.md): opt-in until launching it lazily
+        // and steering SDL and Qt back to Wayland are done.
+        ...(process.env.WD_XWAYLAND === '1' ? ['--xwayland'] : []),
         '--',
         ...withLaunchQuirks(app.argv),
       ];

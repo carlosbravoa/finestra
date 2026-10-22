@@ -20,7 +20,7 @@ CFLAGS  ?= -O2 -g
 # _GNU_SOURCE for memfd_create, which is how the xkb keymap reaches the client.
 CFLAGS  += -std=c11 -D_GNU_SOURCE -Wall -Wextra -Wno-unused-parameter \
            -I$(BUILD) $(shell pkg-config --cflags wayland-server xkbcommon)
-LDLIBS  := $(shell pkg-config --libs wayland-server xkbcommon) -lz
+LDLIBS  := $(shell pkg-config --libs wayland-server xkbcommon xcb) -lz
 
 # Generated protocol code. tablet-v2 is here only because cursor-shape-v1
 # references zwp_tablet_tool_v2 in one request we do not implement — the
@@ -37,7 +37,7 @@ GEN_C := $(BUILD)/xdg-shell-protocol.c \
          $(BUILD)/cursor-shape-v1-protocol.c \
          $(BUILD)/tablet-v2-protocol.c
 GEN_O := $(GEN_C:.c=.o)
-OBJS  := $(BUILD)/wdcomp.o $(BUILD)/png.o $(BUILD)/ipc.o $(GEN_O)
+OBJS  := $(BUILD)/wdcomp.o $(BUILD)/png.o $(BUILD)/ipc.o $(BUILD)/xwm.o $(GEN_O)
 
 .PHONY: all clean check check-ipc check-glibc
 all: $(BIN)

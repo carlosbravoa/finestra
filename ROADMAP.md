@@ -49,6 +49,60 @@ before anything widens what runs.
    role or geometry the way `xdg_shell` does, so an X window manager has to be
    written inside the compositor. Medium effort, modest demand, and it is the
    last class of application that does not launch at all.
+
+   Two things keep it smaller than in a general compositor. Every launch has
+   its own `wdcomp`, so it has its own Xwayland — one application's windows,
+   no X server shared between them. And the shell draws the window frame, so
+   the window manager draws nothing; decorations are most of the code in
+   weston's and wlroots'. The phases, in order:
+
+   0. **Spike.** `Xwayland -rootless -wm <fd>` as a client of `wdcomp`, and
+      an XCB window manager that only pairs X windows with their
+      `wl_surface` (`WL_SURFACE_ID`) and maps them. Done when `xmessage`
+      shows up in a shell window; it also measures the start-up cost and
+      what scale 2 does to an X client.
+      ✅ On branch `xwayland-spike`, behind `WD_XWAYLAND=1` (`wdcomp
+      --xwayland`): `xmessage` and DOSBox-X — SDL2 with no Wayland driver —
+      run in shell windows, resize, and close through `WM_DELETE_WINDOW`.
+      Xwayland is ready in about 45 ms, so starting it lazily is about
+      resources, not latency. What it settled: rootless Xwayland gives a
+      window no surface until the window manager redirects it through
+      Composite (sent raw, no libxcb-composite); Xt waits five seconds for a
+      ConfigureNotify after every request unless the window manager sends a
+      synthetic one (ICCCM 4.1.5); at scale 2 an X window is drawn at 1× and
+      shown pixel for pixel, so half size — the shell has to know a window's
+      scale, which the frame header does not carry. Seen and left for phase
+      1: a second toplevel replaced the shell window of a GTK dialog before
+      it instead of getting its own, keeping the dialog's title and size.
+   1. **Managed windows as toplevels.** Title (`_NET_WM_NAME`), app id
+      (`WM_CLASS`), size hints into `IPC_BOUNDS`, configure both ways, ✕ as
+      `WM_DELETE_WINDOW` so the polite-close path is the same one, focus by
+      `SetInputFocus`/`WM_TAKE_FOCUS`, `WM_TRANSIENT_FOR` as a dialog.
+   2. **Override-redirect windows** — menus, tooltips, drop-downs — as
+      popups. They place themselves in absolute X coordinates, which here
+      are the window's own, since the output is the window.
+   3. **Clipboard.** Xwayland does not bridge X selections to Wayland's; the
+      window manager has to, `CLIPBOARD` into the existing data-device
+      selection, INCR included.
+   4. **Launch and lifecycle.** Xwayland started on the first X connection,
+      so a Wayland application pays nothing. `DISPLAY` changes what SDL2
+      and Qt 5 choose, so the spawn says `SDL_VIDEODRIVER=wayland,x11` and
+      `QT_QPA_PLATFORM=wayland;xcb` — argv and env, never configuration.
+      Xwayland is plumbing, not the application, for "did not start",
+      `liveApps` and `IPC_CLIENT`; `IPC_RESYNC` covers X windows; a missing
+      Xwayland names its package.
+   5. **Checks and packaging.** An XCB fixture client beside
+      `subsurface-client.c`, run at scale 2; Xwayland per distribution in
+      `checks.sh` (Amazon Linux 2023 may not package it); the real list
+      from `docs/wayland.md` — `dosbox-x`, Tk, VLC's skins2.
+
+   Not in the first round: image cursors (`pointer_set_cursor` only knows
+   shapes, and Xwayland only sends images, so X windows get the arrow),
+   HiDPI for X clients (drawn at 1× and magnified), drag and drop, PRIMARY,
+   XInput2 touch. libxcb is the only new dependency — Composite and the rest
+   are a raw request or two, not a library — and whether `wdcomp` links it
+   or `dlopen`s it, so a machine without X libraries still runs Wayland
+   applications, is decided after the spike.
 5. **Audio, routed to nothing.** No sound server is offered to the session, so
    an application that insists on one fails to start, and the rest are
    silent. The first step is **not** sound in the browser: it is a server that

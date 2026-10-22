@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -49,6 +50,7 @@
 
 #include "ipc.h"
 #include "png.h"
+#include "xwm.h"
 
 #define WDC_SEAT_NAME "seat0"
 /* Shape 0 is unused by the protocol, so it can mean "no cursor at all". */
@@ -195,6 +197,28 @@ struct wdc_server {
 	struct wl_list windows; /* every xdg_surface, whatever its role */
 	struct wl_list popups;  /* most recent first, for grab lookup */
 	struct wl_list subsurfaces; /* every wl_subsurface, for lookup by id */
+
+	/*
+	 * Xwayland, with --xwayland: an X server of this compositor's own, so
+	 * X11-only applications have somewhere to draw. It is a Wayland client
+	 * like any other, but plumbing rather than the application — it is not
+	 * counted in `clients` — and the launch waits for its display number.
+	 */
+	bool xwayland;
+	pid_t xwl_pid;
+	struct wl_client *xwl_client;
+	bool xwl_connecting;
+	int xwm_fd;
+	struct xwm *xwm;
+	struct wl_event_source *xwm_source;
+	struct wl_event_source *xwl_ready;
+	int x_display; /* -1 until Xwayland says which */
+	/* X windows named before their wl_surface reached us: two connections,
+	 * so either can arrive first. wdc_xpending links. */
+	struct wl_list xpending;
+	char **launch_argv;
+	const char *socket_name;
+	bool force_shm;
 };
 
 struct wdc_toplevel;
@@ -306,6 +330,11 @@ struct wdc_xdg_surface {
 	struct wdc_rect geometry;
 	struct wdc_rect pending_geometry;
 	bool pending_geometry_set;
+
+	/* An X window drawn into this surface: no xdg resources behind it, and
+	 * the window manager is who to tell about sizes and closing. */
+	uint32_t xwin;
+	int32_t x_x, x_y;
 };
 
 struct wdc_toplevel {
@@ -1076,6 +1105,9 @@ static const struct wl_region_interface region_impl = {
 /* wl_compositor                                                       */
 /* ------------------------------------------------------------------ */
 
+static void xwayland_surface_created(struct wdc_server *server,
+		struct wdc_surface *surface);
+
 static void compositor_create_surface(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id) {
 	struct wdc_server *server = wl_resource_get_user_data(resource);
@@ -1102,6 +1134,8 @@ static void compositor_create_surface(struct wl_client *client,
 	wl_resource_set_implementation(surface->resource, &surface_impl, surface,
 		surface_resource_destroy);
 	logdbg("surface created");
+	if (server->xwl_client && client == server->xwl_client)
+		xwayland_surface_created(server, surface);
 }
 
 static void compositor_create_region(struct wl_client *client,
@@ -1215,6 +1249,12 @@ static void positioner_resource_destroy(struct wl_resource *resource) {
 
 static void toplevel_send_configure(struct wdc_toplevel *toplevel) {
 	struct wdc_xdg_surface *xdg = toplevel->xdg;
+	if (xdg->xwin) {
+		struct wdc_server *server = xdg->surface ? xdg->surface->server : NULL;
+		if (server && server->xwm)
+			xwm_configure(server->xwm, xdg->xwin, xdg->cfg_width, xdg->cfg_height);
+		return;
+	}
 	struct wl_array states;
 	wl_array_init(&states);
 	uint32_t *s = wl_array_add(&states, sizeof *s);
@@ -3141,7 +3181,8 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		logdbg("w%u configure %dx%d", xdg->id, w, h);
 		toplevel_send_configure(toplevel);
 		/* A toplevel configure is only complete with its xdg_surface half. */
-		xdg_surface_send_configure(xdg->resource, next_serial(server));
+		if (xdg->resource)
+			xdg_surface_send_configure(xdg->resource, next_serial(server));
 		break;
 	}
 
@@ -3187,8 +3228,13 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		xdg = find_window(server, ipc_get_u32(payload));
 		if (!xdg) return;
 		/* Ask; the application may refuse, or prompt about unsaved work. */
-		if (xdg->toplevel) xdg_toplevel_send_close(xdg->toplevel->resource);
-		else if (xdg->popup) xdg_popup_send_popup_done(xdg->popup->resource);
+		if (xdg->xwin) {
+			if (server->xwm) xwm_close(server->xwm, xdg->xwin);
+		} else if (xdg->toplevel) {
+			xdg_toplevel_send_close(xdg->toplevel->resource);
+		} else if (xdg->popup) {
+			xdg_popup_send_popup_done(xdg->popup->resource);
+		}
 		break;
 
 	case IPC_POINTER: {
@@ -3310,6 +3356,10 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		if (!focused) return;
 		if (payload[4]) {
 			seat_keyboard_enter(server, focused);
+			/* Xwayland gives the X server focus from wl_keyboard, but which
+			 * X window has it is the window manager's to say. */
+			if (server->xwm && focused->xdg && focused->xdg->xwin)
+				xwm_focus(server->xwm, focused->xdg->xwin);
 		} else {
 			seat_keyboard_leave(server);
 			seat_pointer_leave(server);
@@ -3442,6 +3492,8 @@ static void client_arrived(struct wl_listener *listener, void *data) {
 	struct wdc_server *server =
 		wl_container_of(listener, server, client_created);
 	struct wl_client *client = data;
+	/* Xwayland is ours, not the application; see xwl_client. */
+	if (server->xwl_connecting) return;
 
 	struct wdc_client *tracked = calloc(1, sizeof(*tracked));
 	if (!tracked) return; /* untracked, and lifetime errs toward staying up */
@@ -3494,8 +3546,16 @@ static void spawn_client(struct wdc_server *server, const char *socket_name,
 		for (int fd = 3; fd < 256; fd++) close(fd);
 
 	setenv("WAYLAND_DISPLAY", socket_name, 1);
-	/* Leave no X11 fallback for the toolkit to prefer. */
-	unsetenv("DISPLAY");
+	/* Leave no X11 fallback for the toolkit to prefer — unless there is an
+	 * Xwayland of our own, and then the toolkits are told to prefer
+	 * Wayland below, so DISPLAY is only for what has nothing else. */
+	if (server->x_display >= 0) {
+		char display[16];
+		snprintf(display, sizeof display, ":%d", server->x_display);
+		setenv("DISPLAY", display, 1);
+	} else {
+		unsetenv("DISPLAY");
+	}
 	setenv("GDK_BACKEND", "wayland", 1);
 	setenv("QT_QPA_PLATFORM", "wayland", 1);
 	/*
@@ -3519,6 +3579,313 @@ static void spawn_client(struct wdc_server *server, const char *socket_name,
 	execvp(argv[0], argv);
 	fprintf(stderr, "wdcomp: could not exec %s: %s\n", argv[0], strerror(errno));
 	_exit(127);
+}
+
+/* ------------------------------------------------------------------ */
+/* Xwayland                                                            */
+/*                                                                     */
+/* An X window becomes the same wdc_xdg_surface a toplevel or popup    */
+/* does, with no xdg resources behind it: the shell cannot tell them   */
+/* apart, and where the protocol differs — sizing, closing, focus —   */
+/* the window manager in xwm.c is asked instead.                       */
+/* ------------------------------------------------------------------ */
+
+static const char *parse_dec(const char *s, long *out);
+
+struct wdc_xpending {
+	struct xwm_window win;
+	uint32_t surface_id;
+	struct wl_list link;
+};
+
+static void xpending_free(struct wdc_xpending *p) {
+	wl_list_remove(&p->link);
+	free((char *)p->win.title);
+	free((char *)p->win.app_id);
+	free(p);
+}
+
+static struct wdc_xdg_surface *find_xwindow(struct wdc_server *server,
+		uint32_t xwin) {
+	struct wdc_xdg_surface *xdg;
+	wl_list_for_each(xdg, &server->windows, link)
+		if (xdg->xwin == xwin) return xdg;
+	return NULL;
+}
+
+static void xwayland_detach(struct wdc_server *server,
+		struct wdc_xdg_surface *xdg) {
+	if (server->ipc && xdg->announced) {
+		uint8_t msg[4];
+		ipc_put_u32(msg, xdg->id);
+		ipc_send(server->ipc, IPC_CLOSED, msg, sizeof msg, NULL, 0);
+	}
+	logmsg("X window 0x%x (w%u) gone", xdg->xwin, xdg->id);
+	/* Nothing may keep pointing at it: an X client can unmap a window
+	 * whose menus and dialogs are still up. */
+	struct wdc_xdg_surface *other;
+	wl_list_for_each(other, &server->windows, link) {
+		if (other->popup && other->popup->parent == xdg) other->popup->parent = NULL;
+		if (other->toplevel && other->toplevel->parent == xdg)
+			other->toplevel->parent = NULL;
+	}
+	wl_list_remove(&xdg->link);
+	if (xdg->surface) xdg->surface->xdg = NULL;
+	if (xdg->toplevel) {
+		free(xdg->toplevel->title);
+		free(xdg->toplevel->app_id);
+		free(xdg->toplevel);
+	}
+	if (xdg->popup) {
+		wl_list_remove(&xdg->popup->link);
+		free(xdg->popup);
+	}
+	free(xdg);
+}
+
+static void xwayland_attach(struct wdc_server *server,
+		struct wdc_surface *surface, const struct xwm_window *win) {
+	if (surface->xdg || surface->sub) {
+		logmsg("X window 0x%x: its surface already has a role", win->xwin);
+		return;
+	}
+	struct wdc_xdg_surface *xdg = calloc(1, sizeof *xdg);
+	if (!xdg) return;
+	xdg->surface = surface;
+	xdg->id = ++server->next_window_id;
+	surface->id = xdg->id;
+	xdg->xwin = win->xwin;
+	xdg->x_x = win->x;
+	xdg->x_y = win->y;
+	xdg->cfg_width = win->width;
+	xdg->cfg_height = win->height;
+	/* There is no configure handshake to wait for: X windows draw when
+	 * they are mapped, and they are mapped. */
+	xdg->initial_configure_sent = true;
+
+	if (win->override_redirect) {
+		struct wdc_popup *popup = calloc(1, sizeof *popup);
+		if (!popup) {
+			free(xdg);
+			return;
+		}
+		popup->xdg = xdg;
+		/* An X menu names no parent; it belongs to the application, and
+		 * the newest window it has is the best guess at which. */
+		struct wdc_xdg_surface *w;
+		wl_list_for_each(w, &server->windows, link) {
+			if (w->xwin && w->toplevel) {
+				popup->parent = w;
+				break;
+			}
+		}
+		int32_t px = popup->parent ? popup->parent->x_x : 0;
+		int32_t py = popup->parent ? popup->parent->x_y : 0;
+		popup->placement = (struct wdc_rect){win->x - px, win->y - py,
+			win->width, win->height};
+		xdg->popup = popup;
+		wl_list_insert(&server->popups, &popup->link);
+	} else {
+		struct wdc_toplevel *toplevel = calloc(1, sizeof *toplevel);
+		if (!toplevel) {
+			free(xdg);
+			return;
+		}
+		toplevel->xdg = xdg;
+		toplevel->title = win->title ? strdup(win->title) : NULL;
+		toplevel->app_id = win->app_id ? strdup(win->app_id) : NULL;
+		xdg->toplevel = toplevel;
+	}
+	surface->xdg = xdg;
+	wl_list_insert(&server->windows, &xdg->link);
+	server->had_client = true;
+	logmsg("X window 0x%x is w%u: %s %dx%d at %d,%d%s%s", win->xwin, xdg->id,
+		win->override_redirect ? "popup" : "toplevel", win->width,
+		win->height, win->x, win->y, win->title ? " — " : "",
+		win->title ? win->title : "");
+}
+
+static void xwm_on_surface(void *data, const struct xwm_window *win,
+		uint32_t surface_id) {
+	struct wdc_server *server = data;
+	struct wdc_xdg_surface *old = find_xwindow(server, win->xwin);
+	if (old) xwayland_detach(server, old);
+
+	struct wl_resource *res = server->xwl_client
+		? wl_client_get_object(server->xwl_client, surface_id) : NULL;
+	if (res && wl_resource_instance_of(res, &wl_surface_interface, &surface_impl)) {
+		xwayland_attach(server, wl_resource_get_user_data(res), win);
+		return;
+	}
+	struct wdc_xpending *p = calloc(1, sizeof *p);
+	if (!p) return;
+	p->win = *win;
+	p->win.title = win->title ? strdup(win->title) : NULL;
+	p->win.app_id = win->app_id ? strdup(win->app_id) : NULL;
+	p->surface_id = surface_id;
+	wl_list_insert(&server->xpending, &p->link);
+	logdbg("X window 0x%x waits for surface %u", win->xwin, surface_id);
+}
+
+static void xwayland_surface_created(struct wdc_server *server,
+		struct wdc_surface *surface) {
+	uint32_t id = wl_resource_get_id(surface->resource);
+	struct wdc_xpending *p, *tmp;
+	wl_list_for_each_safe(p, tmp, &server->xpending, link) {
+		if (p->surface_id != id) continue;
+		xwayland_attach(server, surface, &p->win);
+		xpending_free(p);
+	}
+}
+
+static void xwm_on_gone(void *data, uint32_t xwin) {
+	struct wdc_server *server = data;
+	struct wdc_xpending *p, *tmp;
+	wl_list_for_each_safe(p, tmp, &server->xpending, link)
+		if (p->win.xwin == xwin) xpending_free(p);
+	struct wdc_xdg_surface *xdg = find_xwindow(server, xwin);
+	if (xdg) xwayland_detach(server, xdg);
+}
+
+static void xwm_on_title(void *data, uint32_t xwin, const char *title) {
+	struct wdc_xdg_surface *xdg = find_xwindow(data, xwin);
+	if (!xdg || !xdg->toplevel) return;
+	free(xdg->toplevel->title);
+	xdg->toplevel->title = title ? strdup(title) : NULL;
+	toplevel_send_title(xdg->toplevel);
+}
+
+static void xwm_on_geometry(void *data, uint32_t xwin, int32_t x, int32_t y,
+		int32_t width, int32_t height) {
+	struct wdc_xdg_surface *xdg = find_xwindow(data, xwin);
+	if (!xdg) return;
+	xdg->x_x = x;
+	xdg->x_y = y;
+	/* A size the application chose for itself; frames will say so too. */
+	xdg->cfg_width = width;
+	xdg->cfg_height = height;
+}
+
+static const struct xwm_callbacks xwm_callbacks = {
+	.surface = xwm_on_surface,
+	.gone = xwm_on_gone,
+	.title = xwm_on_title,
+	.geometry = xwm_on_geometry,
+};
+
+static int handle_xwm_readable(int fd, uint32_t mask, void *data) {
+	struct wdc_server *server = data;
+	if (xwm_dispatch(server->xwm) == 0) return 0;
+	logmsg("Xwayland's window-manager connection closed");
+	wl_event_source_remove(server->xwm_source);
+	server->xwm_source = NULL;
+	xwm_destroy(server->xwm);
+	server->xwm = NULL;
+	return 0;
+}
+
+/* Xwayland wrote its display number: X clients can connect from here on,
+ * so the window manager goes in first and the application follows. */
+static int handle_xwayland_ready(int fd, uint32_t mask, void *data) {
+	struct wdc_server *server = data;
+	char buf[16] = {0};
+	ssize_t n = read(fd, buf, sizeof buf - 1);
+	/* Once only: libwayland defers the free until this dispatch is over. */
+	wl_event_source_remove(server->xwl_ready);
+	server->xwl_ready = NULL;
+	long display = -1;
+	if (n > 0 && parse_dec(buf, &display) && display >= 0) {
+		server->x_display = (int)display;
+		server->xwm = xwm_create(server->xwm_fd, &xwm_callbacks, server);
+		if (server->xwm) {
+			server->xwm_source = wl_event_loop_add_fd(server->loop,
+				xwm_get_fd(server->xwm), WL_EVENT_READABLE,
+				handle_xwm_readable, server);
+			logmsg("Xwayland is up on DISPLAY=:%d", server->x_display);
+		} else {
+			logmsg("Xwayland is up but the window manager could not connect");
+		}
+	} else {
+		logmsg("Xwayland exited before it was ready; launching without X");
+		close(server->xwm_fd);
+	}
+	close(fd);
+	if (server->launch_argv)
+		spawn_client(server, server->socket_name, server->launch_argv,
+			server->force_shm);
+	server->launch_argv = NULL;
+	return 0;
+}
+
+/*
+ * Rootless, so every X window is a wl_surface of its own rather than one
+ * desktop-sized one; -wm hands us a connection that is already authorised;
+ * -displayfd lets Xwayland pick a free display number and tell us when it is
+ * ready. Its Wayland connection is a socketpair, not our listening socket,
+ * which is how we know which client it is before it has said a word.
+ */
+static bool xwayland_start(struct wdc_server *server) {
+	int wl[2], wm[2], ready[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, wl) != 0) return false;
+	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, wm) != 0) {
+		close(wl[0]);
+		close(wl[1]);
+		return false;
+	}
+	if (pipe2(ready, O_CLOEXEC) != 0) {
+		close(wl[0]);
+		close(wl[1]);
+		close(wm[0]);
+		close(wm[1]);
+		return false;
+	}
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		logmsg("fork failed: %s", strerror(errno));
+		return false;
+	}
+	if (pid == 0) {
+		/* Same clean birth as spawn_client, and for the same reasons. The
+		 * three fds go high first so that putting them at 3, 4 and 5 cannot
+		 * overwrite one another. */
+		sigset_t empty;
+		sigemptyset(&empty);
+		sigprocmask(SIG_SETMASK, &empty, NULL);
+		int a = fcntl(wl[1], F_DUPFD, 100);
+		int b = fcntl(wm[1], F_DUPFD, 100);
+		int c = fcntl(ready[1], F_DUPFD, 100);
+		if (a < 0 || b < 0 || c < 0 || dup2(a, 3) < 0 || dup2(b, 4) < 0 ||
+				dup2(c, 5) < 0)
+			_exit(127);
+#ifdef __linux__
+		if (syscall(SYS_close_range, 6, ~0U, 0) != 0)
+#endif
+			for (int fd = 6; fd < 256; fd++) close(fd);
+		setenv("WAYLAND_SOCKET", "3", 1);
+		unsetenv("WAYLAND_DISPLAY");
+		unsetenv("DISPLAY");
+		execlp("Xwayland", "Xwayland", "-rootless", "-wm", "4", "-displayfd",
+			"5", "-nolisten", "tcp", (char *)NULL);
+		fprintf(stderr, "wdcomp: could not exec Xwayland: %s\n", strerror(errno));
+		_exit(127);
+	}
+	close(wl[1]);
+	close(wm[1]);
+	close(ready[1]);
+	server->xwl_pid = pid;
+	server->xwm_fd = wm[0];
+	server->xwl_connecting = true;
+	server->xwl_client = wl_client_create(server->display, wl[0]);
+	server->xwl_connecting = false;
+	if (!server->xwl_client) {
+		logmsg("could not give Xwayland a connection");
+		close(wl[0]);
+	}
+	server->xwl_ready = wl_event_loop_add_fd(server->loop, ready[0],
+		WL_EVENT_READABLE | WL_EVENT_HANGUP, handle_xwayland_ready, server);
+	logmsg("started Xwayland (pid %d)", (int)pid);
+	return true;
 }
 
 static void usage(FILE *out) {
@@ -3577,6 +3944,8 @@ int main(int argc, char **argv) {
 		.outdir = "/tmp/wdcomp",
 		.max_frames = 0,
 		.running = true,
+		.x_display = -1,
+		.xwm_fd = -1,
 	};
 	const char *socket_name = "wayland-wd";
 	bool force_shm = true;
@@ -3596,6 +3965,7 @@ int main(int argc, char **argv) {
 		/* Long-only: -S is taken, and this is not a thing anyone types twice. */
 		{"scale", required_argument, NULL, 'C'},
 		{"output", required_argument, NULL, 'O'},
+		{"xwayland", no_argument, NULL, 'X'},
 		{"verbose", no_argument, NULL, 'v'},
 		{"help", no_argument, NULL, 'h'},
 		{0, 0, 0, 0},
@@ -3665,6 +4035,9 @@ int main(int argc, char **argv) {
 		case 'S':
 			force_shm = false;
 			break;
+		case 'X':
+			server.xwayland = true;
+			break;
 		case 'v':
 			wdc_verbose = true;
 			break;
@@ -3694,6 +4067,7 @@ int main(int argc, char **argv) {
 	wl_list_init(&server.popups);
 	wl_list_init(&server.subsurfaces);
 	wl_list_init(&server.clients);
+	wl_list_init(&server.xpending);
 	server.client_created.notify = client_arrived;
 	wl_display_add_client_created_listener(server.display, &server.client_created);
 
@@ -3780,7 +4154,13 @@ int main(int argc, char **argv) {
 			server.outdir);
 	}
 
-	if (optind < argc) {
+	/* With Xwayland the launch waits for its display number, so that
+	 * DISPLAY means something by the time the application reads it. */
+	if (server.xwayland && xwayland_start(&server) && optind < argc) {
+		server.launch_argv = &argv[optind];
+		server.socket_name = socket_name;
+		server.force_shm = force_shm;
+	} else if (optind < argc) {
 		spawn_client(&server, socket_name, &argv[optind], force_shm);
 	} else {
 		logmsg("run a client with: WAYLAND_DISPLAY=%s <command>", socket_name);
@@ -3793,6 +4173,9 @@ int main(int argc, char **argv) {
 			break;
 		}
 		if (server.ipc) release_stale_frames(&server);
+		/* xcb reads events into its own queue while it waits for a reply,
+		 * and those never make the fd readable again. */
+		if (server.xwm) xwm_dispatch(server.xwm);
 		if (server.child > 0) {
 			int status;
 			pid_t done = waitpid(server.child, &status, WNOHANG);
@@ -3867,6 +4250,19 @@ int main(int argc, char **argv) {
 		if (server.child > 0) {
 			kill(server.child, SIGKILL);
 			waitpid(server.child, NULL, 0);
+		}
+	}
+
+	if (server.xwl_pid > 0) {
+		xwm_destroy(server.xwm);
+		server.xwm = NULL;
+		kill(server.xwl_pid, SIGTERM);
+		uint32_t give_up = now_ms() + 2000;
+		while (waitpid(server.xwl_pid, NULL, WNOHANG) == 0 && now_ms() < give_up)
+			nanosleep(&(struct timespec){0, 10 * 1000 * 1000}, NULL);
+		if (waitpid(server.xwl_pid, NULL, WNOHANG) == 0) {
+			kill(server.xwl_pid, SIGKILL);
+			waitpid(server.xwl_pid, NULL, 0);
 		}
 	}
 
