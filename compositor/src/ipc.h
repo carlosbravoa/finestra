@@ -21,6 +21,8 @@
 #define IPC_POPUP   'U' /* id, parent u32, x i32, y i32, w u32, h u32       */
 #define IPC_TITLE   'T' /* id u32, str title                                */
 #define IPC_CLOSED  'X' /* id u32                                           */
+#define IPC_HIDDEN  'H' /* id u32 — unmapped, not gone; announced again when */
+                        /* it next draws                                    */
 #define IPC_FRAME   'F' /* id, x, y, w, h, full_w, full_h u32, flags u8,    */
                         /* scale u8 — buffer pixels per logical one — px   */
 #define IPC_BOUNDS  'N' /* id, min_w, min_h, max_w, max_h u32               */

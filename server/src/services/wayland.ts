@@ -27,6 +27,7 @@ const MSG_WINDOW = 'W'.charCodeAt(0);
 const MSG_POPUP = 'U'.charCodeAt(0);
 const MSG_TITLE = 'T'.charCodeAt(0);
 const MSG_CLOSED = 'X'.charCodeAt(0);
+const MSG_HIDDEN = 'H'.charCodeAt(0);
 const MSG_FRAME = 'F'.charCodeAt(0);
 const MSG_BOUNDS = 'N'.charCodeAt(0);
 const MSG_MOVE = 'V'.charCodeAt(0);
@@ -1440,6 +1441,15 @@ export const waylandService: Service = {
             if (body.length < 4) return;
             liveWindows.delete(body.readUInt32BE(0));
             send({ t: 'closed', id: body.readUInt32BE(0) });
+            break;
+
+          case MSG_HIDDEN:
+            // Unmapped, not destroyed: the window may come back, and will
+            // be announced again when it does. Nothing to ask to close
+            // meanwhile.
+            if (body.length < 4) return;
+            liveWindows.delete(body.readUInt32BE(0));
+            send({ t: 'hidden', id: body.readUInt32BE(0) });
             break;
 
           case MSG_LOG:

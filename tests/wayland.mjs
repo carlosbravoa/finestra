@@ -743,6 +743,57 @@ if (subApp) {
     ws.send(JSON.stringify({ t: 'close', id: lo.id }));
     await sleep(300);
   }
+
+  /* -------------------------------------------------------------- */
+  /* A window put away is hidden, not closed; a dead client's is closed */
+  /* -------------------------------------------------------------- */
+
+  // A toolkit hides a window by committing no buffer, and the compositor
+  // used to say nothing: the shell kept the last frame of a window that was
+  // no longer there, and showed the application's next window as a dialog
+  // over it. Hidden drops the picture and keeps the id; drawing again
+  // announces the window again, whole.
+  if (apps.some((a) => a.id === 'wd-test-hides')) {
+    const hd = open('wayland', 'session', { appId: 'wd-test-hides', width: 320, height: 240 });
+    await until(() => hd.data.some((d) => d.t === 'window') && hd.frames.length >= 1);
+    const hdWin = hd.data.find((d) => d.t === 'window');
+    for (const f of hd.frames) ctl(hd, 'ack', { id: f.readUInt32BE(0) });
+    const framesBefore = hd.frames.length;
+    ctl(hd, 'configure', { id: hdWin.id, width: 400, height: 300 });
+    const hidden = await until(() => hd.data.some((d) => d.t === 'hidden' && d.id === hdWin.id), 5000);
+    check('a window that commits no buffer is reported hidden, not closed',
+      hidden && !hd.data.some((d) => d.t === 'closed'),
+      hd.data.filter((d) => d.t === 'hidden' || d.t === 'closed').map((d) => `${d.t} w${d.id}`).join(', ') || 'neither');
+    const back = await until(() =>
+      hd.data.filter((d) => d.t === 'window' && d.id === hdWin.id).length >= 2 &&
+      hd.frames.length > framesBefore, 5000);
+    const again = back ? decodeFrame(hd.frames[hd.frames.length - 1]) : null;
+    check('and announced again, whole, when it draws again',
+      back && again.id === hdWin.id && again.width === again.fullWidth && again.fullWidth === 400,
+      again ? `w${again.id} ${again.width}x${again.height} of ${again.fullWidth}x${again.fullHeight}` : 'never came back');
+    check('with the session open throughout', !hd.closed, hd.error ?? 'open');
+    ws.send(JSON.stringify({ t: 'close', id: hd.id }));
+    await sleep(300);
+  }
+
+  // libwayland destroys a dead client's resources in id order, wl_surface
+  // before xdg_surface, and the compositor found the server through the
+  // surface — so a helper that exited with its dialog up (zenity, for
+  // DOSBox-X) was never reported closed, and the shell kept the dialog as
+  // the application's window.
+  if (apps.some((a) => a.id === 'wd-test-helper')) {
+    const hp = open('wayland', 'session', { appId: 'wd-test-helper', width: 320, height: 240 });
+    await until(() => hp.data.filter((d) => d.t === 'window').length >= 2, 8000);
+    const wins = hp.data.filter((d) => d.t === 'window');
+    const gone = await until(() => hp.data.some((d) => d.t === 'closed'), 8000);
+    const closedId = hp.data.find((d) => d.t === 'closed')?.id;
+    check('a helper process that exits with its window up has that window reported closed',
+      gone && wins.some((w) => w.id === closedId),
+      gone ? `closed w${closedId} of ${wins.map((w) => `w${w.id}`).join(', ')}` : `no closed; windows ${wins.map((w) => `w${w.id}`).join(', ')}`);
+    check('and the application\'s own window stays', !hp.closed && wins.length === 2, hp.error ?? `${wins.length} windows`);
+    ws.send(JSON.stringify({ t: 'close', id: hp.id }));
+    await sleep(300);
+  }
 } else {
   console.log('SKIP  subsurfaces — compositor/build/subsurface-client is not built (needs libwayland-client)');
 }

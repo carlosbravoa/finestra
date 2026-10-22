@@ -30,8 +30,9 @@ struct xwm_callbacks {
 	/* The X window is mapped and drawn into the wl_surface with this id on
 	 * Xwayland's connection. Comes again after every remap. */
 	void (*surface)(void *data, const struct xwm_window *win, uint32_t surface_id);
-	/* Unmapped or destroyed: its surface is no longer a window. */
-	void (*gone)(void *data, uint32_t xwin);
+	/* Its surface is no longer a window: unmapped — it may come back, and
+	 * `surface` will say so — or destroyed for good. */
+	void (*gone)(void *data, uint32_t xwin, bool destroyed);
 	void (*title)(void *data, uint32_t xwin, const char *title);
 	void (*geometry)(void *data, uint32_t xwin, int32_t x, int32_t y,
 		int32_t width, int32_t height);

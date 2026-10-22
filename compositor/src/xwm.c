@@ -183,7 +183,7 @@ static void handle_event(struct xwm *xwm, xcb_generic_event_t *ev) {
 	case XCB_DESTROY_NOTIFY: {
 		xcb_destroy_notify_event_t *e = (void *)ev;
 		if (!find(xwm, e->window)) break;
-		xwm->cb.gone(xwm->data, e->window);
+		xwm->cb.gone(xwm->data, e->window, true);
 		forget(xwm, e->window);
 		break;
 	}
@@ -225,7 +225,7 @@ static void handle_event(struct xwm *xwm, xcb_generic_event_t *ev) {
 		/* Xwayland drops the surface with the mapping and names a new one
 		 * when the window comes back. */
 		w->surface_id = 0;
-		xwm->cb.gone(xwm->data, w->id);
+		xwm->cb.gone(xwm->data, w->id, false);
 		break;
 	}
 	case XCB_CONFIGURE_REQUEST: {

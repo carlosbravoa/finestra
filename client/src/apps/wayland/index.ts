@@ -143,6 +143,11 @@ interface Surface {
    *  1x whatever the display, and is shown magnified rather than at half
    *  size. */
   scale: number;
+  /** A toplevel's own title and size limits, kept per surface because a
+   *  toplevel that is not the window today may be promoted to it. */
+  title?: string;
+  minWidth: number;
+  minHeight: number;
   detach: Array<() => void>;
 }
 
@@ -207,6 +212,8 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
   let channel: ReturnType<typeof desktop.rpc.openChannel> | null = null;
   const surfaces = new Map<number, Surface>();
   let mainId: number | null = null;
+  /** The window, put away by the application and nothing shown since. */
+  let hiddenMain: number | null = null;
   let currentApp: string | null =
     typeof params.appId === 'string' ? params.appId : null;
   /**
@@ -465,6 +472,8 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
       x: 0,
       y: 0,
       scale: 1,
+      minWidth: 0,
+      minHeight: 0,
       detach: [],
     };
 
@@ -718,11 +727,14 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     switch (message.t) {
       case 'window': {
         if (surfaces.has(id)) break;
-        // The first parentless toplevel is the window; later ones are dialogs.
+        // The first parentless toplevel is the window; later ones are dialogs
+        // — until the window goes away, when one of them takes over (below).
         const isMain = mainId === null && !message.parent;
         const surface = createSurface(id, isMain ? 'window' : 'dialog', message.parent ?? 0);
+        surface.title = message.title;
         if (isMain) {
           mainId = id;
+          hiddenMain = null;
           root.replaceChildren(stage);
           if (message.title) win.setTitle(message.title);
           if (win.focused) surface.canvas.focus();
@@ -754,27 +766,29 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         break;
       }
 
-      case 'title':
+      case 'title': {
+        const surface = surfaces.get(id);
+        if (surface) surface.title = message.title;
         if (id === mainId && message.title) win.setTitle(message.title);
         break;
+      }
 
-      case 'bounds':
+      case 'bounds': {
+        const surface = surfaces.get(id);
+        if (surface) {
+          surface.minWidth = message.minWidth ?? 0;
+          surface.minHeight = message.minHeight ?? 0;
+        }
         if (id === mainId) {
           minWidth = message.minWidth ?? 0;
           minHeight = message.minHeight ?? 0;
         }
         break;
+      }
 
+      case 'hidden':
       case 'closed':
-        // The application closing its own window closes ours. The flag lets
-        // that close through the veto in onClose below — without it, the ✕
-        // would ask an already-exiting application to close, and wait forever.
-        if (id === mainId) {
-          appGone = true;
-          win.close();
-        } else {
-          destroySurface(id);
-        }
+        surfaceGone(id, message.t === 'closed');
         break;
 
       case 'copy':
@@ -839,6 +853,77 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
       default:
         break;
     }
+  }
+
+  /**
+   * A surface is off the screen: unmapped (hidden) or destroyed (closed).
+   * For anything but the window itself that is the end of it.
+   *
+   * For the window, the application may have another toplevel up, and that
+   * one becomes the window rather than this closing on a running
+   * application: a chooser that gives way to the main window, a browser
+   * whose first window was closed with a second still open. DOSBox-X was the
+   * case — a zenity question first, then its own window — and the shell kept
+   * zenity's last frame as the window and showed DOSBox-X as a dialog over it.
+   *
+   * Hidden with nothing to take over keeps the window open and empty: the
+   * application is running and will draw again or exit, and either closes
+   * this properly. Closed with nothing to take over closes ours, as the
+   * application closing its own window always has. A window that was hidden
+   * and is then destroyed, nothing having been shown since, is that same
+   * close arriving in two parts.
+   */
+  function surfaceGone(id: number, destroyed: boolean): void {
+    const wasMain = id === mainId;
+    destroySurface(id);
+    if (!wasMain) {
+      if (destroyed && id === hiddenMain && mainId === null) {
+        appGone = true;
+        win.close();
+      }
+      return;
+    }
+    mainId = null;
+    const next = [...surfaces.values()].find((s) => s.kind === 'dialog' && s.parent === 0);
+    if (next) {
+      promote(next);
+    } else if (destroyed) {
+      // The flag lets this close through the veto in onClose below — without
+      // it, the ✕ would ask an already-exiting application to close, and
+      // wait forever.
+      appGone = true;
+      win.close();
+    } else {
+      hiddenMain = id;
+      win.setStatus('The application put its window away');
+    }
+  }
+
+  /** A toplevel shown as a dialog becomes the window. */
+  function promote(surface: Surface): void {
+    surface.holder?.parentElement?.remove();
+    surface.holder = null;
+    surface.kind = 'window';
+    stage.replaceChildren(surface.canvas);
+    for (const child of surfaces.values()) {
+      if (child.kind === 'subsurface' && child.parent === surface.id) attachToParent(child);
+    }
+    mainId = surface.id;
+    hiddenMain = null;
+    minWidth = surface.minWidth;
+    minHeight = surface.minHeight;
+    if (surface.title) win.setTitle(surface.title);
+    if (win.focused) {
+      surface.canvas.focus();
+      channel?.ctl('focus', { id: surface.id, focused: true });
+    }
+    // Its own size, if it has drawn; else the box it is about to be given.
+    const drawn = surface.canvas.width > 0 && surface.canvas.height > 0;
+    adoptSize(
+      drawn ? (surface.canvas.width / surface.scale) * zoom : undefined,
+      drawn ? (surface.canvas.height / surface.scale) * zoom : undefined,
+    );
+    updateScrolling();
   }
 
   /** Portal dialogs on screen, by the request they answer. */
@@ -1145,6 +1230,7 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     for (const id of [...surfaces.keys()]) destroySurface(id);
     stage.replaceChildren();
     mainId = null;
+    hiddenMain = null;
     minWidth = 0;
     minHeight = 0;
     appGone = false;

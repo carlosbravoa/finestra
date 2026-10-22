@@ -311,6 +311,9 @@ struct wdc_surface {
  */
 struct wdc_xdg_surface {
 	struct wl_resource *resource;
+	/* Kept here as well as on the surface: a dying client's wl_surface is
+	 * destroyed before its xdg_surface, and the shell still has to be told. */
+	struct wdc_server *server;
 	struct wdc_surface *surface;
 	struct wdc_toplevel *toplevel;
 	struct wdc_popup *popup;
@@ -318,6 +321,9 @@ struct wdc_xdg_surface {
 
 	uint32_t id;
 	bool announced;
+	/* Announced once, then unmapped; the shell has dropped it and will be
+	 * told if it is destroyed, or see it announced again if it draws. */
+	bool hidden;
 
 	bool initial_configure_sent;
 	uint32_t last_acked;
@@ -406,6 +412,7 @@ static uint32_t next_serial(struct wdc_server *server) {
 
 /* Defined with the roles, needed by the renderer above them. */
 static void window_announce(struct wdc_xdg_surface *xdg);
+static void window_hide(struct wdc_xdg_surface *xdg);
 static void subsurface_announce(struct wdc_subsurface *sub);
 static void subsurface_send_placement(struct wdc_subsurface *sub);
 
@@ -976,6 +983,8 @@ static void surface_apply(struct wdc_surface *surface) {
 			render_commit(surface, buffer);
 			/* We copied out of it synchronously, so it is free again. */
 			wl_buffer_send_release(buffer);
+		} else if (surface->xdg) {
+			window_hide(surface->xdg);
 		}
 		surface_track_buffer(surface, NULL);
 		surface->pending_buffer_set = false;
@@ -1284,8 +1293,7 @@ static size_t put_string(uint8_t *out, const char *s) {
 }
 
 static struct wdc_server *xdg_server(struct wdc_xdg_surface *xdg) {
-	if (!xdg || !xdg->surface) return NULL;
-	return xdg->surface->server;
+	return xdg ? xdg->server : NULL;
 }
 
 /*
@@ -1298,6 +1306,7 @@ static void window_announce(struct wdc_xdg_surface *xdg) {
 	struct wdc_server *server = xdg_server(xdg);
 	if (!server || !server->ipc || xdg->announced) return;
 	xdg->announced = true;
+	xdg->hidden = false;
 
 	if (xdg->popup) {
 		struct wdc_rect r = xdg->popup->placement;
@@ -1334,6 +1343,40 @@ static void window_announce(struct wdc_xdg_surface *xdg) {
 	if (ipc_send(server->ipc, IPC_WINDOW, msg, at, NULL, 0) != 0) {
 		server->running = false;
 	}
+}
+
+/*
+ * A window that committed no buffer is unmapped, not closed: a toolkit hides
+ * a dialog this way to show it again later, and an X window is withdrawn
+ * before it is destroyed. The shell drops the picture and the id stays; the
+ * next frame announces the window again. Told nothing, the shell kept the
+ * last frame of a window that was no longer there as if it were the
+ * application's window, and the real one, arriving second, was shown as a
+ * dialog over it.
+ */
+static void window_hide(struct wdc_xdg_surface *xdg) {
+	struct wdc_server *server = xdg_server(xdg);
+	if (!server || !xdg->announced) return;
+	xdg->announced = false;
+	xdg->hidden = true;
+	/* xdg-shell: a window that comes back starts the configure handshake
+	 * over, and the next commit is the one that asks for it. */
+	if (xdg->resource && xdg->toplevel) xdg->initial_configure_sent = false;
+	struct wdc_surface *surface = xdg->surface;
+	if (surface) {
+		free(surface->canvas);
+		surface->canvas = NULL;
+		surface->canvas_w = surface->canvas_h = 0;
+		/* So that the frame that brings it back is a whole one. */
+		surface->sent_width = surface->sent_height = 0;
+		surface->pending_frame = false;
+	}
+	if (server->ipc) {
+		uint8_t msg[4];
+		ipc_put_u32(msg, xdg->id);
+		ipc_send(server->ipc, IPC_HIDDEN, msg, sizeof msg, NULL, 0);
+	}
+	logmsg("w%u hidden", xdg->id);
 }
 
 /** What the application says it can be resized to. */
@@ -1809,7 +1852,15 @@ static void xdg_surface_resource_destroy(struct wl_resource *resource) {
 	struct wdc_xdg_surface *xdg = wl_resource_get_user_data(resource);
 	struct wdc_server *server = xdg_server(xdg);
 
-	if (server && server->ipc && xdg->announced) {
+	/*
+	 * A hidden window counts too: the shell is waiting to hear which it is.
+	 * This also runs for a client that just went away — zenity exits with
+	 * its dialog up, a crash takes everything — and libwayland destroys its
+	 * resources in id order, wl_surface before xdg_surface. Found through
+	 * `xdg->surface`, the server was gone by now and the shell was never
+	 * told; the dialog stayed on as the application's window.
+	 */
+	if (server && server->ipc && (xdg->announced || xdg->hidden)) {
 		uint8_t msg[4];
 		ipc_put_u32(msg, xdg->id);
 		ipc_send(server->ipc, IPC_CLOSED, msg, sizeof msg, NULL, 0);
@@ -1866,6 +1917,7 @@ static void wm_base_get_xdg_surface(struct wl_client *client,
 		wl_client_post_no_memory(client);
 		return;
 	}
+	xdg->server = server;
 	xdg->surface = surface;
 	xdg->id = ++server->next_window_id;
 	surface->id = xdg->id;
@@ -3620,14 +3672,22 @@ static struct wdc_xdg_surface *find_xwindow(struct wdc_server *server,
 	return NULL;
 }
 
+/*
+ * Forgets an X window. Destroyed, the shell hears closed — also for one it
+ * had already seen hidden, which is how it learns the application has
+ * closed its window rather than put it away. Not destroyed, this is a hidden
+ * window's surface being replaced on remap, and there is nothing to say.
+ */
 static void xwayland_detach(struct wdc_server *server,
-		struct wdc_xdg_surface *xdg) {
-	if (server->ipc && xdg->announced) {
+		struct wdc_xdg_surface *xdg, bool destroyed) {
+	if (server->ipc && (xdg->announced || (destroyed && xdg->hidden))) {
 		uint8_t msg[4];
 		ipc_put_u32(msg, xdg->id);
-		ipc_send(server->ipc, IPC_CLOSED, msg, sizeof msg, NULL, 0);
+		ipc_send(server->ipc, destroyed ? IPC_CLOSED : IPC_HIDDEN, msg,
+			sizeof msg, NULL, 0);
 	}
-	logmsg("X window 0x%x (w%u) gone", xdg->xwin, xdg->id);
+	logmsg("X window 0x%x (w%u) %s", xdg->xwin, xdg->id,
+		destroyed ? "destroyed" : "detached");
 	/* Nothing may keep pointing at it: an X client can unmap a window
 	 * whose menus and dialogs are still up. */
 	struct wdc_xdg_surface *other;
@@ -3658,6 +3718,7 @@ static void xwayland_attach(struct wdc_server *server,
 	}
 	struct wdc_xdg_surface *xdg = calloc(1, sizeof *xdg);
 	if (!xdg) return;
+	xdg->server = server;
 	xdg->surface = surface;
 	xdg->id = ++server->next_window_id;
 	surface->id = xdg->id;
@@ -3715,8 +3776,9 @@ static void xwayland_attach(struct wdc_server *server,
 static void xwm_on_surface(void *data, const struct xwm_window *win,
 		uint32_t surface_id) {
 	struct wdc_server *server = data;
+	/* A remap: the same X window, a new wl_surface behind it. */
 	struct wdc_xdg_surface *old = find_xwindow(server, win->xwin);
-	if (old) xwayland_detach(server, old);
+	if (old) xwayland_detach(server, old, false);
 
 	struct wl_resource *res = server->xwl_client
 		? wl_client_get_object(server->xwl_client, surface_id) : NULL;
@@ -3745,13 +3807,18 @@ static void xwayland_surface_created(struct wdc_server *server,
 	}
 }
 
-static void xwm_on_gone(void *data, uint32_t xwin) {
+/* Unmapped or destroyed. Unmapped keeps the window object, hidden, so that
+ * a destroy later can be told from a remap; Xwayland drops the surface
+ * either way, and the frame that brings it back names a new one. */
+static void xwm_on_gone(void *data, uint32_t xwin, bool destroyed) {
 	struct wdc_server *server = data;
 	struct wdc_xpending *p, *tmp;
 	wl_list_for_each_safe(p, tmp, &server->xpending, link)
 		if (p->win.xwin == xwin) xpending_free(p);
 	struct wdc_xdg_surface *xdg = find_xwindow(server, xwin);
-	if (xdg) xwayland_detach(server, xdg);
+	if (!xdg) return;
+	if (destroyed) xwayland_detach(server, xdg, true);
+	else window_hide(xdg);
 }
 
 static void xwm_on_title(void *data, uint32_t xwin, const char *title) {
@@ -3788,6 +3855,11 @@ static int handle_xwm_readable(int fd, uint32_t mask, void *data) {
 	server->xwm_source = NULL;
 	xwm_destroy(server->xwm);
 	server->xwm = NULL;
+	/* Nobody is left to report them, and the shell must not keep windows
+	 * of an X server that has gone. */
+	struct wdc_xdg_surface *xdg, *tmp;
+	wl_list_for_each_safe(xdg, tmp, &server->windows, link)
+		if (xdg->xwin) xwayland_detach(server, xdg, true);
 	return 0;
 }
 

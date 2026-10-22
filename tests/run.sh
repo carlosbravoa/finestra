@@ -152,6 +152,17 @@ if [ -x compositor/build/subsurface-client ]; then
   fixture wd-test-subsurface "WD Test Subsurface" "$PWD/compositor/build/subsurface-client" ""
   # The same client ignoring the output's scale, as an X client always does.
   fixture wd-test-unscaled "WD Test Unscaled" "$PWD/compositor/build/subsurface-client --unscaled" ""
+  # One that puts its window away and brings it back.
+  fixture wd-test-hides "WD Test Hides" "$PWD/compositor/build/subsurface-client --hide" ""
+  # An application with a helper process that shows a dialog and exits
+  # without destroying anything — zenity's shape, as DOSBox-X uses it.
+  cat > "$BIN_DIR/wd-helper-app" <<EOF
+#!/bin/sh
+"$PWD/compositor/build/subsurface-client" --brief &
+exec "$PWD/compositor/build/subsurface-client"
+EOF
+  chmod +x "$BIN_DIR/wd-helper-app"
+  fixture wd-test-helper "WD Test Helper" "$BIN_DIR/wd-helper-app" ""
   # A confined application asking the portal for a file dialog. The script
   # writes down the private bus it was given, then stays connected to the
   # display as the fixture client so the session lives while the test, as

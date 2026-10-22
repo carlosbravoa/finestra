@@ -106,6 +106,12 @@ static void wm_base_ping(void *data, struct xdg_wm_base *base, uint32_t serial) 
 static const struct xdg_wm_base_listener wm_base_listener = {wm_base_ping};
 
 static int32_t width = 320, height = 240;
+/* --hide: on the second configure, put the window away — attach nothing and
+ * commit, which is how a toolkit hides a window it means to show again —
+ * and bring it back a moment later through the handshake xdg-shell asks
+ * for. --brief: exit half a second after the first frame, destroying
+ * nothing, the way zenity leaves with its dialog up. */
+static bool hide, brief;
 
 static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
 		int32_t w, int32_t h, struct wl_array *states) {
@@ -124,6 +130,18 @@ static void surface_configure(void *data, struct xdg_surface *xdg,
 		uint32_t serial) {
 	xdg_surface_ack_configure(xdg, serial);
 	configures++;
+
+	if (hide && configures == 2) {
+		struct wl_display *display = wl_proxy_get_display((struct wl_proxy *)surface);
+		wl_surface_attach(surface, NULL, 0, 0);
+		wl_surface_commit(surface);
+		wl_display_flush(display);
+		usleep(300 * 1000);
+		/* The initial commit again: no buffer, and a configure to wait for. */
+		wl_surface_commit(surface);
+		wl_display_flush(display);
+		return;
+	}
 
 	if (configures == 1) {
 		/* The child first, synchronized, and well before the parent: a
@@ -150,6 +168,12 @@ static void surface_configure(void *data, struct xdg_surface *xdg,
 	wl_surface_attach(surface, solid(width * scale, height * scale, 0xffff0000), 0, 0);
 	wl_surface_damage_buffer(surface, 0, 0, width * scale, height * scale);
 	wl_surface_commit(surface);
+
+	if (brief && configures == 1) {
+		wl_display_flush(wl_proxy_get_display((struct wl_proxy *)surface));
+		usleep(500 * 1000);
+		exit(0);
+	}
 }
 static const struct xdg_surface_listener surface_listener = {surface_configure};
 
@@ -182,7 +206,12 @@ int main(int argc, char **argv) {
 	 * through Xwayland, SDL without HiDPI — draws one pixel per logical one
 	 * on any screen, and the frame has to say so or the browser shows it at
 	 * half size on a 2x one. */
-	bool unscaled = argc > 1 && !strcmp(argv[1], "--unscaled");
+	bool unscaled = false;
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--unscaled")) unscaled = true;
+		else if (!strcmp(argv[i], "--hide")) hide = true;
+		else if (!strcmp(argv[i], "--brief")) brief = true;
+	}
 	struct wl_display *display = wl_display_connect(NULL);
 	if (!display) {
 		fprintf(stderr, "wd-subsurface-client: no Wayland display\n");
