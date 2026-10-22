@@ -21,7 +21,8 @@
 #define IPC_POPUP   'U' /* id, parent u32, x i32, y i32, w u32, h u32       */
 #define IPC_TITLE   'T' /* id u32, str title                                */
 #define IPC_CLOSED  'X' /* id u32                                           */
-#define IPC_FRAME   'F' /* id, x, y, w, h, full_w, full_h u32, flags u8, px */
+#define IPC_FRAME   'F' /* id, x, y, w, h, full_w, full_h u32, flags u8,    */
+                        /* scale u8 — buffer pixels per logical one — px   */
 #define IPC_BOUNDS  'N' /* id, min_w, min_h, max_w, max_h u32               */
 #define IPC_MOVE    'V' /* id u32 — the application asked to be dragged     */
 #define IPC_RESIZE  'Z' /* id u32, edges u32 — ...or to be resized          */

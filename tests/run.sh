@@ -150,6 +150,8 @@ if [ -x compositor/build/wdcomp ] && pkg-config --exists wayland-client 2>/dev/n
 fi
 if [ -x compositor/build/subsurface-client ]; then
   fixture wd-test-subsurface "WD Test Subsurface" "$PWD/compositor/build/subsurface-client" ""
+  # The same client ignoring the output's scale, as an X client always does.
+  fixture wd-test-unscaled "WD Test Unscaled" "$PWD/compositor/build/subsurface-client --unscaled" ""
   # A confined application asking the portal for a file dialog. The script
   # writes down the private bus it was given, then stays connected to the
   # display as the fixture client so the session lives while the test, as

@@ -37,7 +37,7 @@ import './wayland.css';
  */
 
 /** Matches the header wdcomp writes; see compositor/src/ipc.h. */
-const FRAME_HEADER_BYTES = 29;
+const FRAME_HEADER_BYTES = 30;
 const FLAG_DEFLATE = 0x01;
 
 /** Long enough that a drag does not spam the application with relayouts. */
@@ -138,6 +138,11 @@ interface Surface {
    *  own logical pixels — the CSS position is this times the zoom. */
   x: number;
   y: number;
+  /** Buffer pixels per logical one in the last frame: what the application
+   *  drew at, which is not always what the screen is. An X client draws at
+   *  1x whatever the display, and is shown magnified rather than at half
+   *  size. */
+  scale: number;
   detach: Array<() => void>;
 }
 
@@ -157,6 +162,7 @@ interface FrameHeader {
   fullWidth: number;
   fullHeight: number;
   deflated: boolean;
+  scale: number;
 }
 
 function readHeader(bytes: Uint8Array): FrameHeader {
@@ -170,6 +176,7 @@ function readHeader(bytes: Uint8Array): FrameHeader {
     fullWidth: view.getUint32(20),
     fullHeight: view.getUint32(24),
     deflated: (view.getUint8(28) & FLAG_DEFLATE) !== 0,
+    scale: Math.max(1, view.getUint8(29)),
   };
 }
 
@@ -331,10 +338,9 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     if (clamped === zoom) return;
     zoom = clamped;
     desktop.settings.set(ZOOM_KEY, zoom);
-    const scale = displayScale();
     for (const surface of surfaces.values()) {
-      surface.canvas.style.width = `${(surface.canvas.width * zoom) / scale}px`;
-      surface.canvas.style.height = `${(surface.canvas.height * zoom) / scale}px`;
+      surface.canvas.style.width = `${(surface.canvas.width * zoom) / surface.scale}px`;
+      surface.canvas.style.height = `${(surface.canvas.height * zoom) / surface.scale}px`;
       placeSurface(surface, surface.x, surface.y);
     }
     pushSize();
@@ -458,6 +464,7 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
       holder: null,
       x: 0,
       y: 0,
+      scale: 1,
       detach: [],
     };
 
@@ -578,14 +585,14 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
    */
   function updateScrolling(): void {
     // canvas.width counts the application's painted pixels; the box is in its
-    // logical ones, so the two meet at the scale.
+    // logical ones, so the two meet at the scale the application drew at.
     const size = frameSize();
-    const scale = displayScale();
-    const canvas = mainId === null ? undefined : surfaces.get(mainId)?.canvas;
+    const main = mainId === null ? undefined : surfaces.get(mainId);
     stage.classList.toggle(
       'is-scrollable',
-      !!size && !!canvas &&
-        (canvas.width > size.width * scale || canvas.height > size.height * scale),
+      !!size && !!main &&
+        (main.canvas.width > size.width * main.scale ||
+          main.canvas.height > size.height * main.scale),
     );
   }
 
@@ -609,15 +616,18 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         // Resizing the canvas clears it, so only do it when it really changed.
         // wdcomp always sends a full frame when the size changes, so nothing
         // is lost by the clear.
-        const scale = displayScale();
-        const resized = canvas.width !== header.fullWidth || canvas.height !== header.fullHeight;
+        const { scale } = header;
+        const resized = canvas.width !== header.fullWidth ||
+          canvas.height !== header.fullHeight || surface.scale !== scale;
         if (resized) {
+          surface.scale = scale;
           canvas.width = header.fullWidth;
           canvas.height = header.fullHeight;
           // The backing store is in the application's pixels; the box it is
-          // drawn in is in CSS pixels. Dividing by the scale is what makes a
+          // drawn in is in CSS pixels. Dividing by the scale the frame was
+          // drawn at — the application's, not the screen's — is what makes a
           // 2x frame occupy the same space and resolve at twice the density,
-          // rather than being magnified to twice the size.
+          // and a 1x frame on a 2x screen fill its box rather than half of it.
           canvas.style.width = `${(header.fullWidth * zoom) / scale}px`;
           canvas.style.height = `${(header.fullHeight * zoom) / scale}px`;
         }

@@ -120,8 +120,9 @@ const decodeFrame = (buf) => {
     fullWidth: buf.readUInt32BE(20),
     fullHeight: buf.readUInt32BE(24),
     deflated: (buf.readUInt8(28) & 1) !== 0,
+    scale: buf.readUInt8(29),
   };
-  const payload = buf.subarray(29);
+  const payload = buf.subarray(30);
   header.wire = payload.length;
   header.pixels = header.deflated ? zlib.inflateSync(payload) : payload;
   return header;
@@ -705,6 +706,8 @@ if (subApp) {
     hiWin?.width === 320 && hiWin?.height === 240, hiWin ? `${hiWin.width}x${hiWin.height}` : 'no window');
   check('and the frame carries twice as many pixels each way',
     hiMain?.fullWidth === 640 && hiMain?.fullHeight === 480, hiMain ? `${hiMain.fullWidth}x${hiMain.fullHeight}` : 'no frame');
+  check('and says so, so the browser shows it at the size it was asked for',
+    hiMain?.scale === 2, `scale ${hiMain?.scale}`);
   check('the subsurface keeps its logical position and doubles its pixels',
     hiPlaced?.x === 40 && hiPlaced?.y === 30 && hiChild?.fullWidth === 240 && hiChild?.fullHeight === 160,
     hiChild ? `${hiPlaced?.x},${hiPlaced?.y} ${hiChild.fullWidth}x${hiChild.fullHeight}` : 'no frame');
@@ -723,6 +726,23 @@ if (subApp) {
   }
   ws.send(JSON.stringify({ t: 'close', id: hi.id }));
   await sleep(300);
+
+  // The same screen, and an application that has never heard of output
+  // scale — every X client through Xwayland, SDL without HiDPI. It draws one
+  // pixel per logical one, and the browser used to assume the screen's scale
+  // for every frame and show it at half size. The frame says what it was
+  // drawn at; the browser magnifies it to the box.
+  if (apps.some((a) => a.id === 'wd-test-unscaled')) {
+    const lo = open('wayland', 'session', { appId: 'wd-test-unscaled', width: 320, height: 240, scale: 2 });
+    await until(() => lo.data.some((d) => d.t === 'window') && lo.frames.length >= 1);
+    const loWin = lo.data.find((d) => d.t === 'window');
+    const loMain = lo.frames.map(decodeFrame).find((f) => f.id === loWin?.id);
+    check('an application drawing at 1x on a 2x screen sends a 1x frame that says so',
+      loMain?.fullWidth === 320 && loMain?.fullHeight === 240 && loMain?.scale === 1,
+      loMain ? `${loMain.fullWidth}x${loMain.fullHeight} at scale ${loMain.scale}` : 'no frame');
+    ws.send(JSON.stringify({ t: 'close', id: lo.id }));
+    await sleep(300);
+  }
 } else {
   console.log('SKIP  subsurfaces — compositor/build/subsurface-client is not built (needs libwayland-client)');
 }

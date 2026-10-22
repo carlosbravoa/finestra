@@ -551,7 +551,7 @@ static void send_frame(struct wdc_surface *surface, struct wdc_rect d,
 		payload_len = comp_len;
 	}
 
-	uint8_t head[29];
+	uint8_t head[30];
 	ipc_put_u32(head + 0, surface->id);
 	ipc_put_u32(head + 4, (uint32_t)d.x);
 	ipc_put_u32(head + 8, (uint32_t)d.y);
@@ -560,6 +560,13 @@ static void send_frame(struct wdc_surface *surface, struct wdc_rect d,
 	ipc_put_u32(head + 20, (uint32_t)win_w);
 	ipc_put_u32(head + 24, (uint32_t)win_h);
 	head[28] = flags;
+	/*
+	 * How many of these pixels make one logical one. The browser used to
+	 * assume the screen's scale for every window, and an application that
+	 * draws at 1x on a 2x screen — an X client through Xwayland, SDL without
+	 * HiDPI — was shown at half size.
+	 */
+	head[29] = (uint8_t)(surface->scale > 0 ? surface->scale : 1);
 
 	if (ipc_send(server->ipc, IPC_FRAME, head, sizeof head, payload,
 			payload_len) != 0) {

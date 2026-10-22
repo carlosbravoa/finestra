@@ -177,7 +177,12 @@ static void global(void *data, struct wl_registry *registry, uint32_t name,
 static void global_remove(void *data, struct wl_registry *registry, uint32_t name) {}
 static const struct wl_registry_listener registry_listener = {global, global_remove};
 
-int main(void) {
+int main(int argc, char **argv) {
+	/* An application that does not know about output scale — an X client
+	 * through Xwayland, SDL without HiDPI — draws one pixel per logical one
+	 * on any screen, and the frame has to say so or the browser shows it at
+	 * half size on a 2x one. */
+	bool unscaled = argc > 1 && !strcmp(argv[1], "--unscaled");
 	struct wl_display *display = wl_display_connect(NULL);
 	if (!display) {
 		fprintf(stderr, "wd-subsurface-client: no Wayland display\n");
@@ -188,6 +193,7 @@ int main(void) {
 	wl_display_roundtrip(display);
 	/* The output's scale arrives after the bind; one more round brings it. */
 	wl_display_roundtrip(display);
+	if (unscaled) scale = 1;
 	if (!compositor || !subcompositor || !shm || !wm_base) {
 		fprintf(stderr, "wd-subsurface-client: the compositor lacks a global\n");
 		return 1;
