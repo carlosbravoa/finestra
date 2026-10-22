@@ -413,6 +413,7 @@ static uint32_t next_serial(struct wdc_server *server) {
 /* Defined with the roles, needed by the renderer above them. */
 static void window_announce(struct wdc_xdg_surface *xdg);
 static void window_hide(struct wdc_xdg_surface *xdg);
+static void toplevel_send_bounds(struct wdc_toplevel *toplevel);
 static void subsurface_announce(struct wdc_subsurface *sub);
 static void subsurface_send_placement(struct wdc_subsurface *sub);
 
@@ -1343,6 +1344,11 @@ static void window_announce(struct wdc_xdg_surface *xdg) {
 	if (ipc_send(server->ipc, IPC_WINDOW, msg, at, NULL, 0) != 0) {
 		server->running = false;
 	}
+	/* Limits set before the first frame were dropped, since nothing was
+	 * announced to attach them to; an X window's always are. */
+	if (toplevel->min_width || toplevel->min_height || toplevel->max_width ||
+			toplevel->max_height)
+		toplevel_send_bounds(toplevel);
 }
 
 /*
@@ -3762,6 +3768,16 @@ static void xwayland_attach(struct wdc_server *server,
 		toplevel->xdg = xdg;
 		toplevel->title = win->title ? strdup(win->title) : NULL;
 		toplevel->app_id = win->app_id ? strdup(win->app_id) : NULL;
+		toplevel->min_width = win->min_width;
+		toplevel->min_height = win->min_height;
+		toplevel->max_width = win->max_width;
+		toplevel->max_height = win->max_height;
+		/* Transient for a window of ours: a dialog of it, as xdg_toplevel's
+		 * parent is. Transient for something else — the root, a window
+		 * never mapped — is a toplevel like any other. */
+		struct wdc_xdg_surface *parent = win->transient_for
+			? find_xwindow(server, win->transient_for) : NULL;
+		if (parent && parent->toplevel) toplevel->parent = parent;
 		xdg->toplevel = toplevel;
 	}
 	surface->xdg = xdg;
@@ -3840,11 +3856,23 @@ static void xwm_on_geometry(void *data, uint32_t xwin, int32_t x, int32_t y,
 	xdg->cfg_height = height;
 }
 
+static void xwm_on_bounds(void *data, uint32_t xwin, int32_t min_width,
+		int32_t min_height, int32_t max_width, int32_t max_height) {
+	struct wdc_xdg_surface *xdg = find_xwindow(data, xwin);
+	if (!xdg || !xdg->toplevel) return;
+	xdg->toplevel->min_width = min_width;
+	xdg->toplevel->min_height = min_height;
+	xdg->toplevel->max_width = max_width;
+	xdg->toplevel->max_height = max_height;
+	toplevel_send_bounds(xdg->toplevel);
+}
+
 static const struct xwm_callbacks xwm_callbacks = {
 	.surface = xwm_on_surface,
 	.gone = xwm_on_gone,
 	.title = xwm_on_title,
 	.geometry = xwm_on_geometry,
+	.bounds = xwm_on_bounds,
 };
 
 static int handle_xwm_readable(int fd, uint32_t mask, void *data) {
@@ -3876,6 +3904,8 @@ static int handle_xwayland_ready(int fd, uint32_t mask, void *data) {
 	if (n > 0 && parse_dec(buf, &display) && display >= 0) {
 		server->x_display = (int)display;
 		server->xwm = xwm_create(server->xwm_fd, &xwm_callbacks, server);
+		/* xcb owns the fd now, closed or not. */
+		server->xwm_fd = -1;
 		if (server->xwm) {
 			server->xwm_source = wl_event_loop_add_fd(server->loop,
 				xwm_get_fd(server->xwm), WL_EVENT_READABLE,
@@ -3887,6 +3917,7 @@ static int handle_xwayland_ready(int fd, uint32_t mask, void *data) {
 	} else {
 		logmsg("Xwayland exited before it was ready; launching without X");
 		close(server->xwm_fd);
+		server->xwm_fd = -1;
 	}
 	close(fd);
 	if (server->launch_argv)

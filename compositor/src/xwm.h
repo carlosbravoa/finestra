@@ -24,6 +24,10 @@ struct xwm_window {
 	bool override_redirect;
 	const char *title;
 	const char *app_id;
+	/* WM_TRANSIENT_FOR: a dialog of that window. 0 for none. */
+	uint32_t transient_for;
+	/* WM_NORMAL_HINTS, the parts a window frame cares about; 0 for unset. */
+	int32_t min_width, min_height, max_width, max_height;
 };
 
 struct xwm_callbacks {
@@ -36,6 +40,9 @@ struct xwm_callbacks {
 	void (*title)(void *data, uint32_t xwin, const char *title);
 	void (*geometry)(void *data, uint32_t xwin, int32_t x, int32_t y,
 		int32_t width, int32_t height);
+	/* WM_NORMAL_HINTS changed after the map. */
+	void (*bounds)(void *data, uint32_t xwin, int32_t min_width,
+		int32_t min_height, int32_t max_width, int32_t max_height);
 };
 
 /* Takes the fd Xwayland was given as -wm; NULL if it is not an X server. */

@@ -71,13 +71,27 @@ before anything widens what runs.
       ConfigureNotify after every request unless the window manager sends a
       synthetic one (ICCCM 4.1.5); at scale 2 an X window is drawn at 1× and
       shown pixel for pixel, so half size — the shell has to know a window's
-      scale, which the frame header does not carry. Seen and left for phase
+      scale, which the frame header did not carry. Seen and left for phase
       1: a second toplevel replaced the shell window of a GTK dialog before
       it instead of getting its own, keeping the dialog's title and size.
    1. **Managed windows as toplevels.** Title (`_NET_WM_NAME`), app id
       (`WM_CLASS`), size hints into `IPC_BOUNDS`, configure both ways, ✕ as
       `WM_DELETE_WINDOW` so the polite-close path is the same one, focus by
       `SetInputFocus`/`WM_TAKE_FOCUS`, `WM_TRANSIENT_FOR` as a dialog.
+      ✅ Done, and the two things the spike left were not about X. The
+      frame header now carries the scale a frame was drawn at, and the
+      browser uses that instead of the screen's — which was also wrong for
+      any Wayland client that ignores `wl_output.scale`. The "replaced
+      window" was zenity: DOSBox-X asks a question through it, zenity exits
+      without destroying anything, and libwayland destroys a dead client's
+      `wl_surface` before its `xdg_surface`, so the compositor had lost the
+      server pointer it needed to report the window closed. Fixed for every
+      client that crashes or exits with a window up. With that, a window
+      that commits no buffer is reported hidden rather than kept, and when
+      the window goes while another parentless toplevel is up, that one
+      becomes the window (the chooser-then-main pattern) instead of staying
+      a dialog over a stale frame. Still to come from this phase's list:
+      nothing; menus are phase 2.
    2. **Override-redirect windows** — menus, tooltips, drop-downs — as
       popups. They place themselves in absolute X coordinates, which here
       are the window's own, since the output is the window.

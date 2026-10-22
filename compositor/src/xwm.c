@@ -47,6 +47,8 @@ struct xwm_win {
 	uint32_t surface_id;
 	char *title;
 	char *app_id;
+	xcb_window_t transient_for;
+	int32_t min_width, min_height, max_width, max_height;
 	struct xwm_win *next;
 };
 
@@ -120,6 +122,43 @@ static void read_class(struct xwm *xwm, struct xwm_win *w) {
 	free(r);
 }
 
+static void read_transient_for(struct xwm *xwm, struct xwm_win *w) {
+	xcb_get_property_reply_t *r = xcb_get_property_reply(xwm->conn,
+		xcb_get_property(xwm->conn, 0, w->id, XCB_ATOM_WM_TRANSIENT_FOR,
+			XCB_ATOM_WINDOW, 0, 1), NULL);
+	if (!r) return;
+	w->transient_for = 0;
+	if (r->format == 32 && xcb_get_property_value_length(r) >= 4)
+		w->transient_for = *(xcb_window_t *)xcb_get_property_value(r);
+	free(r);
+}
+
+/*
+ * WM_NORMAL_HINTS is an XSizeHints: flags, then four obsolete fields, then
+ * min and max sizes — 18 CARD32s in all (ICCCM 4.1.2.3). Only the sizes
+ * matter here; the shell is the one that decides what to do with them.
+ */
+static void read_hints(struct xwm *xwm, struct xwm_win *w) {
+	xcb_get_property_reply_t *r = xcb_get_property_reply(xwm->conn,
+		xcb_get_property(xwm->conn, 0, w->id, XCB_ATOM_WM_NORMAL_HINTS,
+			XCB_ATOM_WM_SIZE_HINTS, 0, 18), NULL);
+	if (!r) return;
+	w->min_width = w->min_height = w->max_width = w->max_height = 0;
+	if (r->format == 32 && xcb_get_property_value_length(r) >= 9 * 4) {
+		const uint32_t *h = xcb_get_property_value(r);
+		enum { P_MIN_SIZE = 1 << 4, P_MAX_SIZE = 1 << 5 };
+		if (h[0] & P_MIN_SIZE) {
+			w->min_width = (int32_t)h[5];
+			w->min_height = (int32_t)h[6];
+		}
+		if (h[0] & P_MAX_SIZE) {
+			w->max_width = (int32_t)h[7];
+			w->max_height = (int32_t)h[8];
+		}
+	}
+	free(r);
+}
+
 static bool supports(struct xwm *xwm, xcb_window_t win, xcb_atom_t protocol) {
 	xcb_get_property_reply_t *r = xcb_get_property_reply(xwm->conn,
 		xcb_get_property(xwm->conn, 0, win, xwm->atoms[ATOM_WM_PROTOCOLS],
@@ -157,6 +196,11 @@ static void report_surface(struct xwm *xwm, struct xwm_win *w) {
 		.override_redirect = w->override_redirect,
 		.title = w->title,
 		.app_id = w->app_id,
+		.transient_for = w->transient_for,
+		.min_width = w->min_width,
+		.min_height = w->min_height,
+		.max_width = w->max_width,
+		.max_height = w->max_height,
 	};
 	xwm->cb.surface(xwm->data, &info, w->surface_id);
 }
@@ -193,6 +237,8 @@ static void handle_event(struct xwm *xwm, xcb_generic_event_t *ev) {
 		if (w) {
 			read_title(xwm, w);
 			read_class(xwm, w);
+			read_transient_for(xwm, w);
+			read_hints(xwm, w);
 			/* Every managed window lives at the origin, borderless: the
 			 * output is the window, and the shell draws the frame. */
 			uint32_t at[3] = {0, 0, 0};
@@ -304,6 +350,11 @@ static void handle_event(struct xwm *xwm, xcb_generic_event_t *ev) {
 			read_title(xwm, w);
 			if (w->surface_id && w->mapped)
 				xwm->cb.title(xwm->data, w->id, w->title);
+		} else if (e->atom == XCB_ATOM_WM_NORMAL_HINTS) {
+			read_hints(xwm, w);
+			if (w->surface_id && w->mapped)
+				xwm->cb.bounds(xwm->data, w->id, w->min_width, w->min_height,
+					w->max_width, w->max_height);
 		}
 		break;
 	}

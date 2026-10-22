@@ -662,6 +662,59 @@ application's *Open File* dialog at the Files app.
 Stages 1–3 are the small half. Stage 4 is where the time goes, and it is what
 decides whether this feels like a desktop or a demo.
 
+## What Xwayland phase 1 settled
+
+**The two problems the spike left were not about X.** At scale 2 an X
+window came up at half size, and DOSBox-X drew inside the shell window of a
+dialog shown before it, keeping the dialog's title and size. Both were
+faults in the Wayland path that Xwayland happened to be the first client to
+trip.
+
+**A frame says what scale it was drawn at.** The browser assumed the
+screen's scale for every frame — right for a toolkit that honours
+`wl_output.scale`, and wrong for anything that does not: Xwayland draws X
+pixels, one per logical pixel, and SDL2 without HiDPI does the same. The
+header carries the surface's buffer scale now, one byte, and the browser
+divides by that, so a 1× frame on a 2× screen is magnified to its box
+instead of occupying half of it. Pointer coordinates were already derived
+from the canvas's own two sizes, so they were right the moment the CSS
+size was. The suite's fixture has `--unscaled` for this shape.
+
+**A dead client's resources go in id order, and the window object is not
+the first.** DOSBox-X asks a question through `zenity`, which exits with
+its dialog up and destroys nothing. libwayland destroys a disconnecting
+client's objects by id, so its `wl_surface` dies before the `xdg_surface`
+made from it, and the `xdg_surface` destructor — which found the server
+through the surface — found nothing and sent no `closed`. The shell kept
+zenity's last frame as the application's window, and DOSBox-X's own
+window, arriving second, was shown as a dialog over it: hence the title,
+the size, and the scrollbars. Every crash and every helper process that
+exits with a window up did this. Role objects carry their own server
+pointer now; the fixture's `--brief` is that shape.
+
+**Hidden is a message, and the next toplevel takes over.** A toolkit hides
+a window by committing no buffer, and an X window is withdrawn before it
+is destroyed; the compositor used to render nothing and say nothing, so
+the shell kept the picture. `IPC_HIDDEN` drops it and keeps the id; the
+next frame announces the window again through the configure handshake
+xdg-shell asks for, and destroyed after hidden is reported closed. On the
+browser side, when the window goes — hidden or closed — while another
+parentless toplevel is up, that one becomes the window: out of its
+backdrop, into the stage, its own title and bounds. Hidden with no
+successor keeps the window open and empty, since the application is
+running and will draw or exit; closed with no successor closes ours, as
+it always has. Verified through the real shell with zenity followed by
+`xmessage`: the X window ends up as the window, with no dialog holder.
+
+**What the X window manager tells the shell.** Title, class as app id,
+`WM_NORMAL_HINTS` min and max as bounds, `WM_TRANSIENT_FOR` as a dialog's
+parent, geometry both ways with the synthetic `ConfigureNotify` Xt waits
+for, `WM_DELETE_WINDOW` for the ✕ and `kill_client` for a window that does
+not speak it, `SetInputFocus` and `WM_TAKE_FOCUS` for focus. Announcing a
+window now sends its bounds if any are set — for a Wayland client that set
+limits before its first frame they had been dropped, because nothing sent
+them after the announce.
+
 ## What stage 8 settled
 
 **The complaint was a frozen terminal clock, and the cause was Firefox.**
