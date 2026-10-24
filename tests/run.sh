@@ -179,6 +179,7 @@ fi
 # Where that client writes the pointer position the compositor delivered, so
 # the suite can click in the browser's pixels and read where it landed.
 export WD_TEST_POINTER="$XDG_STATE_HOME/pointer"
+export WD_TEST_OUTPUT="$XDG_STATE_HOME/output"
 
 export WD_TOKEN="test-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
 TOKEN="$WD_TOKEN"

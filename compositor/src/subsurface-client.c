@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 
+#include "xdg-output-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 static struct wl_compositor *compositor;
@@ -36,17 +37,67 @@ static int configures;
  * pixels into the same logical size, and says so with set_buffer_scale. */
 static int32_t scale = 1;
 
+/* The screen as the output describes it, written to the file WD_TEST_OUTPUT
+ * names whenever the description is complete: the mode is in the screen's
+ * pixels, xdg-output's logical size in the ones a window is configured in,
+ * and Xwayland sizes the X screen from the second when it is offered. */
+static int32_t mode_w, mode_h, logical_w, logical_h;
+static struct zxdg_output_manager_v1 *output_manager;
+static struct wl_output *the_output;
+
+static void report_output(void) {
+	const char *path = getenv("WD_TEST_OUTPUT");
+	if (!path) return;
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	fprintf(f, "mode %dx%d logical %dx%d scale %d\n", mode_w, mode_h,
+		logical_w, logical_h, scale);
+	fclose(f);
+}
+
 static void output_geometry(void *d, struct wl_output *o, int32_t x, int32_t y,
 		int32_t pw, int32_t ph, int32_t sub, const char *make, const char *model,
 		int32_t transform) {}
 static void output_mode(void *d, struct wl_output *o, uint32_t flags, int32_t w,
-		int32_t h, int32_t refresh) {}
-static void output_done(void *d, struct wl_output *o) {}
+		int32_t h, int32_t refresh) {
+	if (flags & WL_OUTPUT_MODE_CURRENT) {
+		mode_w = w;
+		mode_h = h;
+	}
+}
+static void output_done(void *d, struct wl_output *o) {
+	report_output();
+}
 static void output_scale(void *d, struct wl_output *o, int32_t factor) {
 	scale = factor;
 }
 static const struct wl_output_listener output_listener = {
 	output_geometry, output_mode, output_done, output_scale, NULL, NULL};
+
+static void xdg_output_position(void *d, struct zxdg_output_v1 *o, int32_t x,
+		int32_t y) {}
+static void xdg_output_size(void *d, struct zxdg_output_v1 *o, int32_t w,
+		int32_t h) {
+	logical_w = w;
+	logical_h = h;
+}
+static void xdg_output_done(void *d, struct zxdg_output_v1 *o) {
+	report_output();
+}
+static void xdg_output_name(void *d, struct zxdg_output_v1 *o, const char *n) {}
+static void xdg_output_description(void *d, struct zxdg_output_v1 *o,
+		const char *n) {}
+static const struct zxdg_output_v1_listener xdg_output_listener = {
+	xdg_output_position, xdg_output_size, xdg_output_done, xdg_output_name,
+	xdg_output_description};
+
+/* Once both globals are in hand, whichever came second. */
+static void describe_output(void) {
+	if (!output_manager || !the_output) return;
+	struct zxdg_output_v1 *xdg = zxdg_output_manager_v1_get_xdg_output(
+		output_manager, the_output);
+	zxdg_output_v1_add_listener(xdg, &xdg_output_listener, NULL);
+}
 
 static struct wl_buffer *solid(int32_t w, int32_t h, uint32_t argb) {
 	size_t size = (size_t)w * h * 4;
@@ -193,9 +244,14 @@ static void global(void *data, struct wl_registry *registry, uint32_t name,
 			&wl_seat_interface, version < 5 ? version : 5);
 		wl_seat_add_listener(seat, &seat_listener, NULL);
 	} else if (!strcmp(interface, wl_output_interface.name)) {
-		struct wl_output *output = wl_registry_bind(registry, name,
-			&wl_output_interface, version < 2 ? version : 2);
-		wl_output_add_listener(output, &output_listener, NULL);
+		the_output = wl_registry_bind(registry, name, &wl_output_interface,
+			version < 3 ? version : 3);
+		wl_output_add_listener(the_output, &output_listener, NULL);
+		describe_output();
+	} else if (!strcmp(interface, zxdg_output_manager_v1_interface.name)) {
+		output_manager = wl_registry_bind(registry, name,
+			&zxdg_output_manager_v1_interface, version < 3 ? version : 3);
+		describe_output();
 	}
 }
 static void global_remove(void *data, struct wl_registry *registry, uint32_t name) {}

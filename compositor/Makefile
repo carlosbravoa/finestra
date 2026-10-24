@@ -28,14 +28,17 @@ LDLIBS  := $(shell pkg-config --libs wayland-server xkbcommon xcb) -lz
 PROTOCOLS := \
   $(PROTO_DIR)/xdg-shell.xml \
   $(PROTO_DIR)/cursor-shape-v1.xml \
-  $(PROTO_DIR)/tablet-v2.xml
+  $(PROTO_DIR)/tablet-v2.xml \
+  $(PROTO_DIR)/xdg-output-unstable-v1.xml
 
 GEN_H := $(BUILD)/xdg-shell-server-protocol.h \
          $(BUILD)/cursor-shape-v1-server-protocol.h \
-         $(BUILD)/tablet-v2-server-protocol.h
+         $(BUILD)/tablet-v2-server-protocol.h \
+         $(BUILD)/xdg-output-unstable-v1-server-protocol.h
 GEN_C := $(BUILD)/xdg-shell-protocol.c \
          $(BUILD)/cursor-shape-v1-protocol.c \
-         $(BUILD)/tablet-v2-protocol.c
+         $(BUILD)/tablet-v2-protocol.c \
+         $(BUILD)/xdg-output-unstable-v1-protocol.c
 GEN_O := $(GEN_C:.c=.o)
 OBJS  := $(BUILD)/wdcomp.o $(BUILD)/png.o $(BUILD)/ipc.o $(BUILD)/xwm.o $(GEN_O)
 
@@ -82,11 +85,14 @@ check-ipc: $(BUILD)/ipc-test
 # A client with a subsurface, for the suite to launch through the service: the
 # shape of Firefox without Firefox. Needs libwayland-client, which the build
 # host has whenever it has libwayland-dev; nothing ships it.
-$(BUILD)/xdg-shell-client-protocol.h: $(PROTO_DIR)/xdg-shell.xml | $(BUILD)
+$(BUILD)/%-client-protocol.h: $(PROTO_DIR)/%.xml | $(BUILD)
 	$(SCANNER) client-header $< $@
 
-$(BUILD)/subsurface-client: src/subsurface-client.c $(BUILD)/xdg-shell-client-protocol.h $(BUILD)/xdg-shell-protocol.o
-	$(CC) $(CFLAGS) $(shell pkg-config --cflags wayland-client) $< $(BUILD)/xdg-shell-protocol.o \
+FIXTURE_PROTO := xdg-shell xdg-output-unstable-v1
+FIXTURE_H := $(FIXTURE_PROTO:%=$(BUILD)/%-client-protocol.h)
+FIXTURE_O := $(FIXTURE_PROTO:%=$(BUILD)/%-protocol.o)
+$(BUILD)/subsurface-client: src/subsurface-client.c $(FIXTURE_H) $(FIXTURE_O)
+	$(CC) $(CFLAGS) $(shell pkg-config --cflags wayland-client) $< $(FIXTURE_O) \
 		$(shell pkg-config --libs wayland-client) -o $@
 
 subsurface-client: $(BUILD)/subsurface-client

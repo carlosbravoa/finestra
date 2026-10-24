@@ -46,6 +46,7 @@
 #include <wayland-server-protocol.h>
 
 #include "cursor-shape-v1-server-protocol.h"
+#include "xdg-output-unstable-v1-server-protocol.h"
 #include "xdg-shell-server-protocol.h"
 
 #include "ipc.h"
@@ -1976,6 +1977,29 @@ static const struct wl_output_interface output_impl = {
 	.release = output_release,
 };
 
+/*
+ * The screen, in logical pixels.
+ *
+ * -g 0x0 means "let each window choose its own size" — it must never mean
+ * "the screen is zero pixels". Chrome consults the output mode during
+ * startup and CHECK-crashes on an empty one, silently, with the message
+ * stripped from the release build: every launch of a browser from an entry
+ * with no saved window size died this way, while the same launch through
+ * session restore — which carries a size — worked. The screen a window sizes
+ * itself against has to exist even when the window is free to pick.
+ *
+ * And it has to be the *right* screen: a window free to pick measures itself
+ * against this, and Firefox picks all of it. --output is the shell saying
+ * how much room there really is.
+ */
+static void output_logical_size(struct wdc_server *server, int32_t *w,
+		int32_t *h) {
+	*w = server->out_width > 0 ? server->out_width
+		: server->width > 0 ? server->width : 1920;
+	*h = server->out_height > 0 ? server->out_height
+		: server->height > 0 ? server->height : 1080;
+}
+
 static void output_bind(struct wl_client *client, void *data, uint32_t version,
 		uint32_t id) {
 	struct wdc_server *server = data;
@@ -1987,24 +2011,8 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
 	}
 	wl_resource_set_implementation(resource, &output_impl, server, NULL);
 
-	/*
-	 * -g 0x0 means "let each window choose its own size" — it must never
-	 * mean "the screen is zero pixels". Chrome consults the output mode
-	 * during startup and CHECK-crashes on an empty one, silently, with the
-	 * message stripped from the release build: every launch of a browser
-	 * from an entry with no saved window size died this way, while the same
-	 * launch through session restore — which carries a size — worked. The
-	 * screen a window sizes itself against has to exist even when the
-	 * window is free to pick.
-	 *
-	 * And it has to be the *right* screen: a window free to pick measures
-	 * itself against this, and Firefox picks all of it. --output is the
-	 * shell saying how much room there really is.
-	 */
-	int32_t out_w = server->out_width > 0 ? server->out_width
-		: server->width > 0 ? server->width : 1920;
-	int32_t out_h = server->out_height > 0 ? server->out_height
-		: server->height > 0 ? server->height : 1080;
+	int32_t out_w, out_h;
+	output_logical_size(server, &out_w, &out_h);
 	/* -g and --output are logical, like every configure; a mode is in the
 	 * screen's own pixels, which at scale 2 is twice as many. */
 	int32_t scale = server->scale > 0 ? server->scale : 1;
@@ -2019,6 +2027,73 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
 	if (version >= WL_OUTPUT_DONE_SINCE_VERSION) {
 		wl_output_send_done(resource);
 	}
+}
+
+/*
+ * xdg-output: the same screen in logical pixels, said outright. Wayland
+ * toolkits work it out from the mode and the scale, and the answer is the
+ * same. It is here for Xwayland, which does not: without it the X screen is
+ * the mode, twice the window at scale 2, and an X menu that keeps itself on
+ * screen keeps itself on a screen that does not exist — flipped or slid
+ * past the edge of the window it belongs to. With it the X screen is the
+ * window, which is what every managed X window is told it fills.
+ */
+static void xdg_output_destroy_req(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static const struct zxdg_output_v1_interface xdg_output_impl = {
+	.destroy = xdg_output_destroy_req,
+};
+
+static void output_manager_destroy_req(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static void output_manager_get_xdg_output(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id, struct wl_resource *output) {
+	struct wdc_server *server = wl_resource_get_user_data(resource);
+	int version = wl_resource_get_version(resource);
+	struct wl_resource *xdg = wl_resource_create(client,
+		&zxdg_output_v1_interface, version, id);
+	if (!xdg) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(xdg, &xdg_output_impl, server, NULL);
+
+	int32_t out_w, out_h;
+	output_logical_size(server, &out_w, &out_h);
+	zxdg_output_v1_send_logical_position(xdg, 0, 0);
+	zxdg_output_v1_send_logical_size(xdg, out_w, out_h);
+	if (version >= ZXDG_OUTPUT_V1_NAME_SINCE_VERSION)
+		zxdg_output_v1_send_name(xdg, "wdcomp");
+	/* From version 3 the wl_output's done closes the set; before that the
+	 * xdg_output has one of its own. */
+	if (version >= 3) {
+		if (wl_resource_get_version(output) >= WL_OUTPUT_DONE_SINCE_VERSION)
+			wl_output_send_done(output);
+	} else {
+		zxdg_output_v1_send_done(xdg);
+	}
+}
+
+static const struct zxdg_output_manager_v1_interface output_manager_impl = {
+	.destroy = output_manager_destroy_req,
+	.get_xdg_output = output_manager_get_xdg_output,
+};
+
+static void output_manager_bind(struct wl_client *client, void *data,
+		uint32_t version, uint32_t id) {
+	struct wl_resource *resource = wl_resource_create(client,
+		&zxdg_output_manager_v1_interface, (int)version, id);
+	if (!resource) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &output_manager_impl, data, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -4214,6 +4289,8 @@ int main(int argc, char **argv) {
 		subcompositor_bind);
 	wl_global_create(server.display, &wl_output_interface, 3, &server,
 		output_bind);
+	wl_global_create(server.display, &zxdg_output_manager_v1_interface, 3,
+		&server, output_manager_bind);
 	wl_global_create(server.display, &wl_seat_interface, 5, &server, seat_bind);
 	wl_global_create(server.display, &wl_data_device_manager_interface, 3,
 		&server, ddm_bind);

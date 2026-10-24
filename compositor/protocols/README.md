@@ -9,9 +9,15 @@ hand-written — it is just no longer read out of `/usr/share/wayland-protocols`
 | `xdg-shell.xml` | `stable/xdg-shell/xdg-shell.xml` |
 | `cursor-shape-v1.xml` | `staging/cursor-shape/cursor-shape-v1.xml` |
 | `tablet-v2.xml` | `stable/tablet/tablet-v2.xml` |
+| `xdg-output-unstable-v1.xml` | `unstable/xdg-output/xdg-output-unstable-v1.xml` — one attribute removed, see below |
 
 Each file carries its own MIT copyright notice in a `<copyright>` element; that
 is the licence they are used under, and copying them keeps it attached.
+
+`xdg-output` is here for Xwayland: without it, Xwayland sizes the X screen
+from the output *mode*, which at scale 2 is twice the window, and X menus
+place themselves against a screen that does not exist. With it the X screen
+is the logical size, which is the window.
 
 ## Why they are here and not read from the system
 
@@ -43,7 +49,10 @@ used anything recent. They do not. Every attribute across the three files is
 `allow-null`, `bitfield` and `encoding` — the newest of those, `enum` and
 `bitfield`, have been understood since wayland 1.11 in 2016. In particular
 there is **no `deprecated-since`**, which is the attribute that would demand a
-scanner from 1.23 or later.
+scanner from 1.23 or later. Upstream's `xdg-output` carries one, on the
+`done` event (`deprecated-since="3"`); it is removed from the copy here. It
+only annotates generated *client* code, and the server side is identical
+without it.
 
 So 22.04's wayland-scanner 1.20 should handle them. Only a real build there
 proves it, but the risk is characterised rather than assumed.

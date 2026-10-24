@@ -695,6 +695,8 @@ if (subApp) {
   // put a 6904x3900 Firefox into a 1728-pixel window: told to be twice its
   // size, it drew that at 2x, and the window that followed its size doubled
   // on every round.
+  // The output file is written by every launch of the fixture; only this one's counts.
+  if (process.env.WD_TEST_OUTPUT) { try { fs.unlinkSync(process.env.WD_TEST_OUTPUT); } catch { /* not there yet */ } }
   const hi = open('wayland', 'session', { appId: subApp.id, width: 320, height: 240, scale: 2 });
   await until(() => hi.data.some((d) => d.t === 'subsurface') && hi.frames.length >= 2);
   const hiWin = hi.data.find((d) => d.t === 'window');
@@ -723,6 +725,18 @@ if (subApp) {
     const where = landed ? fs.readFileSync(pointerFile, 'utf8').trim() : '';
     check('a click at 80,60 in the 2x frame arrives at 40,30 on the surface',
       where === 'window 40 30', where || 'the application saw no pointer');
+  }
+  // What the screen says it is. The mode is in its own pixels and xdg-output
+  // says the logical size outright. Xwayland sizes the X screen from the
+  // second when it is offered and from the mode when it is not — which at
+  // scale 2 made the X screen twice the window, and an X menu keeping itself
+  // on screen kept itself on one that does not exist.
+  const outputFile = process.env.WD_TEST_OUTPUT;
+  if (outputFile) {
+    const said = await until(() => fs.existsSync(outputFile) && /logical [1-9]/.test(fs.readFileSync(outputFile, 'utf8')));
+    const line = said ? fs.readFileSync(outputFile, 'utf8').trim() : '';
+    check('the output names its logical size, which is the window and not the mode',
+      line === 'mode 640x480 logical 320x240 scale 2', line || 'the application heard no output');
   }
   ws.send(JSON.stringify({ t: 'close', id: hi.id }));
   await sleep(300);
