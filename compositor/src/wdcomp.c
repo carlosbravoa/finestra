@@ -133,6 +133,13 @@ struct wdc_seat {
 	 * or the text the browser gave us. */
 	struct wl_resource *selection_source;
 	char *offered;
+	/* `offered` came from an X client, which still owns CLIPBOARD on the X
+	 * side: the browser sending the same text back is not a reason to take
+	 * it off that client. */
+	bool offered_from_x;
+	/* The text last read out of the application's source, for X clients:
+	 * they ask synchronously, and a Wayland source answers through a pipe. */
+	char *copied;
 	struct wl_event_source *offer_timer;
 	/* evdev keycodes currently held, so focus changes can release them. */
 	struct wl_array pressed;
@@ -2154,6 +2161,7 @@ static bool seat_init(struct wdc_seat *seat, const char *layout,
 
 static void seat_finish(struct wdc_seat *seat) {
 	free(seat->offered);
+	free(seat->copied);
 	wl_array_release(&seat->pressed);
 	if (seat->xkb_state) xkb_state_unref(seat->xkb_state);
 	if (seat->keymap) xkb_keymap_unref(seat->keymap);
@@ -2643,7 +2651,17 @@ static void selection_read_finish(struct wdc_selection_read *read_state,
 				NULL, 0);
 		}
 		logdbg("clipboard: %zu bytes from the application", read_state->len);
-
+		/* X clients paste from this copy; the source itself only answers
+		 * through a pipe, and an X paste cannot wait on one. */
+		char *copied = malloc(read_state->len + 1);
+		if (copied) {
+			memcpy(copied, read_state->buf, read_state->len);
+			copied[read_state->len] = '\0';
+			free(server->seat.copied);
+			server->seat.copied = copied;
+			if (server->xwm)
+				xwm_set_clipboard(server->xwm, copied, read_state->len);
+		}
 	}
 	wl_event_source_remove(read_state->source);
 	close(read_state->fd);
@@ -3164,6 +3182,7 @@ static void data_device_set_selection(struct wl_client *client,
 	server->seat.selection_source = source;
 	free(server->seat.offered);
 	server->seat.offered = NULL;
+	server->seat.offered_from_x = false;
 	offer_selection_to_all(server);
 
 	struct wdc_data_source *state = wl_resource_get_user_data(source);
@@ -3481,11 +3500,19 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		if (!text) return;
 		memcpy(text, payload, len);
 		text[len] = '\0';
+		/* The browser pushes its clipboard before every paste keystroke, so
+		 * after a copy in an X client this is that client's own text coming
+		 * back; taking CLIPBOARD off it for that would be a change with no
+		 * difference, and a SelectionClear to a client that did nothing. */
+		bool x_has_it = server->seat.offered_from_x && server->seat.offered &&
+			strcmp(server->seat.offered, text) == 0;
 		free(server->seat.offered);
 		server->seat.offered = text;
+		server->seat.offered_from_x = x_has_it;
 		server->seat.selection_source = NULL;
 		logdbg("clipboard: %zu bytes from the browser", len);
 		offer_selection_to_all(server);
+		if (server->xwm && !x_has_it) xwm_set_clipboard(server->xwm, text, len);
 		break;
 	}
 
@@ -3984,12 +4011,37 @@ static void xwm_on_bounds(void *data, uint32_t xwin, int32_t min_width,
 	toplevel_send_bounds(xdg->toplevel);
 }
 
+/* An X client copied. Its text takes the place the browser's would: the
+ * browser hears of it like any copy, and a Wayland client in the same
+ * session is offered it. */
+static void xwm_on_clipboard(void *data, const char *text, size_t len) {
+	struct wdc_server *server = data;
+	char *copy = malloc(len + 1);
+	if (!copy) return;
+	memcpy(copy, text, len);
+	copy[len] = '\0';
+	free(server->seat.offered);
+	server->seat.offered = copy;
+	server->seat.offered_from_x = true;
+	server->seat.selection_source = NULL;
+	logdbg("clipboard: %zu bytes from an X client", len);
+	if (server->ipc) ipc_send(server->ipc, IPC_COPY, copy, len, NULL, 0);
+	offer_selection_to_all(server);
+}
+
+/* What the X side should serve, if anything: never text that came from X. */
+static const char *x_clipboard_text(struct wdc_server *server) {
+	if (server->seat.offered_from_x) return NULL;
+	return server->seat.selection_source ? server->seat.copied : server->seat.offered;
+}
+
 static const struct xwm_callbacks xwm_callbacks = {
 	.surface = xwm_on_surface,
 	.gone = xwm_on_gone,
 	.title = xwm_on_title,
 	.geometry = xwm_on_geometry,
 	.bounds = xwm_on_bounds,
+	.clipboard = xwm_on_clipboard,
 };
 
 static int handle_xwm_readable(int fd, uint32_t mask, void *data) {
@@ -4027,6 +4079,9 @@ static int handle_xwayland_ready(int fd, uint32_t mask, void *data) {
 			server->xwm_source = wl_event_loop_add_fd(server->loop,
 				xwm_get_fd(server->xwm), WL_EVENT_READABLE,
 				handle_xwm_readable, server);
+			/* Whatever was copied before X existed is pasteable in X. */
+			const char *clip = x_clipboard_text(server);
+			if (clip) xwm_set_clipboard(server->xwm, clip, strlen(clip));
 			logmsg("Xwayland is up on DISPLAY=:%d", server->x_display);
 		} else {
 			logmsg("Xwayland is up but the window manager could not connect");

@@ -12,6 +12,7 @@
 #define WDC_XWM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct xwm;
@@ -43,6 +44,9 @@ struct xwm_callbacks {
 	/* WM_NORMAL_HINTS changed after the map. */
 	void (*bounds)(void *data, uint32_t xwin, int32_t min_width,
 		int32_t min_height, int32_t max_width, int32_t max_height);
+	/* An X client took CLIPBOARD and this is its text, read out already:
+	 * UTF-8, not NUL-terminated, the callee's to copy. */
+	void (*clipboard)(void *data, const char *text, size_t len);
 };
 
 /* Takes the fd Xwayland was given as -wm; NULL if it is not an X server. */
@@ -54,6 +58,9 @@ void xwm_configure(struct xwm *xwm, uint32_t xwin, int32_t width, int32_t height
 /* WM_DELETE_WINDOW when the client speaks it — the polite close — else kill. */
 void xwm_close(struct xwm *xwm, uint32_t xwin);
 void xwm_focus(struct xwm *xwm, uint32_t xwin);
+/* The browser or a Wayland client holds this text: the window manager takes
+ * CLIPBOARD and serves it to any X client that pastes. */
+void xwm_set_clipboard(struct xwm *xwm, const char *text, size_t len);
 void xwm_destroy(struct xwm *xwm);
 
 #endif

@@ -113,6 +113,22 @@ before anything widens what runs.
    3. **Clipboard.** Xwayland does not bridge X selections to Wayland's; the
       window manager has to, `CLIPBOARD` into the existing data-device
       selection, INCR included.
+      ✅ Done. XFixes says when `CLIPBOARD` changes hands — a raw request
+      like Composite's, no library — and the window manager reads the new
+      owner's text at once, `UTF8_STRING` then `STRING`, INCR pieces
+      included (Tk sends anything over 4000 bytes that way), and it goes to
+      the browser as any copy does. The browser's text, or a Wayland
+      client's, is served from a window of ours that owns `CLIPBOARD`,
+      whole up to 256 kB and INCR above: Tk refuses a single property over
+      400 kB and quietly falls back to `STRING`, so a large paste arrived
+      as Latin-1 with `?` for every em dash before the pieces were there.
+      The browser pushes its clipboard before each paste keystroke, and
+      after a copy in an X client that is the client's own text coming
+      back, so it is not taken off that client; and when an X owner exits
+      — in X that empties the clipboard — the last text is served again.
+      Verified on the frame channel with Tk and an XCB client that offers
+      `STRING` only, and through the built server as a `copy` message.
+      PRIMARY and anything but text stay out.
    4. **Launch and lifecycle.** Xwayland started on the first X connection,
       so a Wayland application pays nothing. `DISPLAY` changes what SDL2
       and Qt 5 choose, so the spawn says `SDL_VIDEODRIVER=wayland,x11` and
@@ -121,9 +137,13 @@ before anything widens what runs.
       `liveApps` and `IPC_CLIENT`; `IPC_RESYNC` covers X windows; a missing
       Xwayland names its package.
    5. **Checks and packaging.** An XCB fixture client beside
-      `subsurface-client.c`, run at scale 2; Xwayland per distribution in
-      `checks.sh` (Amazon Linux 2023 may not package it); the real list
-      from `docs/wayland.md` — `dosbox-x`, Tk, VLC's skins2.
+      `subsurface-client.c`, run at scale 2 — it copies and pastes too, the
+      clipboard checks live on the frame channel until then; Xwayland per
+      distribution in `checks.sh` (Amazon Linux 2023 may not package it);
+      the real list from `docs/wayland.md` — `dosbox-x`, Tk, VLC's skins2.
+      `wdcomp` has linked libxcb since phase 1 and nothing says so yet:
+      `libxcb1-dev` on the builder (`build.sh`, `verify-reach.sh`, the
+      Makefile's `check`), `libxcb1` at run time — or `dlopen`, see below.
 
    Not in the first round: image cursors (`pointer_set_cursor` only knows
    shapes, and Xwayland only sends images, so X windows get the arrow),

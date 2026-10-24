@@ -774,6 +774,66 @@ The one thing not to do is give an override-redirect window the X focus:
 the browser focuses whatever canvas was clicked, and `SetInputFocus` on a
 menu only disturbs the grab it holds, so only toplevels get it.
 
+## What Xwayland phase 3 settled
+
+**Xwayland bridges no selection; the window manager is the X end of the
+clipboard.** The compositor already had two owners for the clipboard —
+the application's `wl_data_source`, or the text the browser pushed — and
+X adds a third place text can come from and go to, not a new model. An
+X client that copies owns `CLIPBOARD` on the X server and nobody else
+hears of it, so the window manager asks XFixes to say when the selection
+changes hands (a version handshake and one request, written out by hand
+like Composite's — the server answers `BadRequest` to a client that skips
+the handshake), converts the selection at once and reports the text. It
+goes to the browser as `IPC_COPY`, the same message a Wayland copy
+sends, and is offered to any Wayland client in the session. Read at copy
+time, not at paste time: the browser's clipboard is a value it holds,
+not a promise to fetch later.
+
+**The other direction is a window of ours that owns `CLIPBOARD`.** When
+the browser pushes text, or a Wayland client's selection has been read
+out, the window manager takes the selection and answers requests from
+that text: `TARGETS`, `TIMESTAMP`, `UTF8_STRING`, `text/plain;charset=utf-8`,
+`TEXT`, and `STRING` and `text/plain` transcoded to Latin-1. A Wayland
+source answers only through a pipe, and an X paste cannot wait on one,
+so the copy the compositor already reads for the browser is what X
+clients get.
+
+**INCR is needed on both sides, for different reasons.** Reading: Tk
+sends anything over 4000 bytes as an INCR transfer, so a copy from a Tk
+text widget is INCR before it is interesting. Writing: the request size
+is not the limit — Xwayland speaks BIG-REQUESTS, 16 MB — the requestor
+is. Tk refuses any single property over 400 kB with "selection property
+too large" and then quietly asks for `STRING` instead, so a 456 kB paste
+arrived complete, in Latin-1, with `?` for every em dash and euro sign.
+GTK caps its own pieces at 256 kB for the same reason; so does this.
+
+**Pasting an X client's own text back is not a change of owner.** The
+browser pushes its clipboard before every paste keystroke, so after a
+copy in an X client the next paste in that same client sends the
+client's text back to the compositor. Taking `CLIPBOARD` off the client
+for that would send it a `SelectionClear` for nothing — and lose
+whatever else it offered, an image say. Text that came from X stays X's
+while the browser sends the same text back; anything different takes
+over.
+
+**In X the clipboard dies with its owner; here it does not.** Close the
+application you copied from on any X desktop and there is nothing left
+to paste. Every X client's text came through the window manager, so
+when the owner goes (XFixes says so, owner `None`) the window manager
+takes the selection back with that text. The browser already works this
+way — `desktop.clipboard` keeps every copy — and an X application should
+not be the one place it forgets.
+
+**What is not here.** PRIMARY, which has no browser counterpart; images
+and other non-text types; drag and drop. Without XFixes — no X server
+this will meet lacks it — copying out of X clients is off and a line
+says so. The suite's check waits for the XCB fixture client of phase 5;
+until then the verification is the frame-channel probe with Tk (small,
+INCR-sized, and a 456 kB paste) and an XCB client that offers `STRING`
+only, exits while owning the selection, and reports whether it was
+cleared.
+
 ## What stage 8 settled
 
 **The complaint was a frozen terminal clock, and the cause was Firefox.**
