@@ -1,10 +1,11 @@
 /*
  * xwm — see xwm.h.
  *
- * Spike scope (ROADMAP.md, Xwayland phase 0): pair X windows with their
- * wl_surface, map what asks to be mapped, pass on titles and sizes, close
- * politely. Override-redirect windows are reported as such and wdcomp shows
- * them as popups. No decorations, ever: the shell draws the frame.
+ * Pairs X windows with their wl_surface, maps what asks to be mapped, passes
+ * on titles, sizes, hints and transients, closes politely and hands out
+ * focus. Override-redirect windows — menus, tooltips, drop-downs — are
+ * reported as such, with where they put themselves, and wdcomp shows them as
+ * popups. No decorations, ever: the shell draws the frame.
  */
 #include "xwm.h"
 
@@ -259,7 +260,23 @@ static void handle_event(struct xwm *xwm, xcb_generic_event_t *ev) {
 		struct xwm_win *w = find(xwm, e->window);
 		if (!w) break;
 		w->mapped = true;
-		if (w->override_redirect && !w->title) read_title(xwm, w);
+		/*
+		 * The flag at map time, not at creation. Tk creates a menu as an
+		 * ordinary window and sets override-redirect on it afterwards, and
+		 * no event reports that change — so every Tk menu arrived here
+		 * looking like a toplevel, and the shell gave each a window of its
+		 * own. The map is what makes the difference visible: an
+		 * override-redirect window maps without asking, and the server
+		 * says so in the notification.
+		 */
+		w->override_redirect = e->override_redirect;
+		/* No MapRequest came for it, so nothing has been read yet. The
+		 * transient hint is the one thing a menu can say about whose it
+		 * is, and GTK and Qt set it. */
+		if (w->override_redirect) {
+			if (!w->title) read_title(xwm, w);
+			read_transient_for(xwm, w);
+		}
 		report_surface(xwm, w);
 		break;
 	}

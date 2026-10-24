@@ -3497,8 +3497,12 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		if (payload[4]) {
 			seat_keyboard_enter(server, focused);
 			/* Xwayland gives the X server focus from wl_keyboard, but which
-			 * X window has it is the window manager's to say. */
-			if (server->xwm && focused->xdg && focused->xdg->xwin)
+			 * X window has it is the window manager's to say. Never a menu:
+			 * the browser focuses whatever canvas was clicked, and an
+			 * override-redirect window holds its keys through a grab, which
+			 * SetInputFocus would only disturb. */
+			if (server->xwm && focused->xdg && focused->xdg->xwin &&
+					focused->xdg->toplevel)
 				xwm_focus(server->xwm, focused->xdg->xwin);
 		} else {
 			seat_keyboard_leave(server);
@@ -3791,6 +3795,48 @@ static void xwayland_detach(struct wdc_server *server,
 	free(xdg);
 }
 
+/*
+ * Which window an X menu belongs to. X has no such notion for an
+ * override-redirect window, and the shell needs one to know where to draw
+ * it — over the window, or on a dialog's backdrop. GTK and Qt say, with
+ * WM_TRANSIENT_FOR; Tk does not. Then the window the pointer is in, which
+ * is the one whose button was just pressed — or the menu it is on, when a
+ * submenu opens. Then the newest window still showing: with a dialog up
+ * the shell lets nothing else be clicked, so the newest is the only one a
+ * menu can have come from. Keyboard focus is not consulted: it sits on the
+ * main window from the moment it appears, before anything was clicked,
+ * and put a dialog's drop-down under the backdrop.
+ */
+static struct wdc_xdg_surface *x_popup_parent(struct wdc_server *server,
+		uint32_t transient_for) {
+	struct wdc_xdg_surface *xdg = transient_for
+		? find_xwindow(server, transient_for) : NULL;
+	if (xdg && xdg->toplevel) return xdg;
+
+	struct wdc_surface *under = server->seat.pointer_focus;
+	xdg = under ? under->xdg : NULL;
+	if (xdg && xdg->popup) xdg = xdg->popup->parent;
+	if (xdg && xdg->xwin && xdg->toplevel) return xdg;
+
+	struct wdc_xdg_surface *w;
+	wl_list_for_each(w, &server->windows, link)
+		if (w->xwin && w->toplevel && !w->hidden) return w;
+	return NULL;
+}
+
+/*
+ * An X menu places itself in root coordinates, and the root is our output,
+ * which is the window: every managed window sits at the root's origin, so
+ * the root coordinates are already the window's own. The subtraction is for
+ * the day that stops being true, not for today.
+ */
+static void x_popup_place(struct wdc_popup *popup, int32_t x, int32_t y,
+		int32_t width, int32_t height) {
+	int32_t px = popup->parent ? popup->parent->x_x : 0;
+	int32_t py = popup->parent ? popup->parent->x_y : 0;
+	popup->placement = (struct wdc_rect){x - px, y - py, width, height};
+}
+
 static void xwayland_attach(struct wdc_server *server,
 		struct wdc_surface *surface, const struct xwm_window *win) {
 	if (surface->xdg || surface->sub) {
@@ -3819,19 +3865,8 @@ static void xwayland_attach(struct wdc_server *server,
 			return;
 		}
 		popup->xdg = xdg;
-		/* An X menu names no parent; it belongs to the application, and
-		 * the newest window it has is the best guess at which. */
-		struct wdc_xdg_surface *w;
-		wl_list_for_each(w, &server->windows, link) {
-			if (w->xwin && w->toplevel) {
-				popup->parent = w;
-				break;
-			}
-		}
-		int32_t px = popup->parent ? popup->parent->x_x : 0;
-		int32_t py = popup->parent ? popup->parent->x_y : 0;
-		popup->placement = (struct wdc_rect){win->x - px, win->y - py,
-			win->width, win->height};
+		popup->parent = x_popup_parent(server, win->transient_for);
+		x_popup_place(popup, win->x, win->y, win->width, win->height);
 		xdg->popup = popup;
 		wl_list_insert(&server->popups, &popup->link);
 	} else {
@@ -3929,6 +3964,13 @@ static void xwm_on_geometry(void *data, uint32_t xwin, int32_t x, int32_t y,
 	/* A size the application chose for itself; frames will say so too. */
 	xdg->cfg_width = width;
 	xdg->cfg_height = height;
+	/* A menu that moved after it mapped — GTK slides one back on screen
+	 * once it knows its size — is still shown where it first appeared
+	 * unless the shell hears about it. */
+	if (xdg->popup) {
+		x_popup_place(xdg->popup, x, y, width, height);
+		popup_send_placement(xdg->popup);
+	}
 }
 
 static void xwm_on_bounds(void *data, uint32_t xwin, int32_t min_width,
