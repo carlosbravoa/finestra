@@ -715,6 +715,65 @@ window now sends its bounds if any are set — for a Wayland client that set
 limits before its first frame they had been dropped, because nothing sent
 them after the announce.
 
+## What Xwayland phase 2 settled
+
+**Override-redirect is read when the window maps, not when it is made.**
+Tk creates a menu as an ordinary window and sets the flag afterwards, and
+X reports no change of attributes — so `CreateNotify` said "managed",
+every Tk menu was reported as a toplevel, and the shell gave each one a
+dialog of its own. An override-redirect window maps without a
+`MapRequest`, and the `MapNotify` carries the flag; that is the one to
+trust. GTK and Qt happen to create their menus with the flag set, which
+is why `xmessage` and DOSBox-X never showed this.
+
+**Whose menu it is.** X has no parent for an override-redirect window,
+and the shell needs one to know where to draw it. `WM_TRANSIENT_FOR`
+when the toolkit sets it — GTK and Qt do, Tk does not. Then the window
+the pointer is in, which is the one whose button was just pressed, or the
+menu it is on when a submenu opens. Then the newest window still showing:
+with a dialog up the shell lets nothing else be clicked, so the newest is
+the only one a menu can have come from. Keyboard focus is not consulted.
+It sits on the main window from the moment the window appears, before
+anything has been clicked, and it put a dialog's drop-down on the main
+window, under the backdrop.
+
+**Root coordinates are the window's.** Every managed X window is placed
+at the root's origin, so where a menu puts itself in root coordinates is
+where it goes in the shell window, and at scale 2 it is magnified with
+everything else. A `ConfigureNotify` after the map — GTK slides a menu
+back on screen once it knows its size — moves it in the shell too; the
+spike had left it where it first appeared.
+
+**The X screen is the window, and that takes xdg-output.** Xwayland
+sizes the X screen from the output *mode* unless the compositor offers
+`xdg-output`, and the mode at scale 2 is twice the window: a menu that
+keeps itself on screen kept itself on a screen that does not exist, past
+the edge of the window it belongs to. `wdcomp` offers xdg-output now, the
+logical size said outright. Wayland toolkits work the same size out from
+the mode and the scale, so nothing changes for them. The protocol XML is
+vendored like the others, with one attribute removed —
+`deprecated-since` on the `done` event, which a scanner older than 1.23
+does not know and which only annotates client code. The fixture reports
+what the output said to `WD_TEST_OUTPUT`, and the suite checks the mode
+is twice the logical size at scale 2.
+
+**A dialog's menu was under the backdrop, and so was a Wayland one.**
+The shell put every popup on the stage, over the window. A dialog sits
+on a backdrop *above* the stage, so a drop-down opened from a dialog was
+drawn where nobody could see or click it — found with Tk's `OptionMenu`,
+true of a GTK combo in a Wayland dialog too. A popup whose parent is a
+dialog goes on the dialog's backdrop now, offset by where the dialog is
+on it, and when a dialog is promoted to the window its menus come along.
+
+**Input needs nothing new.** An X menu's grab is the X server's own:
+clicks reach whichever surface was clicked, Xwayland turns them into X
+events, and the X server delivers them where its grab says — a click
+outside the menu closes it, as on any desktop. Keys go to the window the
+browser focused and the X server routes them through the keyboard grab.
+The one thing not to do is give an override-redirect window the X focus:
+the browser focuses whatever canvas was clicked, and `SetInputFocus` on a
+menu only disturbs the grab it holds, so only toplevels get it.
+
 ## What stage 8 settled
 
 **The complaint was a frozen terminal clock, and the cause was Firefox.**

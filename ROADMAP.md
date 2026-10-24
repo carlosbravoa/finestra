@@ -95,6 +95,21 @@ before anything widens what runs.
    2. **Override-redirect windows** — menus, tooltips, drop-downs — as
       popups. They place themselves in absolute X coordinates, which here
       are the window's own, since the output is the window.
+      ✅ Done. Tk's menus had been arriving as toplevels: Tk sets
+      override-redirect after creating the window, and only the map says
+      so. A menu's parent is `WM_TRANSIENT_FOR` when the toolkit sets it
+      (GTK, Qt), else the window the pointer is in, else the newest one
+      showing — never keyboard focus, which sits on the main window before
+      anything is clicked. A menu that moves after it maps (GTK slides one
+      back on screen) moves in the shell too. Two things were not about X:
+      without xdg-output, Xwayland sized the X screen from the mode, twice
+      the window at scale 2, so `wdcomp` offers xdg-output now and the
+      suite checks what the screen says; and a drop-down opened from a
+      dialog was drawn under the dialog's backdrop — for Wayland popups of
+      dialogs too — and sits on the backdrop now, following the dialog.
+      Verified with Tk through the real shell at scale 1 and 2: a menu
+      over the window, a submenu, a dialog's drop-down, and a click into
+      each.
    3. **Clipboard.** Xwayland does not bridge X selections to Wayland's; the
       window manager has to, `CLIPBOARD` into the existing data-device
       selection, INCR included.

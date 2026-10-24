@@ -480,9 +480,9 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     if (kind === 'window') {
       stage.replaceChildren(canvas);
     } else if (kind === 'popup') {
-      // Positioned by the compositor, in the window's own coordinates.
+      // Positioned by the compositor, in its parent's own coordinates.
       surface.holder = h('div', { class: 'wayland-popup' }, canvas);
-      stage.appendChild(surface.holder);
+      popupLayer(surface).appendChild(surface.holder);
     } else if (kind === 'subsurface') {
       // A piece of its parent, drawn where the compositor says. Firefox's
       // entire interface is one of these, over a toplevel that holds nothing
@@ -505,6 +505,19 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
       if (child.kind === 'subsurface' && child.parent === id) attachToParent(child);
     }
     return surface;
+  }
+
+  /**
+   * Where a menu is drawn. On the stage, over the window — unless it belongs
+   * to a dialog, which sits on a backdrop *above* the stage: a drop-down
+   * opened from a dialog and put on the stage was under the backdrop, drawn
+   * where nobody could see it or click it. It goes on the dialog's backdrop
+   * instead, and placeSurface adds where the dialog is on it.
+   */
+  function popupLayer(surface: Surface): HTMLElement {
+    const parent = surfaces.get(surface.parent);
+    const backdrop = parent?.kind === 'dialog' ? parent.holder?.parentElement : null;
+    return backdrop ?? stage;
   }
 
   /** Puts a subsurface inside whatever its parent is drawn in. */
@@ -536,8 +549,17 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     surface.x = x;
     surface.y = y;
     if (!surface.holder || surface.kind === 'dialog') return;
-    surface.holder.style.left = `${x * zoom}px`;
-    surface.holder.style.top = `${y * zoom}px`;
+    let left = x * zoom;
+    let top = y * zoom;
+    // A dialog is centred on its backdrop, and its menus are placed against
+    // the dialog, so they move with it.
+    const parent = surfaces.get(surface.parent);
+    if (surface.kind === 'popup' && parent?.kind === 'dialog' && parent.holder) {
+      left += parent.holder.offsetLeft;
+      top += parent.holder.offsetTop;
+    }
+    surface.holder.style.left = `${left}px`;
+    surface.holder.style.top = `${top}px`;
   }
 
   /* ---------------------------------------------------------------- */
@@ -906,7 +928,13 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     surface.kind = 'window';
     stage.replaceChildren(surface.canvas);
     for (const child of surfaces.values()) {
-      if (child.kind === 'subsurface' && child.parent === surface.id) attachToParent(child);
+      if (child.parent !== surface.id) continue;
+      if (child.kind === 'subsurface') attachToParent(child);
+      // Its menus went with the backdrop; they belong on the stage now.
+      if (child.kind === 'popup' && child.holder) {
+        stage.appendChild(child.holder);
+        placeSurface(child, child.x, child.y);
+      }
     }
     mainId = surface.id;
     hiddenMain = null;
