@@ -164,6 +164,9 @@ struct wdc_server {
 	 * was to live in. The shell knows how much room there is; this is it.
 	 */
 	int32_t out_width, out_height;
+	/* Every bound wl_output and xdg_output, so a screen that has to grow
+	 * can be re-announced; see output_grow. */
+	struct wl_list outputs, xdg_outputs;
 
 	/*
 	 * What we tell applications the display's pixel density is, and the only
@@ -2014,6 +2017,11 @@ static void output_logical_size(struct wdc_server *server, int32_t *w,
 		: server->height > 0 ? server->height : 1080;
 }
 
+/* Both output kinds are kept on a list only for output_grow to find. */
+static void output_resource_destroy(struct wl_resource *resource) {
+	wl_list_remove(wl_resource_get_link(resource));
+}
+
 static void output_bind(struct wl_client *client, void *data, uint32_t version,
 		uint32_t id) {
 	struct wdc_server *server = data;
@@ -2023,7 +2031,9 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(resource, &output_impl, server, NULL);
+	wl_resource_set_implementation(resource, &output_impl, server,
+		output_resource_destroy);
+	wl_list_insert(&server->outputs, wl_resource_get_link(resource));
 
 	int32_t out_w, out_h;
 	output_logical_size(server, &out_w, &out_h);
@@ -2040,6 +2050,45 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
 	}
 	if (version >= WL_OUTPUT_DONE_SINCE_VERSION) {
 		wl_output_send_done(resource);
+	}
+}
+
+/*
+ * The screen grows to hold an X window. Xwayland sizes its X screen from
+ * the output and clamps the pointer to that screen, so a window larger than
+ * the output — the shell's starting box, before the window followed the
+ * application's own size — had an edge no click could reach: an SDL game
+ * 800 high on a 646-high output took the bottom quarter of its board as
+ * its last row. A Wayland client needs none of this (the pointer is
+ * surface-local and unclamped), so only X windows grow the screen, and it
+ * never shrinks: an X menu keeps itself on whatever screen it last heard
+ * of, and a smaller one would push it back into the window.
+ */
+static void output_grow(struct wdc_server *server, int32_t width,
+		int32_t height) {
+	int32_t out_w, out_h;
+	output_logical_size(server, &out_w, &out_h);
+	if (width <= out_w && height <= out_h) return;
+	server->out_width = width > out_w ? width : out_w;
+	server->out_height = height > out_h ? height : out_h;
+	int32_t scale = server->scale > 0 ? server->scale : 1;
+	logmsg("the screen grows to %dx%d for an X window %dx%d",
+		server->out_width, server->out_height, width, height);
+
+	struct wl_resource *xdg;
+	wl_resource_for_each(xdg, &server->xdg_outputs) {
+		zxdg_output_v1_send_logical_size(xdg, server->out_width,
+			server->out_height);
+		if (wl_resource_get_version(xdg) < 3)
+			zxdg_output_v1_send_done(xdg);
+	}
+	struct wl_resource *output;
+	wl_resource_for_each(output, &server->outputs) {
+		wl_output_send_mode(output,
+			WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
+			server->out_width * scale, server->out_height * scale, 60000);
+		if (wl_resource_get_version(output) >= WL_OUTPUT_DONE_SINCE_VERSION)
+			wl_output_send_done(output);
 	}
 }
 
@@ -2076,7 +2125,9 @@ static void output_manager_get_xdg_output(struct wl_client *client,
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(xdg, &xdg_output_impl, server, NULL);
+	wl_resource_set_implementation(xdg, &xdg_output_impl, server,
+		output_resource_destroy);
+	wl_list_insert(&server->xdg_outputs, wl_resource_get_link(xdg));
 
 	int32_t out_w, out_h;
 	output_logical_size(server, &out_w, &out_h);
@@ -2193,6 +2244,7 @@ static void pointer_send_frame(struct wdc_seat *seat,
 }
 
 static void seat_pointer_leave(struct wdc_server *server);
+static void seat_send_cursor(struct wdc_server *server, uint32_t shape);
 
 static void seat_pointer_enter(struct wdc_server *server,
 		struct wdc_surface *surface, int32_t x, int32_t y) {
@@ -2205,9 +2257,16 @@ static void seat_pointer_enter(struct wdc_server *server,
 	if (seat->pointer_focus) seat_pointer_leave(server);
 
 	seat->pointer_focus = surface;
-	/* Forget the shape: the application sets one per enter, and the browser
-	 * must not keep showing the previous surface's cursor if it does not. */
-	seat->cursor_shape = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT;
+	/*
+	 * Back to the arrow, and the browser hears it: the application sets a
+	 * shape per enter, and the browser must not keep showing the previous
+	 * surface's cursor if it does not. This used to reset only our own
+	 * record, so a browser left showing no cursor stayed that way when the
+	 * next surface asked for the default — LibreOffice's X11 splash screen
+	 * hid the pointer, and its Draw window, GTK asking for the arrow at
+	 * once, was told nothing because the arrow was what we had on record.
+	 */
+	seat_send_cursor(server, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
 
 	uint32_t serial = next_serial(server);
 	struct wl_resource *pointer;
@@ -3342,6 +3401,26 @@ static void handle_ipc_message(uint8_t type, const uint8_t *payload, size_t len,
 		}
 
 		if (w == xdg->cfg_width && h == xdg->cfg_height) return;
+		/*
+		 * The shell follows a window's own size and then tells it what it
+		 * got, so most configures are an echo of the application's choice.
+		 * To a Wayland client a configure is advice; to an X client the
+		 * window manager's resize is a fact, and by the time an echo lands
+		 * the application may have moved on. DOSBox-X switches modes
+		 * several times while Windows 98 boots, 720 wide for text and 640
+		 * for graphics; the echo of 720 arrived after the window had become
+		 * 640, forced it back, the emulator insisted on 640, the shell
+		 * echoed that, and the two sides resized each other for as long as
+		 * they were left to it. The shell marks an echo, and an X window is
+		 * never forced to one: a size the person chose is the only kind
+		 * that overrides the application's own.
+		 */
+		uint32_t flags = len >= 16 ? ipc_get_u32(payload + 12) : 0;
+		if (xdg->xwin && (flags & IPC_CONFIGURE_ECHO)) {
+			logdbg("w%u configure %dx%d is a stale echo; the X window is %dx%d",
+				xdg->id, w, h, xdg->cfg_width, xdg->cfg_height);
+			return;
+		}
 		xdg->cfg_width = w;
 		xdg->cfg_height = h;
 		logdbg("w%u configure %dx%d", xdg->id, w, h);
@@ -3981,6 +4060,7 @@ static void xwm_on_surface(void *data, const struct xwm_window *win,
 	 * was then reported as having exited normally.
 	 */
 	server->quit_at = 0;
+	output_grow(server, win->x + win->width, win->y + win->height);
 	/* A remap: the same X window, a new wl_surface behind it. */
 	struct wdc_xdg_surface *old = find_xwindow(server, win->xwin);
 	if (old) xwayland_detach(server, old, false);
@@ -4040,6 +4120,7 @@ static void xwm_on_geometry(void *data, uint32_t xwin, int32_t x, int32_t y,
 	if (!xdg) return;
 	xdg->x_x = x;
 	xdg->x_y = y;
+	output_grow(xdg->surface ? xdg->surface->server : data, x + width, y + height);
 	/* A size the application chose for itself; frames will say so too. */
 	xdg->cfg_width = width;
 	xdg->cfg_height = height;
@@ -4580,6 +4661,8 @@ int main(int argc, char **argv) {
 	}
 	server.loop = wl_display_get_event_loop(server.display);
 	wl_list_init(&server.windows);
+	wl_list_init(&server.outputs);
+	wl_list_init(&server.xdg_outputs);
 	wl_list_init(&server.popups);
 	wl_list_init(&server.subsurfaces);
 	wl_list_init(&server.clients);

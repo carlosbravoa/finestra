@@ -175,12 +175,41 @@ before anything widens what runs.
       `docs/wayland.md`. DOSBox-X and Tk verified; VLC's skins2 not yet.
       Still to run: `verify-distros.sh` for the Amazon Linux 2023 package
       name.
+      **First hands-on round** (eight reports, four causes; `docs/wayland.md`,
+      "What the first hands-on round with Xwayland settled"): the window
+      manager now owns the root cursor, so a window that sets none — Tk,
+      SDL, xmessage — no longer hides the browser's pointer, and the
+      compositor tells the browser when the arrow is back on entering a
+      surface (LibreOffice's X11 splash had hidden it for the Draw window
+      that followed); a configure that only echoes the application's own
+      size (`echo: true`) is never applied to an X window, which ended
+      DOSBox-X and the shell resizing each other 640↔720 for as long as
+      Windows 98 took to boot; the shell keeps its window 4 s after the
+      application destroys its toplevel, so the Low RAM Browser's
+      next-process window and LibreOffice's post-splash window take it over
+      instead of the session dying with the first; an application's own
+      Quit is no longer reported as "did not start"; and the X screen grows
+      to hold an X window, since Xwayland clamps the pointer to a screen
+      sized from the output — minesweeper's bottom rows were unreachable
+      behind the shell's starting box. Not bugs: the Firmware
+      Updater snap is D-Bus activated into the machine's own session (the
+      message naming the pid was right), and DOSBox's drifting mouse is the
+      missing pointer-capture item below.
+   6. **Pointer capture.** `relative-pointer` and `pointer-constraints` in
+      `wdcomp`, Pointer Lock in the browser, and the frame channel carrying
+      deltas while a lock holds. Emulators (DOSBox-X), SDL games and anything
+      with a first-person view read motion deltas from a grabbed pointer, and
+      under Xwayland the grab is only as good as the protocols the compositor
+      offers; without them the mouse drifts or sticks to an edge. Seen on the
+      Win98 VM in the first hands-on round.
       `wdcomp` has linked libxcb since phase 1 and nothing says so yet:
       `libxcb1-dev` on the builder (`build.sh`, `verify-reach.sh`, the
       Makefile's `check`), `libxcb1` at run time — or `dlopen`, see below.
 
    Not in the first round: image cursors (`pointer_set_cursor` only knows
-   shapes, and Xwayland only sends images, so X windows get the arrow),
+   shapes, and Xwayland only sends images, so X windows get the arrow — a
+   window that sets no cursor included, since the window manager owns the
+   root one),
    HiDPI for X clients (drawn at 1× and magnified), drag and drop, PRIMARY,
    XInput2 touch. libxcb is the only new dependency — Composite and the rest
    are a raw request or two, not a library — and whether `wdcomp` links it

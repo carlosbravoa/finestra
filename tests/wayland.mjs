@@ -829,12 +829,62 @@ if (subApp) {
       const where = landed ? fs.readFileSync(xPointerFile, 'utf8').trim() : '';
       check('a pointer at 200,150 in its 1x frame arrives at 200,150',
         where === 'window 200 150', where || 'the application saw no pointer');
+      // The fixture sets no cursor, so it shows the root window's — which a
+      // rootless Xwayland has none of until the window manager provides one,
+      // and "none" reaches the browser as "hide the pointer". Tk, SDL and
+      // xmessage windows all lost the arrow this way; xfontsel sets its own.
+      await sleep(500);
+      const hid = xs.data.some((d) => d.t === 'cursor' && d.shape === 0);
+      check('and the browser keeps its arrow over a window that sets no cursor of its own',
+        !hid, hid ? 'told to hide the pointer' : 'never told to hide the pointer');
+    }
+    // The shell tells a window the size it chose for itself, and to an X
+    // window that is a command: an echo arriving after the application had
+    // already picked another size forced it back, and DOSBox-X and the shell
+    // resized each other for as long as Windows 98 took to boot. A size the
+    // person asked for is still binding.
+    if (xMain) {
+      for (const f of xs.frames) ctl(xs, 'ack', { id: f.readUInt32BE(0) });
+      const framesBefore = xs.frames.length;
+      const at = (w, h) => xs.frames.slice(framesBefore).map(decodeFrame)
+        .some((f) => f.id === xMain.id && f.fullWidth === w && f.fullHeight === h);
+      ctl(xs, 'configure', { id: xMain.id, width: 300, height: 200, echo: true });
+      await sleep(700);
+      for (const f of xs.frames) ctl(xs, 'ack', { id: f.readUInt32BE(0) });
+      check('a configure that only echoes a size the application has moved on from does not resize its X window',
+        !at(300, 200), at(300, 200) ? 'resized to 300x200' : 'still 320x240');
+      ctl(xs, 'configure', { id: xMain.id, width: 300, height: 200 });
+      const sized = await until(() => {
+        for (const f of xs.frames) ctl(xs, 'ack', { id: f.readUInt32BE(0) });
+        return at(300, 200);
+      }, 5000);
+      check('while a size the person asked for resizes it', sized, sized ? 'now 300x200' : 'no frame at 300x200');
     }
     // The ✕ is WM_DELETE_WINDOW to an X client; this one honours it by exiting.
     if (xMain) ctl(xs, 'closeWindow', { id: xMain.id });
     const xClosed = await until(() => xs.closed, 8000);
     check('closing the window asks the application, which exits, and the session ends cleanly',
       xClosed && !xs.error, xs.error ?? (xClosed ? 'closed' : 'still open'));
+  }
+
+  // Xwayland sizes its X screen from the output and clamps the pointer to
+  // it. The output is the shell's starting box, and a window that then
+  // grows past it — an SDL game 800 high on a 646-high box — had an edge no
+  // click could reach: every click below it landed on its last row. The
+  // screen grows to hold an X window, so the pointer reaches all of it.
+  if (xOffered && apps.some((a) => a.id === 'wd-test-x11') && process.env.WD_TEST_XPOINTER) {
+    const xPointerFile = process.env.WD_TEST_XPOINTER;
+    try { fs.unlinkSync(xPointerFile); } catch { /* not there yet */ }
+    const xg = open('wayland', 'session', { appId: 'wd-test-x11', width: 200, height: 150 });
+    const grew = await until(() => xg.data.some((d) => d.t === 'window' && d.title === 'X Fixture') && xg.frames.length > 0, 15000);
+    const gMain = xg.data.find((d) => d.t === 'window' && d.title === 'X Fixture');
+    if (grew) ctl(xg, 'pointer', { id: gMain.id, kind: 0, x: 300, y: 230, arg: 0, value: 0 });
+    const landed = grew && await until(() => fs.existsSync(xPointerFile) && fs.readFileSync(xPointerFile, 'utf8').trim(), 5000);
+    const where = landed ? fs.readFileSync(xPointerFile, 'utf8').trim() : '';
+    check('a pointer at 300,230 in an X window larger than the 200x150 output arrives at 300,230, not at the output\'s edge',
+      where === 'window 300 230', where || (grew ? 'the application saw no pointer' : 'no window'));
+    if (gMain) ctl(xg, 'closeWindow', { id: gMain.id });
+    await until(() => xg.closed, 8000);
   }
 
   if (xOffered && apps.some((a) => a.id === 'wd-test-x11-paste')) {

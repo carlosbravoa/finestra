@@ -44,6 +44,19 @@ const FLAG_DEFLATE = 0x01;
 const RESIZE_DEBOUNCE_MS = 120;
 
 /**
+ * How long a window stays after the application destroyed its toplevel, in
+ * case another is on its way. An application is not its first window:
+ * LibreOffice's splash screen is an X11 window destroyed the moment the real
+ * one maps, about 0.7 s later; a browser that opens each site in a fresh
+ * process ends the old one as the new one starts. Closing the shell window
+ * on the first destroy ended the session, and with it the process about to
+ * draw. The compositor itself keeps running while the application does, so
+ * a session that is actually over closes this window sooner than this, when
+ * the channel does.
+ */
+const WINDOW_GONE_GRACE_MS = 4000;
+
+/**
  * What the shell opens the window at, before an application has said what size
  * it would like to be. Only ever seen while nothing is running: the picker, and
  * the moment before the first frame.
@@ -214,6 +227,14 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
   let mainId: number | null = null;
   /** The window, put away by the application and nothing shown since. */
   let hiddenMain: number | null = null;
+  /** Counting down from the application destroying its window to this one
+   *  closing; see WINDOW_GONE_GRACE_MS. */
+  let goneTimer: number | undefined;
+  /** Whether this session ever showed a window, which is what "it closed"
+   *  as against "it did not start" turns on — not whether one is up at the
+   *  moment the channel ends, which after the application's own close it
+   *  never is. */
+  let everHadWindow = false;
   let currentApp: string | null =
     typeof params.appId === 'string' ? params.appId : null;
   /**
@@ -757,6 +778,12 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         if (isMain) {
           mainId = id;
           hiddenMain = null;
+          everHadWindow = true;
+          // The next window arrived inside the grace: the application went
+          // on without its first one.
+          window.clearTimeout(goneTimer);
+          goneTimer = undefined;
+          win.setStatus(null);
           root.replaceChildren(stage);
           if (message.title) win.setTitle(message.title);
           if (win.focused) surface.canvas.focus();
@@ -899,10 +926,9 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     const wasMain = id === mainId;
     destroySurface(id);
     if (!wasMain) {
-      if (destroyed && id === hiddenMain && mainId === null) {
-        appGone = true;
-        win.close();
-      }
+      // The window it had put away is now destroyed: the usual order for an
+      // X window, hidden on unmap and closed on destroy a moment later.
+      if (destroyed && id === hiddenMain && mainId === null) windowGone();
       return;
     }
     mainId = null;
@@ -910,15 +936,29 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     if (next) {
       promote(next);
     } else if (destroyed) {
-      // The flag lets this close through the veto in onClose below — without
-      // it, the ✕ would ask an already-exiting application to close, and
-      // wait forever.
-      appGone = true;
-      win.close();
+      windowGone();
     } else {
       hiddenMain = id;
       win.setStatus('The application put its window away');
     }
+  }
+
+  /**
+   * The application destroyed the window this one showed. Not closed yet:
+   * another may be about to appear (see WINDOW_GONE_GRACE_MS), and if the
+   * application is exiting instead the channel closes first and this window
+   * with it. The flag lets that close through the veto in onClose below —
+   * without it, the ✕ would ask an already-exiting application to close,
+   * and wait forever.
+   */
+  function windowGone(): void {
+    win.setStatus('The application closed its window');
+    window.clearTimeout(goneTimer);
+    goneTimer = window.setTimeout(() => {
+      goneTimer = undefined;
+      appGone = true;
+      win.close();
+    }, WINDOW_GONE_GRACE_MS);
   }
 
   /** A toplevel shown as a dialog becomes the window. */
@@ -1025,7 +1065,20 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     // The compositor clamps to the application's own minimum anyway; not
     // asking for less avoids a round of configure churn on every drag.
     asked = { width: Math.max(size.width, minWidth), height: Math.max(size.height, minHeight) };
-    channel.ctl('configure', { id: mainId, ...asked });
+    // An echo: nobody has sized this window, and what we ask for is exactly
+    // what the application last drew. The compositor will not force an X
+    // window to one — the application may have changed its mind again since
+    // that frame, and forcing it back is how DOSBox-X and the shell resized
+    // each other for ever while Windows 98 switched video modes. Comes
+    // through here rather than from adoptSize, because setBounds there also
+    // fires onResize, and that debounced configure has to be an echo too.
+    const main = surfaces.get(mainId);
+    const drawn = main && main.canvas.width > 0
+      ? { width: Math.round(main.canvas.width / main.scale), height: Math.round(main.canvas.height / main.scale) }
+      : null;
+    const echo = windowIsUnclaimed() && drawn !== null &&
+      drawn.width === asked.width && drawn.height === asked.height;
+    channel.ctl('configure', { id: mainId, ...asked, echo });
   }
 
   /* ---------------------------------------------------------------- */
@@ -1259,6 +1312,9 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     stage.replaceChildren();
     mainId = null;
     hiddenMain = null;
+    window.clearTimeout(goneTimer);
+    goneTimer = undefined;
+    everHadWindow = false;
     minWidth = 0;
     minHeight = 0;
     appGone = false;
@@ -1309,8 +1365,21 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
         }
 
         sessionId = null;
-        const started = mainId !== null;
+        const started = everHadWindow;
+        // The application destroyed its window and has now exited, as one
+        // that quits from its own menu does: the window closes, as it did
+        // before the grace existed. Only a window that is still up when the
+        // session ends — or an exit with something to say — is worth a
+        // message. Before `started` was read from mainId, an X application's
+        // own Quit was reported as "did not start": its window had gone a
+        // second before the compositor did, and nothing was up by then.
+        const closedItself = goneTimer !== undefined;
         reset();
+        if (closedItself && !error) {
+          appGone = true;
+          win.close();
+          return;
+        }
         showMessage(
           started ? 'The application closed' : 'The application did not start',
           error ?? (started ? 'It exited normally.' : 'It exited before opening a window.'),

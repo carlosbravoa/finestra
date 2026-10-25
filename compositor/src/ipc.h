@@ -37,7 +37,10 @@
 #define IPC_BUS     'B' /* utf-8 — the session bus address the app will use */
 
 /* node -> wdcomp */
-#define IPC_CONFIGURE 'C' /* id u32, w u32, h u32                            */
+#define IPC_CONFIGURE 'C' /* id u32, w u32, h u32 [, flags u32]              */
+/* The size is the application's own, told back to it; an X window is not
+ * forced to it, since the application may already have chosen another. */
+#define IPC_CONFIGURE_ECHO 1u
 #define IPC_ACK       'A' /* id u32                                          */
 #define IPC_CLOSE     'K' /* id u32                                          */
 #define IPC_POINTER   'P' /* id u32, kind u8, x i32, y i32, arg u32, value i32 */

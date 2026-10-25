@@ -1728,11 +1728,14 @@ export const waylandService: Service = {
           if (!Number.isInteger(id) || id <= 0) return;
 
           if (method === 'configure') {
+            // `echo`: the size is the application's own, told back to it;
+            // the compositor will not force an X window to a stale one.
             sendToCompositor(
               MSG_CONFIGURE,
               id,
               clampDimension(ctlArgs?.width, width),
               clampDimension(ctlArgs?.height, height),
+              ctlArgs?.echo ? 1 : 0,
             );
           } else if (method === 'ack') {
             sendToCompositor(MSG_ACK, id);

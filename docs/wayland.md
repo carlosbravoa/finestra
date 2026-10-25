@@ -427,6 +427,7 @@ hit them sooner and harder.
 | **No dmabuf import** | A window that never paints, or an application that exits complaining about EGL | Anything on the GPU commits buffers we cannot read. `wdcomp` sets `GSK_RENDERER=cairo`, `QT_QUICK_BACKEND=software` and `LIBGL_ALWAYS_SOFTWARE=1` when it spawns the client (`force_shm`, on by default), which is what rescues GTK 4 and Qt Quick. **Whether those survive into a snap's own runtime is not something we control** — snapd rebuilds much of the environment — so the escape hatch that fixes a `.deb` may simply not apply. Electron-based snaps are the usual casualty |
 | **Only the file-chooser portal** | *Open File* and *Save As* work, drawn by the shell; screenshots, secrets and notifications fail | `xdg-desktop-portal` is the interface a confined application uses to reach anything outside itself. The service answers the `FileChooser` interface itself (stage 7); the rest of the portal is not there, which an application experiences as a machine with no portal |
 | **No Xwayland installed** | `Failed to open display` from anything X11-only | The compositor starts an Xwayland of the session's own when an X client connects, but the binary has to be on the machine: `xwayland` on Debian and Ubuntu, `xorg-x11-server-Xwayland` on Fedora and RHEL. Its log names the package, and so does `install.sh` |
+| **No pointer capture** | An emulator's or a game's mouse drifts, sticks to an edge, or spins the view | Nothing offers `relative-pointer` or `pointer-constraints`, so a client that grabs the pointer for motion deltas gets none (DOSBox-X under Xwayland, SDL games). The browser half is the Pointer Lock API; both halves are one roadmap item. |
 | **No audio** | Silence, or a startup failure in an application that insists on a sound server | No PipeWire or PulseAudio is offered to the session. The planned first step is a null sink, so the startup failure goes and only the silence remains (`ROADMAP.md`) |
 | **Single-instance handoff** | Starts, draws nothing, exits cleanly | Only on a machine that *has* a desktop session: snaps share this user's real session bus, so a copy already running there takes the window. The session says so rather than reporting a clean exit — see below. A headless server never sees this |
 | **snapd counts an open window as the snap running** | Refreshes held back while you work | `snap-confine`'s scope stays alive as long as the application does. Ordinary snapd behaviour, listed because it surprises people |
@@ -946,6 +947,102 @@ into. `dlopen` would have bought a compositor that starts without libxcb
 in exchange for a second code path through every xcb call, for the case
 of a server that has libwayland and libxkbcommon but no libxcb, which no
 distribution's dependency graph produces.
+
+## What the first hands-on round with Xwayland settled
+
+Eight reports from an afternoon of clicking through the test instance, four
+causes, none of them where the report pointed.
+
+**The window manager owns the root cursor.** The pointer vanished over
+every Tk and SDL window and over LibreOffice Draw, and was fine over
+xfontsel. An X window that defines no cursor shows the root window's, a
+rootless Xwayland's root has none until a window manager gives it one, and
+Xwayland reports "no cursor" to the compositor as `wl_pointer.set_cursor`
+with a null surface — which in Wayland means *hide the pointer*, and the
+compositor passed that on. xfontsel sets cursors of its own, so it never
+hit it. Desktop window managers all define a root cursor; `xwm.c` now does,
+from the old cursor font, which needs no theme. Which glyph is immaterial:
+the compositor never draws an X cursor image, it only turns "there is one"
+into the browser's arrow.
+
+**And the compositor tells the browser when the arrow is back.** LibreOffice
+was the odd one out: its Draw window is GTK on Wayland and asks for the
+default arrow the moment the pointer enters. But its splash screen is an X11
+window with no cursor, which had hidden the pointer first, and on entering a
+new surface the compositor only reset its *own* record to "default" — so
+GTK's request matched the record and nothing was sent, and the browser kept
+`cursor: none` from the splash. Entering a surface now sends the default to
+the browser when it was showing anything else.
+
+**A configure that echoes an application's own size never forces an X
+window.** The Win98 VM resized itself between 640 and 720 wide for as long
+as it was left alone, and booted nowhere. The shell follows a window's own
+size and then tells it what it got, so most configures are an echo of a
+size the application chose. To a Wayland client a configure is advice; to
+an X client the window manager's `ConfigureWindow` is a fact. DOSBox-X
+switches video modes several times while Windows boots — 720 wide for text,
+640 for graphics — and an echo of 720 arriving after the window had become
+640 forced it back; the emulator insisted on 640, the shell echoed that,
+and the two sides took turns. Resizing the window by hand stopped it,
+because a claimed window is never followed. The shell marks a configure as
+an echo (`echo: true`, the fourth word of `IPC_CONFIGURE`) when nobody has
+sized the window and what it asks for is exactly what the application last
+drew, and the compositor does not apply an echo to an X window. A size the
+person chose still is. The flag rides on `pushSize()` rather than on
+`adoptSize()` because `setBounds` there fires the window's own `onResize`,
+whose debounced configure had to be an echo too. The suite sends the X
+fixture a stale echo and then a real resize, and expects only the second
+to take.
+
+**An application is not its first window.** The Low RAM Browser opens each
+site in a fresh process and ends the one before; LibreOffice's splash is an
+X11 window destroyed the moment the real one maps, 0.7 s later. The shell
+closed its window on the first destroy, the session with it, and the
+process about to draw died with the session — so LibreOffice opened or did
+not depending on which message won a race, and the browser could never
+reach its second page. The shell now keeps the window for
+`WINDOW_GONE_GRACE_MS` (4 s) after the application destroys its toplevel,
+with "The application closed its window" in the status strip; the next
+parentless toplevel takes the window over, and an application that was
+exiting ends the channel first, which closes the window as before. The
+compositor already waited: it keeps running while the launched process
+does, and only the shell was in a hurry.
+
+**The X screen grows to hold an X window, or the pointer stops at its
+edge.** Flags set on the four corners of an SDL minesweeper landed on the
+bottom corners four rows short. Xwayland sizes its X screen from the
+output and clamps the pointer to that screen; the output is the shell's
+starting box (`--output`), and the game's window then grew to 800 high on
+a 646-high box, so every click below 646 arrived at 646. The horizontal
+edge was never reached, which is why only the bottom was wrong. The
+compositor keeps its bound `wl_output`s and `xdg_output`s on a list now,
+and when an X window maps or moves past the advertised size it grows the
+screen — never shrinking it, since an X menu keeps itself on the last
+screen it heard of — and re-announces mode and logical size. Only X
+windows do this: a Wayland client's pointer is surface-local and clamped
+by nothing, and a bigger screen would only tempt Firefox to fill it. The
+check sends the fixture's pointer well past a 200×150 output and expects
+it where it was sent.
+
+**"Did not start" after Quit was a stale flag.** Quitting xfontsel from its
+own button produced "The application did not start — it exited before
+opening a window". The channel's closing handler read "started" as "a
+window is up right now", and after an application's own close none is:
+the X window is destroyed a second before the compositor exits (the
+one-second rejoin grace, since the compositor cannot see an X client, only
+its windows). It reads "ever had a window" now, and a close that follows
+the application's own is silent, as it was before the grace existed.
+
+**Two things in the reports were not bugs.** The Firmware Updater snap is
+D-Bus activated: launched here it asks the machine's session bus, which
+starts a copy under the person's own desktop session, and this one hands
+off and exits — the message naming that pid was right, and killing the
+copy from the process list only let the next launch start another. And a
+DOSBox mouse that drifts is the compositor offering no `relative-pointer`
+or `pointer-constraints`: an emulator or a game grabs the pointer and
+reads motion deltas, and Xwayland can only provide those from the
+protocols it is given. That is a feature, not a fix — the browser side is
+the Pointer Lock API — and it is in the roadmap.
 
 ## What stage 8 settled
 

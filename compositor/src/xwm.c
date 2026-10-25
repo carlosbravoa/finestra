@@ -88,6 +88,10 @@ struct xwm {
 	xcb_connection_t *conn;
 	xcb_screen_t *screen;
 	xcb_window_t check;
+	/* The root window's cursor, which is what a window without one of its
+	 * own inherits; see xwm_create. */
+	xcb_font_t cursor_font;
+	xcb_cursor_t root_cursor;
 	xcb_atom_t atoms[ATOM_COUNT];
 	struct xwm_callbacks cb;
 	void *data;
@@ -916,6 +920,26 @@ struct xwm *xwm_create(int fd, const struct xwm_callbacks *cb, void *data) {
 	xcb_set_selection_owner(conn, xwm->check, xwm->atoms[ATOM_WM_S0],
 		XCB_CURRENT_TIME);
 
+	/*
+	 * A window that defines no cursor shows the root window's, and a
+	 * rootless Xwayland's root has none until a window manager gives it
+	 * one — desktop window managers all do. Without it, Xwayland tells the
+	 * compositor "no cursor" (wl_pointer.set_cursor with a null surface,
+	 * the Wayland way of hiding the pointer) whenever the pointer enters
+	 * such a window, and the browser's arrow vanished over every Tk and
+	 * SDL window, while xfontsel, which sets cursors of its own, was fine.
+	 * Which cursor hardly matters: the compositor never draws an X cursor
+	 * image, it only passes "there is one" on to the browser as its default
+	 * arrow. The old cursor font needs no theme and is always present.
+	 */
+	xwm->cursor_font = xcb_generate_id(conn);
+	xcb_open_font(conn, xwm->cursor_font, 6, "cursor");
+	xwm->root_cursor = xcb_generate_id(conn);
+	/* Glyph 68 is XC_left_ptr; the next glyph is its mask. */
+	xcb_create_glyph_cursor(conn, xwm->root_cursor, xwm->cursor_font,
+		xwm->cursor_font, 68, 69, 0, 0, 0, 0xffff, 0xffff, 0xffff);
+	xcb_change_window_attributes(conn, root, XCB_CW_CURSOR, &xwm->root_cursor);
+
 	/* The clipboard window: its property changes are the INCR pieces. */
 	xwm->selection = xcb_generate_id(conn);
 	uint32_t property_change = XCB_EVENT_MASK_PROPERTY_CHANGE;
@@ -987,6 +1011,8 @@ void xwm_destroy(struct xwm *xwm) {
 	free(xwm->clip);
 	free(xwm->pull.buf);
 	free(xwm->push.data);
+	if (xwm->root_cursor) xcb_free_cursor(xwm->conn, xwm->root_cursor);
+	if (xwm->cursor_font) xcb_close_font(xwm->conn, xwm->cursor_font);
 	xcb_disconnect(xwm->conn);
 	free(xwm);
 }
