@@ -185,6 +185,30 @@ fi
 export WD_TEST_POINTER="$XDG_STATE_HOME/pointer"
 export WD_TEST_OUTPUT="$XDG_STATE_HOME/output"
 
+# An X11 client, in the shapes the window manager has to handle, launched
+# under the DISPLAY the compositor sets. Needs only libxcb to build, which the
+# compositor needs too; whether an Xwayland is there to serve it is the
+# suite's to find out, and it skips these when there is not.
+if [ -x compositor/build/wdcomp ] && pkg-config --exists xcb 2>/dev/null; then
+  make -s -C compositor x11-client >/dev/null 2>&1 || true
+fi
+if [ -x compositor/build/x11-client ]; then
+  export WD_TEST_XPOINTER="$XDG_STATE_HOME/xpointer"
+  export WD_TEST_XPASTE="$XDG_STATE_HOME/xpaste"
+  fixture wd-test-x11 "WD Test X11" "$PWD/compositor/build/x11-client --popup --dialog --copy" ""
+  fixture wd-test-x11-paste "WD Test X11 Paste" "$PWD/compositor/build/x11-client --paste" ""
+  # A launcher that starts the X program in the background and returns —
+  # the shape of a VM or game launcher. The compositor cannot see an X
+  # client, only its windows, and used to end the session five seconds in.
+  cat > "$BIN_DIR/wd-x11-launcher" <<EOF
+#!/bin/sh
+"$PWD/compositor/build/x11-client" --linger 6500 &
+exit 0
+EOF
+  chmod +x "$BIN_DIR/wd-x11-launcher"
+  fixture wd-test-x11-launcher "WD Test X11 Launcher" "$BIN_DIR/wd-x11-launcher" ""
+fi
+
 export WD_TOKEN="test-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
 TOKEN="$WD_TOKEN"
 # Short enough that "nobody came back for it" can be checked in a test.

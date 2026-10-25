@@ -393,6 +393,15 @@ const LIBRARY_PACKAGES: Record<string, Partial<Record<PackageManager, string>>> 
     zypper: 'libxkbcommon0',
     pacman: 'libxkbcommon',
   },
+  // The X window manager inside the compositor. Linked, not dlopen'd: any
+  // machine with an Xwayland to manage has it, and one without Xwayland has a
+  // compositor that never asks for it — but the linker asks at startup.
+  'libxcb.so.1': {
+    'apt-get': 'libxcb1',
+    dnf: 'libxcb',
+    zypper: 'libxcb1',
+    pacman: 'libxcb',
+  },
   'libz.so.1': {
     'apt-get': 'zlib1g',
     pacman: 'zlib',
@@ -1117,9 +1126,11 @@ export const waylandService: Service = {
         '-l',
         layout,
         ...(variant ? ['--variant', variant] : []),
-        // The Xwayland spike (ROADMAP.md): opt-in until launching it lazily
-        // and steering SDL and Qt back to Wayland are done.
-        ...(process.env.WD_XWAYLAND === '1' ? ['--xwayland'] : []),
+        // An X display of the session's own, served by an Xwayland that is
+        // started only if an X client connects, so a Wayland application
+        // pays nothing for it. Off only when asked; a machine without
+        // Xwayland gets one log line and no display.
+        ...(process.env.WD_XWAYLAND === '0' ? [] : ['--xwayland']),
         '--',
         ...withLaunchQuirks(app.argv),
       ];

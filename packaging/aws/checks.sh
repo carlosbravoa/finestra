@@ -131,6 +131,22 @@ t "it does not tell the operator to ssh in as root" \
 t "the compositor asks for no glibc newer than this one" \
   bash -c '! ldd "'"${PREFIX}"'/current/libexec/wdcomp" 2>&1 | grep -q "version .GLIBC_"'
 
+# X11-only applications need an Xwayland, which no bare image has; what the
+# installer prints is the one place the operator learns which package that is,
+# and the name is per distribution. The command it prints must exist here —
+# a package name that is right on Debian and wrong on Fedora is a lie told
+# at the one moment someone is about to copy it.
+t "the installer names the Xwayland package" \
+  bash -c 'grep -q "To enable them:.*[Xx]wayland" /tmp/wd-install.log'
+xwl_pkg="$(sed -n 's/.*To enable them:  sudo [a-z-]* \(install\|-S\) \(.*[Xx]wayland.*\)/\2/p' /tmp/wd-install.log | awk 'NR==1')"
+if command -v apt-get >/dev/null; then
+  t "and that package exists on this distribution ($xwl_pkg)" \
+    bash -c 'apt-cache show '"$xwl_pkg"' >/dev/null 2>&1'
+elif command -v dnf >/dev/null; then
+  t "and that package exists on this distribution ($xwl_pkg)" \
+    bash -c 'sudo dnf -q info '"$xwl_pkg"' >/dev/null 2>&1'
+fi
+
 # ---------------------------------------------------------------------------
 section "the service it left behind"
 # ---------------------------------------------------------------------------

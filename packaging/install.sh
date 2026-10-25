@@ -118,7 +118,7 @@ fi
 if [ -x "$HERE/libexec/wdcomp" ]; then
   step "Runtime libraries for the compositor (optional)"
   missing=""
-  for lib in libwayland-server.so.0 libxkbcommon.so.0; do
+  for lib in libwayland-server.so.0 libxkbcommon.so.0 libxcb.so.1; do
     ldconfig -p 2>/dev/null | grep -q "$lib" || missing="$missing $lib"
   done
   if [ -n "$missing" ]; then
@@ -127,18 +127,35 @@ if [ -x "$HERE/libexec/wdcomp" ]; then
     # A soname is the same everywhere; a package name is not. Only names we are
     # sure of — an unrecognised manager gets the sonames and no guess.
     if command -v apt-get >/dev/null; then
-      say "To enable them:  sudo apt install libwayland-server0 libxkbcommon0"
+      say "To enable them:  sudo apt install libwayland-server0 libxkbcommon0 libxcb1"
     elif command -v dnf >/dev/null; then
-      say "To enable them:  sudo dnf install libwayland-server libxkbcommon"
+      say "To enable them:  sudo dnf install libwayland-server libxkbcommon libxcb"
     elif command -v zypper >/dev/null; then
-      say "To enable them:  sudo zypper install libwayland-server0 libxkbcommon0"
+      say "To enable them:  sudo zypper install libwayland-server0 libxkbcommon0 libxcb1"
     elif command -v pacman >/dev/null; then
-      say "To enable them:  sudo pacman -S wayland libxkbcommon"
+      say "To enable them:  sudo pacman -S wayland libxkbcommon libxcb"
     else
       say "Install this distribution's packages for them to enable native applications."
     fi
   else
     say "present — native applications are available"
+  fi
+  # X11-only applications — SDL2 games, Tk, anything older than Wayland — run
+  # through an Xwayland the compositor starts for them; without one they fail
+  # with "cannot open display" and the compositor's log names this package.
+  if command -v Xwayland >/dev/null; then
+    say "Xwayland present — X11-only applications are available too"
+  else
+    say "Xwayland not installed: X11-only applications will not run. Everything else works without."
+    if command -v apt-get >/dev/null; then
+      say "To enable them:  sudo apt install xwayland"
+    elif command -v dnf >/dev/null; then
+      say "To enable them:  sudo dnf install xorg-x11-server-Xwayland"
+    elif command -v zypper >/dev/null; then
+      say "To enable them:  sudo zypper install xwayland"
+    elif command -v pacman >/dev/null; then
+      say "To enable them:  sudo pacman -S xorg-xwayland"
+    fi
   fi
 fi
 

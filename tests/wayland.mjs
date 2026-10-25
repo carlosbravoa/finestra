@@ -167,6 +167,9 @@ check('the command line is not exposed to the browser',
 const fixtureDir = process.env.XDG_DATA_HOME
   ? path.join(process.env.XDG_DATA_HOME, 'applications')
   : null;
+// Whether this machine offered an X display, as the compositor's own log said
+// in the birth session below; the X11 checks further down are skipped without.
+let xOffered = false;
 
 if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))) {
   const ids = new Set(apps.map((a) => a.id));
@@ -320,7 +323,7 @@ if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))
   // wayland plugin has somewhere to fall back to. A machine without
   // Xwayland says so once and offers no display.
   const birthLogs = birth.data.filter((d) => d.t === 'log').map((d) => d.message);
-  const xOffered = birthLogs.some((l) => /X clients may connect to DISPLAY=/.test(l));
+  xOffered = birthLogs.some((l) => /X clients may connect to DISPLAY=/.test(l));
   const xMissing = birthLogs.some((l) => /Xwayland is not installed/.test(l));
   check('a session offers an X display, or says which package would provide one',
     xOffered !== xMissing, birthLogs.filter((l) => /Xwayland|DISPLAY/.test(l)).join(' | ') || 'neither said');
@@ -773,6 +776,95 @@ if (subApp) {
       loMain ? `${loMain.fullWidth}x${loMain.fullHeight} at scale ${loMain.scale}` : 'no frame');
     ws.send(JSON.stringify({ t: 'close', id: lo.id }));
     await sleep(300);
+  }
+
+  /* -------------------------------------------------------------- */
+  /* An X11 application, through an X server started for it          */
+  /* -------------------------------------------------------------- */
+
+  // Plain xcb, launched like any application under the DISPLAY the compositor
+  // sets — the whole path, the lazily started Xwayland included, rather than
+  // the window manager on its own. Skipped where no Xwayland is installed.
+  if (xOffered && apps.some((a) => a.id === 'wd-test-x11')) {
+    const xs = open('wayland', 'session', { appId: 'wd-test-x11', width: 320, height: 240, scale: 2 });
+    const isMain = (d) => d.t === 'window' && d.title === 'X Fixture';
+    const xDrew = await until(() => {
+      const main = xs.data.find(isMain);
+      return main && xs.frames.some((f) => decodeFrame(f).id === main.id);
+    }, 15000);
+    const xMain = xs.data.find(isMain);
+    const xLogs = xs.data.filter((d) => d.t === 'log').map((d) => d.message);
+    check('an X11 application opens a window, through an X server started for it',
+      xDrew && xLogs.some((l) => /started Xwayland/.test(l)),
+      xMain ? `w${xMain.id} ${xMain.width}x${xMain.height} "${xMain.title}"` : (xs.error ?? 'no window'));
+    check('named by its class, as a Wayland application is by its app_id',
+      xMain?.appId === 'WDX11Fixture', xMain?.appId ?? 'no app id');
+    const xFrame = xDrew ? xs.frames.map(decodeFrame).find((f) => f.id === xMain.id) : null;
+    check('its frame is the window at 1x on the 2x screen, and says so',
+      xFrame?.fullWidth === 320 && xFrame?.fullHeight === 240 && xFrame?.scale === 1,
+      xFrame ? `${xFrame.fullWidth}x${xFrame.fullHeight} at scale ${xFrame.scale}` : 'no frame');
+    await until(() => xs.data.some((d) => d.t === 'popup'), 5000);
+    const xPopup = xs.data.find((d) => d.t === 'popup');
+    check('an override-redirect window is a popup placed over it',
+      xPopup && xPopup.parent === xMain?.id && xPopup.x === 40 && xPopup.y === 30 &&
+        xPopup.width === 100 && xPopup.height === 60,
+      xPopup ? `parent w${xPopup.parent} at ${xPopup.x},${xPopup.y} ${xPopup.width}x${xPopup.height}` : 'no popup');
+    await until(() => xs.data.some((d) => d.t === 'window' && d.title === 'X Dialog'), 5000);
+    const xDialog = xs.data.find((d) => d.t === 'window' && d.title === 'X Dialog');
+    check('a transient window is a dialog of it',
+      xDialog && xDialog.parent === xMain?.id, xDialog ? `parent w${xDialog.parent}` : 'no dialog');
+    await until(() => xs.data.some((d) => d.t === 'copy'), 5000);
+    const xCopy = xs.data.find((d) => d.t === 'copy');
+    check('what it copies reaches the browser as a copy',
+      xCopy?.text === 'from-x ñ€', JSON.stringify(xCopy?.text ?? 'no copy'));
+    // An X client draws in the window's own pixels whatever the scale, so the
+    // browser's measurement in frame pixels is already the surface's — unlike
+    // the 2x case above, nothing is to be halved. Aimed clear of the popup
+    // and the dialog, which would take the pointer instead.
+    const xPointerFile = process.env.WD_TEST_XPOINTER;
+    if (xPointerFile && xMain) {
+      try { fs.unlinkSync(xPointerFile); } catch { /* not there yet */ }
+      ctl(xs, 'pointer', { id: xMain.id, kind: 0, x: 200, y: 150, arg: 0, value: 0 });
+      const landed = await until(() => fs.existsSync(xPointerFile) && fs.readFileSync(xPointerFile, 'utf8').trim(), 5000);
+      const where = landed ? fs.readFileSync(xPointerFile, 'utf8').trim() : '';
+      check('a pointer at 200,150 in its 1x frame arrives at 200,150',
+        where === 'window 200 150', where || 'the application saw no pointer');
+    }
+    // The ✕ is WM_DELETE_WINDOW to an X client; this one honours it by exiting.
+    if (xMain) ctl(xs, 'closeWindow', { id: xMain.id });
+    const xClosed = await until(() => xs.closed, 8000);
+    check('closing the window asks the application, which exits, and the session ends cleanly',
+      xClosed && !xs.error, xs.error ?? (xClosed ? 'closed' : 'still open'));
+  }
+
+  if (xOffered && apps.some((a) => a.id === 'wd-test-x11-paste')) {
+    const xPasteFile = process.env.WD_TEST_XPASTE;
+    try { fs.unlinkSync(xPasteFile); } catch { /* not there yet */ }
+    const xp = open('wayland', 'session', { appId: 'wd-test-x11-paste', width: 320, height: 240 });
+    await until(() => xp.data.some((d) => d.t === 'window'), 15000);
+    ctl(xp, 'paste', { text: 'from-the-browser ñ€' });
+    const pasted = await until(() => fs.existsSync(xPasteFile) && fs.readFileSync(xPasteFile, 'utf8').length > 0, 5000);
+    const read = pasted ? fs.readFileSync(xPasteFile, 'utf8') : '';
+    check('what the browser pastes is what an X client reads from CLIPBOARD',
+      read === 'from-the-browser ñ€', pasted ? JSON.stringify(read) : 'nothing read');
+    ws.send(JSON.stringify({ t: 'close', id: xp.id }));
+    await sleep(300);
+  }
+
+  // The compositor cannot see an X client, only its windows. A launcher that
+  // forked the X program and returned used to end the session at the launch
+  // grace, five seconds in, with Windows 98 mid-boot; and without the other
+  // half it would never have ended at all.
+  if (xOffered && apps.some((a) => a.id === 'wd-test-x11-launcher')) {
+    const xl = open('wayland', 'session', { appId: 'wd-test-x11-launcher', width: 320, height: 240 });
+    const up = await until(() => xl.data.some((d) => d.t === 'window'), 15000);
+    const seenAt = Date.now();
+    await sleep(5600);
+    check('a launcher that forked its X program and returned does not end the session at the launch grace',
+      up && !xl.closed, xl.error ?? (xl.closed ? 'closed early' : up ? 'open at 5.6 s' : 'no window'));
+    const ended = await until(() => xl.closed, 6000);
+    check('and the session ends when the X application destroys its last window',
+      ended && !xl.error, xl.error ?? (ended ? `after ${((Date.now() - seenAt) / 1000).toFixed(1)} s` : 'still open'));
   }
 
   /* -------------------------------------------------------------- */

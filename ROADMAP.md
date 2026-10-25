@@ -163,6 +163,18 @@ before anything widens what runs.
       clipboard checks live on the frame channel until then; Xwayland per
       distribution in `checks.sh` (Amazon Linux 2023 may not package it);
       the real list from `docs/wayland.md` — `dosbox-x`, Tk, VLC's skins2.
+      ✅ Done. `compositor/src/x11-client.c`: toplevel, menu, dialog,
+      clipboard both ways, `WM_DELETE_WINDOW`, plus the launcher shape,
+      launched through the service at scale 2 — nine checks, skipped on
+      a machine without Xwayland. `WD_XWAYLAND` is on by default (`=0`
+      turns it off). `libxcb1-dev` on both builders and in `make check`;
+      `libxcb.so.1` in the installer's list, the server's soname table and
+      the README; Xwayland reported by `install.sh` with its package per
+      manager, and `checks.sh` confirms the name it prints exists on that
+      distribution. Linked rather than `dlopen`'d, for reasons in
+      `docs/wayland.md`. DOSBox-X and Tk verified; VLC's skins2 not yet.
+      Still to run: `verify-distros.sh` for the Amazon Linux 2023 package
+      name.
       `wdcomp` has linked libxcb since phase 1 and nothing says so yet:
       `libxcb1-dev` on the builder (`build.sh`, `verify-reach.sh`, the
       Makefile's `check`), `libxcb1` at run time — or `dlopen`, see below.

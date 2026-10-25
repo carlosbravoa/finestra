@@ -177,18 +177,25 @@ sudo ./install.sh
 ```
 
 The installer fetches nothing. If you also want **native Linux applications** in
-a window, the compositor needs two shared libraries that most server images do
+a window, the compositor needs three shared libraries that most server images do
 not carry; `install.sh` says whether they are present and prints the line for
 whichever package manager it finds:
 
 ```bash
-sudo apt install libwayland-server0 libxkbcommon0     # Debian, Ubuntu
-sudo dnf install libwayland-server libxkbcommon       # Fedora, RHEL
+sudo apt install libwayland-server0 libxkbcommon0 libxcb1     # Debian, Ubuntu
+sudo dnf install libwayland-server libxkbcommon libxcb        # Fedora, RHEL
 ```
 
 Nothing else in the desktop needs them, so it is safe to skip — the
 applications window explains the same thing and picks them up as soon as they
-appear, with no restart.
+appear, with no restart. **X11-only applications** — SDL2 games, Tk, anything
+older than Wayland — need an Xwayland as well, which the compositor starts
+for them only when one connects:
+
+```bash
+sudo apt install xwayland                     # Debian, Ubuntu
+sudo dnf install xorg-x11-server-Xwayland     # Fedora, RHEL
+```
 
 `install.sh` asks one question — who the desktop runs as — then installs under
 `/opt/finestra`, writes a systemd unit and starts it bound to
@@ -344,7 +351,7 @@ substantial application expects once it is running:
 |---|---|
 | No dmabuf import | A window that never paints. The software-rendering variables that rescue a `.deb` are set when the client is spawned, but snapd rebuilds much of the environment and we do not control whether they survive into the snap's own runtime. Electron-based snaps are the usual casualty |
 | No `xdg-desktop-portal` | *Open File* and *Save As* do nothing or hang; screenshots, secrets and notifications fail. A confined snap often has no fallback, because the portal *is* its file access |
-| No Xwayland | `Failed to open display` from anything X11-only |
+| No Xwayland installed | `Failed to open display` from anything X11-only; the compositor's log names the package |
 | No audio | Silence, or a refusal to start |
 | Single-instance handoff | On a machine that has a desktop session, a snap can hand its window to the copy already running there. The session says so rather than reporting a clean exit. A headless server never sees this |
 

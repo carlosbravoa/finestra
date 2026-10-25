@@ -392,10 +392,10 @@ What is genuinely out of reach, and stays that way:
 
 | Not running | Why |
 | --- | --- |
-| `texdoctk`, `timidity -ia` | Tk, X11 only — needs an Xwayland we do not have |
+| ~~`texdoctk`, `timidity -ia`~~ | Tk, X11 only — runs now, through the Xwayland the compositor starts for it (phases 1–5 below) |
 | An application already open on the host | Single-instance handoff: LibreOffice hands the document to the `soffice.bin` in your login session and never draws here. A server with no desktop session never sees this. The session now *says so* rather than reporting a clean exit — see "Explaining the handoff" |
-| `dosbox-x` | Not unexplained after all: it aborts with `Can't init SDL x11 not available`, and the SDL2 it ships has no Wayland video driver compiled in — `SDL_VIDEODRIVER=wayland` changes nothing. X11 only, so Xwayland again |
-| VLC with the skins2 interface | `unable to open display`; skins2 is X11 only. Its Qt interface works |
+| ~~`dosbox-x`~~ | Was `Can't init SDL x11 not available` — the SDL2 it ships has no Wayland video driver compiled in. Runs now through Xwayland; a Windows 98 disk booted in it is what found the lifetime bug in phase 4 |
+| VLC with the skins2 interface | `unable to open display`; skins2 is X11 only, so it should run through Xwayland now — not verified. Its Qt interface works |
 | Anything on EGL that refuses software | `LIBGL_ALWAYS_SOFTWARE=1` makes it abort (`Not allowed to force software rendering when API explicitly selects a hardware device`); without it, it runs happily and commits dmabuf we cannot read. `GALLIUM_DRIVER=llvmpipe` gets as far as `failed to create dri2 screen`. This one is waiting on dmabuf, not on a workaround |
 
 Slow is not broken: Deja Dup takes about a minute to first paint because it
@@ -426,7 +426,7 @@ hit them sooner and harder.
 | --- | --- | --- |
 | **No dmabuf import** | A window that never paints, or an application that exits complaining about EGL | Anything on the GPU commits buffers we cannot read. `wdcomp` sets `GSK_RENDERER=cairo`, `QT_QUICK_BACKEND=software` and `LIBGL_ALWAYS_SOFTWARE=1` when it spawns the client (`force_shm`, on by default), which is what rescues GTK 4 and Qt Quick. **Whether those survive into a snap's own runtime is not something we control** — snapd rebuilds much of the environment — so the escape hatch that fixes a `.deb` may simply not apply. Electron-based snaps are the usual casualty |
 | **Only the file-chooser portal** | *Open File* and *Save As* work, drawn by the shell; screenshots, secrets and notifications fail | `xdg-desktop-portal` is the interface a confined application uses to reach anything outside itself. The service answers the `FileChooser` interface itself (stage 7); the rest of the portal is not there, which an application experiences as a machine with no portal |
-| **No Xwayland** | `Failed to open display` from anything X11-only | Next after the link work in `ROADMAP.md`. A snap shipping an X11-only toolkit is out of reach for the same reason `dosbox-x` is |
+| **No Xwayland installed** | `Failed to open display` from anything X11-only | The compositor starts an Xwayland of the session's own when an X client connects, but the binary has to be on the machine: `xwayland` on Debian and Ubuntu, `xorg-x11-server-Xwayland` on Fedora and RHEL. Its log names the package, and so does `install.sh` |
 | **No audio** | Silence, or a startup failure in an application that insists on a sound server | No PipeWire or PulseAudio is offered to the session. The planned first step is a null sink, so the startup failure goes and only the silence remains (`ROADMAP.md`) |
 | **Single-instance handoff** | Starts, draws nothing, exits cleanly | Only on a machine that *has* a desktop session: snaps share this user's real session bus, so a copy already running there takes the window. The session says so rather than reporting a clean exit — see below. A headless server never sees this |
 | **snapd counts an open window as the snap running** | Refreshes held back while you work | `snap-confine`'s scope stays alive as long as the application does. Ordinary snapd behaviour, listed because it surprises people |
@@ -556,7 +556,7 @@ lines before the trap. For a silent death with nothing in the trace either,
 `coredumpctl` and `strace -f -e signal=all` are what is left.
 
 **6. Check it is not a class that cannot work here.** The tables above are the
-list — X11-only toolkits (no Xwayland), anything that commits dmabuf (a window
+list — X11-only toolkits on a machine with no Xwayland installed, anything that commits dmabuf (a window
 that never paints, or an EGL abort), no portals, no audio, single-instance
 handoff. And slow is not broken: Deja Dup takes about a minute to first paint
 waiting out a D-Bus activation timeout for a secrets service a private bus does
@@ -901,11 +901,51 @@ reconnect path needed nothing: an X window is a `wdc_xdg_surface` with a
 kept canvas like any other, and a browser that comes back is shown it
 whole.
 
-**Still a flag.** `WD_XWAYLAND=1` is what turns all of this on, and the
-suite now runs with it set, checking that a Wayland application starts
-no X server and is born with `DISPLAY` and the Qt fallback. Turning it on
-by default is phase 5's, together with the fixture that exercises an X
-client in the suite and the libxcb line in the packaging.
+**On by default since phase 5.** `WD_XWAYLAND=0` turns it off; nothing
+else is needed, because a Wayland application starts no X server and a
+machine without Xwayland gets one log line and no display. The suite
+checks that a Wayland application starts none and is born with `DISPLAY`
+and the Qt fallback.
+
+## What Xwayland phase 5 settled
+
+**The suite launches a real X client.** `compositor/src/x11-client.c` is
+plain xcb in the shapes the window manager has to handle — a toplevel
+with a name and a class, an override-redirect menu over it, a transient
+dialog belonging to it, `CLIPBOARD` owned and `CLIPBOARD` asked for,
+`WM_DELETE_WINDOW` honoured — launched through the service like any
+application, under the `DISPLAY` the compositor sets, at scale 2. So what
+the checks exercise is the whole path: the lazily started Xwayland, the
+window manager, the popup's placement against its parent, the dialog's
+parent, a copy arriving as the browser's `copy` message, a paste read
+back out of `CLIPBOARD`, a pointer landing where the browser put it
+(unhalved — an X client draws in its own pixels at any scale), and the
+✕ reaching the client as `WM_DELETE_WINDOW`. A third fixture is the
+launcher shape from phase 4, the X program forked and the script gone,
+and the check is that the session is still there at 5.6 s and gone
+within a second or two of the window. On a machine without Xwayland the
+section is skipped on the strength of the compositor's own line.
+
+**What ships has one more library and one more optional binary.**
+`wdcomp` has linked libxcb since phase 1, and nothing that builds or
+verifies the release had been told: the EC2 and Multipass builders
+install `libxcb1-dev` now, `make check` asks for it, and the runtime
+`libxcb.so.1` is in the installer's list, the server's soname table and
+the README — a soname everywhere, a package name only where we are sure
+of it. Xwayland is reported the same way, separately: present or not,
+with the package per manager, since it is the one thing an X11-only
+application needs that the compositor cannot provide. The acceptance
+checks confirm the installer names it and that the name it prints exists
+on that distribution's package manager — Amazon Linux 2023 is the one
+to watch; the next `verify-distros.sh` run says.
+
+**Linked, not `dlopen`'d.** Weighed and settled: every machine with an
+Xwayland to manage has libxcb, and a machine without Xwayland pays one
+line in the installer's list for a library the compositor never calls
+into. `dlopen` would have bought a compositor that starts without libxcb
+in exchange for a second code path through every xcb call, for the case
+of a server that has libwayland and libxkbcommon but no libxcb, which no
+distribution's dependency graph produces.
 
 ## What stage 8 settled
 
@@ -1433,9 +1473,12 @@ permissions Wayland sockets normally carry, not somewhere world-writable.
 cd compositor && make
 ```
 
-Requires `libwayland-dev`, `libxkbcommon-dev` and `zlib1g-dev`. The build is
-optional: without `wdcomp` the applications window says so and everything else
-in the desktop is unaffected.
+Requires `libwayland-dev`, `libxkbcommon-dev`, `libxcb1-dev` and `zlib1g-dev`.
+The build is optional: without `wdcomp` the applications window says so and
+everything else in the desktop is unaffected. libxcb is the X window manager's
+(`xwm.c`, the one file that includes it), linked rather than `dlopen`'d: any
+machine with an Xwayland to manage has it, and the cost of a linked library on
+a machine without is one more line in the installer's list.
 
 `wayland-protocols` is deliberately **not** on that list. The three XML files
 are vendored in `compositor/protocols/`, because which of them a distribution
@@ -1448,12 +1491,15 @@ do with glibc. See `compositor/protocols/README.md`.
 
 ## What the machine that runs it needs
 
-`libwayland-server.so.0` and `libxkbcommon.so.0` — the runtime halves of two of
-the build dependencies, and the only thing this product ever wants from a
-package manager. They are **not** installed for you, by `install.sh` or by
-anything else: nothing but the compositor links them, so native applications
-are a feature to opt into rather than a dependency a desktop acquires on your
-server without being asked.
+`libwayland-server.so.0`, `libxkbcommon.so.0` and `libxcb.so.1` — the runtime
+halves of three of the build dependencies, and the only thing this product ever
+wants from a package manager. They are **not** installed for you, by
+`install.sh` or by anything else: nothing but the compositor links them, so
+native applications are a feature to opt into rather than a dependency a desktop
+acquires on your server without being asked. X11-only applications need an
+`Xwayland` binary on top, which the compositor starts for them when one connects
+and does without otherwise; `install.sh` reports it the same way, and the
+compositor's log names the package when an X client finds no display.
 
 `available()` therefore runs `ldd` on `wdcomp` on *every* ask and reports the
 sonames that came back `not found`, along with the command that would install
@@ -1465,10 +1511,10 @@ The command is per package manager, and named in sonames everywhere else:
 
 | | |
 |---|---|
-| `apt` | `libwayland-server0 libxkbcommon0` |
-| `dnf` | `libwayland-server libxkbcommon` |
-| `zypper` | `libwayland-server0 libxkbcommon0` |
-| `pacman` | `wayland libxkbcommon` |
+| `apt` | `libwayland-server0 libxkbcommon0 libxcb1` |
+| `dnf` | `libwayland-server libxkbcommon libxcb` |
+| `zypper` | `libwayland-server0 libxkbcommon0 libxcb1` |
+| `pacman` | `wayland libxkbcommon libxcb` |
 
 A soname is the same on every distribution and a package name is not, so a
 manager that is not in that table — or a library with no name recorded for the

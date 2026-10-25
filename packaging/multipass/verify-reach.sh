@@ -118,7 +118,7 @@ echo "== build dependencies"
 sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
 sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq \\
   build-essential pkg-config python3 curl xz-utils \\
-  libwayland-dev libxkbcommon-dev zlib1g-dev >/dev/null
+  libwayland-dev libxkbcommon-dev libxcb1-dev zlib1g-dev >/dev/null
 
 echo "== the Node runtime we will ship"
 ver=\$(curl -fsSL https://nodejs.org/dist/index.json | python3 -c "
