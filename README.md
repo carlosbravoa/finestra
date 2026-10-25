@@ -1,10 +1,11 @@
 # Finestra
 
-A desktop environment that runs in a browser and drives a headless server. It
-gives you windows, menus, icons, a taskbar and context menus, plus a terminal on
-a real PTY, a file manager, a text editor, a system manager for processes,
-services, disks, ports and the journal — and real Linux GUI applications, drawn
-on the server by a Wayland compositor written for this and rendered in a window.
+A desktop environment that runs in a browser and drives a headless Linux
+server. Windows, menus, a taskbar and session restore; a terminal on a real
+PTY; a file manager and a text editor; a system manager for processes,
+services, disks, ports and the journal; and real Linux applications — Wayland
+and X11 — drawn on the server by a compositor written for this and rendered in
+a window of the desktop.
 
 One shell can drive several of your machines at once, each over its own
 connection.
@@ -13,162 +14,44 @@ connection.
 terminal on a real PTY, and GNOME Disks — an ordinary Linux application — each
 in its own window, in a browser tab.](docs/finestra-screenshot.png)
 
-The diagram below is the same thing with the lid off:
-
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  browser                                                 │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │ shell:  window manager · taskbar · icons · menus   │  │
-│  │         DesktopAPI  ← the contract apps see        │  │
-│  ├────────────────────────────────────────────────────┤  │
 │  │ apps:   terminal · files · editor · system manager │  │
 │  │         native applications · settings             │  │
 │  └────────────────────────────────────────────────────┘  │
-│                        RpcClient                         │
 └────────────────────────────┬─────────────────────────────┘
                              │ one WebSocket per host
-                             │ requests + multiplexed channels
 ┌────────────────────────────┴─────────────────────────────┐
 │  server                                                  │
 │    Session → services:  pty · fs · sys · proc · systemd  │
 │                         journal · net · certs · apps     │
 │                         wayland                          │
 │                        ↓                                 │
-│         node-pty · real filesystem · /proc · systemd     │
-│                        ↓                                 │
-│              wdcomp, a Wayland compositor (C)            │
+│    node-pty · the filesystem · /proc · systemd           │
+│    wdcomp, a Wayland compositor in C, with Xwayland      │
+│    behind it for X11 applications                        │
 └──────────────────────────────────────────────────────────┘
 ```
 
-## Running it
+## Installing
 
-```bash
-npm install
-npm run build
-npm start            # serves the client, API and socket from :7070
-```
-
-The server prints a URL containing an access token — open that. The token is
-stored and stripped from the address bar, so later visits need only the bare
-URL.
-
-While working on the code, use dev mode instead, which adds hot reload:
-
-```bash
-npm run dev          # Vite on :5173, API and socket on :7070
-```
-
-In dev the client is served by **Vite on :5173**, and :7070 carries only the
-API and the WebSocket. The startup message prints whichever URL is correct for
-the mode you are in, and in dev `:7070/` redirects to Vite rather than quietly
-serving the last production build.
-
-### Configuration
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `WD_HOST` | `127.0.0.1` | Bind address. Loopback by default — this is a remote shell. On an installed service, set it with `configure.sh --bind`, not by hand. |
-| `WD_PORT` | `7070` | Port. |
-| `WD_TOKEN` | generated | Access token. Unset, one is minted into `~/.local/state/finestra/token` and can be changed from Settings → Access without a restart; set, the environment owns it and Settings says so. |
-| `WD_NO_AUTH` | unset | `1` disables authentication entirely. Only ever for a private network you control. |
-| `WD_ROOT` | unset | Confines the `fs` service to a directory. Does **not** confine the terminal. |
-| `WD_STATIC` | auto | Directory the built client is served from. |
-| `WD_WDCOMP` | auto | Path to the `wdcomp` binary; without it, native applications are unavailable. |
-| `WD_SERVICES_DIR` | unset | Load extra services from outside the tree — see "What this is not" in `CLAUDE.md`. |
-| `WD_DIAL` | unset | Dial *out* to a relay instead of listening. Nothing on this machine accepts a connection. |
-| `WD_DIAL_TICKET` | unset | Presented to the relay when dialling. |
-| `WD_SESSION_TTL` | unlimited | Seconds from start, then the server exits whatever else is happening. |
-| `WD_SESSION_IDLE` | unlimited | Seconds without a message from the far side, then exit. |
-| `WD_TERMINAL_GRACE` | unlimited | Seconds a terminal's shell keeps running after its browser disappears, waiting to be picked up again. Unset keeps it until its window is closed; `0` hangs up at once. |
-| `WD_WINDOW_GRACE` | unlimited | The same for a native application's window. |
-
-`WD_DIAL`, its ticket and the two session limits matter for a desktop opened *by instruction* rather than by hand.
-`WD_DIAL` inverts the connection so the machine needs no open port at all, and
-the two session limits are enforced inside the process — so a control plane that
-is hacked, hung or simply forgotten cannot leave a root-capable desktop running
-on someone's machine. Unset means unlimited, which is right when you started it
-yourself and wrong when something else did.
-
-### Security
-
-The terminal is a real login shell running as the user who started the server,
-so anyone who reaches an authenticated socket has that user's full access. The
-defaults are chosen accordingly: loopback only, token required.
-
-To reach it from elsewhere, tunnel it rather than exposing the port:
-
-```bash
-ssh -L 7070:127.0.0.1:7070 you@server
-```
-
-On a network you actually trust — a VPN, a tailnet, a LAN behind your own
-router — the tunnel is a tax rather than a boundary, and an installed service
-can drop it. That is `configure.sh`'s job, not a hand-edited unit:
-
-```bash
-sudo /opt/finestra/current/configure.sh --bind 0.0.0.0             # answer everywhere
-sudo /opt/finestra/current/configure.sh --bind 100.83.0.4          # one address only
-sudo /opt/finestra/current/configure.sh --bind 0.0.0.0 --no-token  # and no login at all
-sudo /opt/finestra/current/configure.sh --bind local --token       # put it back
-```
-
-Neither is refused and neither is confirmed — it warns, records the choice in
-the unit, and prints what it opened. Both survive upgrades, and both show up in
-`--show`. The same flags work on `install.sh` and on the one-liner, so a machine
-can be installed open in the first place.
-
-Two things do not change: it is plain HTTP, so put TLS in front of it before it
-faces anything untrusted, and the terminal is a real shell — `WD_ROOT` narrows
-the file service but is not a sandbox for it.
-
-Binding a single VPN address is tighter than `0.0.0.0` and more fragile: the
-address does not exist until the tunnel is up, the unit is not ordered against
-it, and a service that starts first fails with `EADDRNOTAVAIL`. `configure.sh`
-warns when the address is not on the machine yet. For a tailnet, either bind
-everything and let the firewall decide (`ufw allow in on tailscale0 to any port
-7070`), or leave Finestra on loopback and put `tailscale serve --bg 7070` in
-front — that one also gets you a real certificate.
-
-## Installing on an EC2 instance
-
-The release is a self-contained tarball: it carries its own Node runtime, so
-the instance needs no toolchain, no `npm`, and no third-party apt repository —
-only systemd, which Ubuntu already has. The whole security model is the SSH you
-already use to reach the box, so **you never open port 7070**; the instance's
-security group needs nothing but SSH (22).
-
-Any systemd distribution with **glibc 2.34 or newer**, on x86_64 or 64-bit ARM:
-Ubuntu 24.04, Debian 12, Rocky 9 and 10, Amazon Linux 2023 and Fedora are each
+The release is a self-contained tarball with its own Node runtime: the machine
+needs no toolchain, no `npm` and no third-party repository, only systemd. Any
+systemd distribution with glibc 2.34 or newer, on x86_64 or 64-bit ARM —
+Ubuntu 24.04, Debian 12, Rocky 9 and 10, Amazon Linux 2023 and Fedora are
 checked on every release, and a Raspberry Pi 4 or 5 on the 64-bit Raspberry Pi
-OS is the same arm64 build. See `docs/packaging.md`.
-
-**1. Get a release tarball.** If you do not already have one, build it from a
-checkout (this launches a throwaway builder, so it needs AWS credentials):
-
-```bash
-packaging/aws/build.sh                  # → dist-release/finestra-<version>-linux-x64.tar.gz
-WD_CI_ARCH=arm64 packaging/aws/build.sh # → …-linux-arm64.tar.gz, for Graviton or a 64-bit Pi
-```
-
-Or skip the build and take the published release in one line:
+OS is the same arm64 build.
 
 ```bash
 curl -fsSL https://finestra.dev/get.sh | sudo bash
 ```
 
-That resolves the current release, **checks it against its published SHA-256
-before anything inside it runs**, and hands over to the same `install.sh` a
-manual download would use.
-
-**2. Copy it to the instance and install.** From your own machine:
-
-```bash
-scp finestra-<version>-linux-<arch>.tar.gz ubuntu@<instance>:
-ssh ubuntu@<instance>
-```
-
-then, on the instance:
+That resolves the current release, checks it against its published SHA-256
+before anything inside it runs, and hands over to `install.sh`. The same
+installer runs from a downloaded tarball:
 
 ```bash
 tar xzf finestra-<version>-linux-<arch>.tar.gz
@@ -176,33 +59,20 @@ cd finestra-<version>
 sudo ./install.sh
 ```
 
-The installer fetches nothing. If you also want **native Linux applications** in
-a window, the compositor needs three shared libraries that most server images do
-not carry; `install.sh` says whether they are present and prints the line for
-whichever package manager it finds:
+The installer fetches nothing. Native applications need three shared libraries
+that most server images do not carry, and X11 applications an Xwayland as well;
+`install.sh` says what is present and prints the line for the package manager it
+finds:
 
 ```bash
-sudo apt install libwayland-server0 libxkbcommon0 libxcb1     # Debian, Ubuntu
-sudo dnf install libwayland-server libxkbcommon libxcb        # Fedora, RHEL
+sudo apt install libwayland-server0 libxkbcommon0 libxcb1 xwayland          # Debian, Ubuntu
+sudo dnf install libwayland-server libxkbcommon libxcb xorg-x11-server-Xwayland   # Fedora, RHEL
 ```
 
-Nothing else in the desktop needs them, so it is safe to skip — the
-applications window explains the same thing and picks them up as soon as they
-appear, with no restart. **X11-only applications** — SDL2 games, Tk, anything
-older than Wayland — need an Xwayland as well, which the compositor starts
-for them only when one connects:
+Everything else works without them, and the applications window picks them up
+as soon as they appear, with no restart.
 
-```bash
-sudo apt install xwayland                     # Debian, Ubuntu
-sudo dnf install xorg-x11-server-Xwayland     # Fedora, RHEL
-```
-
-`install.sh` asks one question — who the desktop runs as — then installs under
-`/opt/finestra`, writes a systemd unit and starts it bound to
-`127.0.0.1:7070`. It finishes by printing the tunnel command and the tokened URL
-for this exact host.
-
-The question matters more than it looks:
+**Who it runs as.** The installer asks one question:
 
 ```
   1) ubuntu — you.  Your home directory, the journal, and sudo: the same
@@ -213,482 +83,134 @@ The question matters more than it looks:
      The journal and read-only browsing: observability, and nothing else.
 ```
 
-The default is you. A desktop is the account it runs as: run it as a system
-account with no home and no groups and you get something that can draw windows
-over a machine it cannot read — nowhere to upload to, nothing to open, and every
-privileged action refused. Running it as yourself grants nothing new, because
-reaching the port at all means already holding an SSH session as that same
-account. Choose 2 or 3 when the machine is shared or the desktop is only there
-to look at things; the answer sticks across upgrades, and the flags
-`--as-me`, `--no-privilege`, `--system-account` and `--user NAME` answer it in
-advance for an unattended install.
-
-State lives in that account's home — `~/.local/state/finestra` — or in
+The default is you. A desktop is the account it runs as: a system account with
+no home draws windows over a machine it cannot read. Running it as yourself
+grants nothing new, since reaching the port at all means already holding an SSH
+session as that account. Choose 2 or 3 when the machine is shared or the desktop
+is only there to look at things. The answer sticks across upgrades;
+`--as-me`, `--no-privilege`, `--system-account` and `--user NAME` give it in
+advance for an unattended install. State lives in `~/.local/state/finestra`, or
 `/var/lib/finestra` for the system account.
 
-### Upgrading from web desktop
-
-Finestra was called *web desktop*. Run the same one-liner (or the same
-`install.sh`) on a machine that has one and it is taken over rather than
-installed alongside: the access token, the settings and the recorded answer to
-the who-runs-as question all survive, so a bookmarked `?t=` URL keeps working.
-`web-desktop.service`, `/opt/web-desktop` and the `web-desktop` system account
-are removed, and the installer prints what it took over and what it removed. If
-the new service does not answer, the old one is enabled and started again with
-its files untouched — the migration never leaves a machine with neither.
-
-`/var/lib/web-desktop` is deliberately left behind when a system-account install
-is migrated: it holds the only other copy of the token, and deleting it is your
-call, not the installer's.
-
-### Changing it later
-
-The answer is not fixed at install time. `configure.sh` stays behind in the
-install, so it can be changed later on a machine that no longer has the tarball
-it came from — it rewrites the unit, moves the state (carrying the token, so
-your URL keeps working) and restarts the service:
-
-```bash
-sudo /opt/finestra/current/configure.sh --show   # what it is now
-sudo /opt/finestra/current/configure.sh          # ask again
-sudo /opt/finestra/current/configure.sh --as-me  # or answer directly
-```
-
-It owns the other half of the same question — what can reach the desktop —
-through `--bind` and `--no-token`, described under "Security" above. Those two
-are flags rather than a prompt, and unlike the account they are never re-asked:
-a `configure.sh` run about something else leaves them exactly as they were.
-
-**3. Connect.** The desktop is on the instance's loopback, so forward the port
-over SSH from your own machine:
+**Connect.** The service listens on the machine's loopback, so forward the port
+over SSH from your own machine and open the URL the installer printed, which
+carries the token:
 
 ```bash
 ssh -L 7070:127.0.0.1:7070 ubuntu@<instance>
+# then  http://127.0.0.1:7070/?t=…
 ```
 
-Leave that running and open the URL the installer printed — it carries the
-token, which is stored in `~/.local/state/finestra/token`:
+The token is stored by the browser and stripped from the address bar, so later
+visits need only the bare URL. Nothing but SSH has to be open on the machine.
 
-```
-http://127.0.0.1:7070/?t=…
-```
-
-That is it. Afterwards:
-
-### Opening things from a terminal
-
-A shell on the server has no window, and `firefox` typed at a prompt will say it
-cannot find a display — correctly. There is no ambient Wayland display to
-inherit: every native application runs under its own compositor, which exists
-only for the window it draws. So the terminal asks the desktop instead:
-
-```bash
-finestra open firefox        # by id or by name; opens in a window in the browser
-finestra open notes.md       # a file, through whichever app handles it
-finestra apps [filter]       # what is installed
-finestra status              # is a desktop connected?
-```
-
-With no browser attached there is nothing to draw into, and `finestra open` says
-so and exits non-zero rather than reporting success for a window nobody saw.
+**Afterwards:**
 
 ```bash
 sudo systemctl status finestra                    # is it up
 journalctl -u finestra -f                          # follow its logs
-sudo /opt/finestra/current/configure.sh --show     # who it runs as
-sudo /opt/finestra/current/configure.sh            # change that, and restart
+sudo /opt/finestra/current/configure.sh --show     # who it runs as, what can reach it
+sudo /opt/finestra/current/configure.sh            # ask the account question again
 sudo /opt/finestra/current/update.sh <tarball>     # upgrade in place
 sudo /opt/finestra/current/update.sh --rollback    # undo a bad upgrade
+sudo ./install.sh --uninstall                      # from an unpacked tarball; keeps the state directory
 ```
 
-To remove it, run the uninstall from an unpacked tarball. `configure.sh` and
-`update.sh` stay in the install tree; `install.sh` does not, because it is also
-what deletes that tree:
+A shell on the server has no display of its own — every application runs under
+its own compositor, which exists only for the window it draws — so the terminal
+asks the desktop instead:
 
 ```bash
-sudo ./install.sh --uninstall     # removes the service and files; keeps the state directory
+finestra open firefox        # by id or by name, in a window of every connected desktop
+finestra open notes.md       # a file, through whichever app handles it
+finestra apps [filter]       # what is installed
+finestra status              # is a desktop connected?
+finestra version             # which build this is
 ```
+
+**Upgrading from web desktop.** Finestra was called *web desktop*. The same
+installer on a machine that has one takes it over rather than installing
+alongside: the token, the settings and the account answer survive, so a
+bookmarked URL keeps working, and the old service, tree and account are removed.
+If the new service does not answer, the old one is put back.
+
+## Security
+
+The terminal is a real login shell as the account the service runs as, so
+anyone who reaches an authenticated socket has that account's full access. The
+defaults follow from that: loopback only, token required, and the SSH tunnel is
+the boundary. It is plain HTTP; put TLS in front of it before it faces anything
+untrusted.
+
+On a network you trust — a VPN, a tailnet, a LAN behind your own router — the
+tunnel is a tax rather than a boundary, and `configure.sh` can drop it:
+
+```bash
+sudo /opt/finestra/current/configure.sh --bind 0.0.0.0             # answer everywhere
+sudo /opt/finestra/current/configure.sh --bind 100.83.0.4          # one address only
+sudo /opt/finestra/current/configure.sh --bind 0.0.0.0 --no-token  # and no login at all
+sudo /opt/finestra/current/configure.sh --bind local --token       # put it back
+```
+
+It warns, records the choice in the unit, and prints what it opened. Both
+survive upgrades and a `configure.sh` run about something else leaves them
+alone. The same flags work on `install.sh` and on the one-liner. Binding a
+single VPN address is tighter and more fragile: the address does not exist until
+the tunnel is up. For a tailnet, either bind everything and let the firewall
+decide (`ufw allow in on tailscale0 to any port 7070`), or stay on loopback with
+`tailscale serve --bg 7070` in front, which also brings a real certificate.
 
 ## What is in it
 
 | App | What it does |
 | --- | --- |
-| **Terminal** | A real PTY on the host, xterm.js in front. Survives a reload or a dropped connection with whatever was running in it, and only asks before closing when something is actually running. |
-| **Files** | Browse, rename, delete, download, upload. Double-click routes to whichever app handles that file. |
-| **Text Editor** | Edit files on the server. Claims `.txt`, `.md`, `.conf` and friends by file association. |
-| **System Manager** | Overview, processes, services, journal, disk usage, network and certificates — see below. |
-| **Native Desktop Applications** | Browses the host's installed `.desktop` entries and runs a real Linux GUI app in a window. Pin one and it becomes an app of this desktop, with its own icon. Empty on a headless server, and meant to be. Distribution packages are what this is tested against; **snaps are experimental** — see [Known issues: snaps](#known-issues-snaps). |
-| **Settings** | Appearance, terminal, uploads, which apps are enabled, file associations, session restore. |
-
-The **System Manager** is the largest of them, and each section is a live view
-rather than a snapshot:
-
-- **Overview** — CPU, memory, load, temperatures, network and disk throughput.
-- **Processes** — sorted, filterable, with a detail panel; signal one it owns.
-- **Services** — systemd units for the system *or* your own user manager, with
-  start/stop/restart/enable and a live log tail per unit.
-- **Journal** — the whole journal rather than one unit's: filter by boot,
-  priority, unit or identifier, search with `--grep`, and follow new entries as
-  they arrive. Clicking an entry shows every field the journal recorded.
-- **Disk usage** — filesystems, and a scan that walks a directory tree.
-- **Network** — listening sockets and connections, attributed to the process
-  that owns them.
-- **Certificates** — expiry dates for the TLS certificates on the machine.
-
-Everything it shows comes from `/proc`, `/sys`, `systemctl` and `journalctl` —
-there is no agent to install and nothing is cached behind your back.
-
-### Known issues: snaps
-
-Applications installed from a **distribution package** are what native
-application support is tested against. **Snaps are experimental**: a simple one
-runs, a complex one is not to be relied on yet. Getting a snap to *start* is
-solved — the socket is named the one thing AppArmor permits, and the session bus
-`snap-confine` needs is found rather than assumed. What is not solved is what a
-substantial application expects once it is running:
-
-| Limit | What you see |
-|---|---|
-| No dmabuf import | A window that never paints. The software-rendering variables that rescue a `.deb` are set when the client is spawned, but snapd rebuilds much of the environment and we do not control whether they survive into the snap's own runtime. Electron-based snaps are the usual casualty |
-| No `xdg-desktop-portal` | *Open File* and *Save As* do nothing or hang; screenshots, secrets and notifications fail. A confined snap often has no fallback, because the portal *is* its file access |
-| No Xwayland installed | `Failed to open display` from anything X11-only; the compositor's log names the package |
-| No audio | Silence, or a refusal to start |
-| Single-instance handoff | On a machine that has a desktop session, a snap can hand its window to the copy already running there. The session says so rather than reporting a clean exit. A headless server never sees this |
-
-So: prefer the `.deb` where a project ships both, and treat a snap that does not
-work as expected rather than as a surprise. The mechanisms, the debugging order,
-and what has actually been observed are in
-[`docs/wayland.md`](docs/wayland.md) under "Snaps are experimental".
-
-## More than one machine
-
-One shell can drive several servers at once. Each host is a separate connection
-straight from your browser to that machine; the servers never learn about each
-other.
-
-That is deliberate. A Finestra that proxied to other Finestras would
-add a hop, a second trust boundary, and a machine whose compromise is everyone's
-compromise. One server per box keeps the blast radius of a compromise to that
-box. A window belongs to one host for its whole life — there is no cross-host
-drag and no shared state, which is what stops this becoming a distributed system
-with all the reconciliation that implies.
-
-On a single-machine install the feature is invisible and costs nothing;
-`tests/standalone.test.ts` fails if that stops being true.
-
-## Layout
-
-```
-shared/protocol.ts     wire format, imported by both sides
-server/src/
-  index.ts             HTTP, static files, WebSocket upgrade
-  session.ts           demultiplexes requests and channels onto services
-  service.ts           the Service interface
-  deadman.ts           the session's own TTL and idle clock
-  outbound.ts          dialling out to a relay instead of listening
-  extra-services.ts    loads services from WD_SERVICES_DIR
-  services/            pty fs sys proc systemd journal net certs apps wayland
-                         ← add capabilities here
-client/src/
-  core/
-    types.ts           the app SDK: AppManifest, DesktopAPI, MenuItem…
-    rpc.ts             connection, requests, channels, reconnect
-    desktop.ts         the shell; implements DesktopAPI
-    hosts.ts           several servers in one shell
-    host-view.ts       a per-host view of the DesktopAPI
-    registry.ts        installed apps
-    associations.ts    which app opens which file
-    session-store.ts   which windows to reopen after a reload
-    transfer.ts        upload and download over HTTP
-    settings.ts        persisted preferences
-    shortcuts.ts       global accelerators
-  ui/                  window, window-manager, menu, taskbar, icons, dialogs
-  apps/                terminal, files, editor, sysman, wayland, settings
-                         ← add apps here
-  apps-extra/          apps from other repositories, globbed at build time
-compositor/            wdcomp: a headless Wayland compositor (optional)
-  protocols/           the Wayland protocol XML, vendored — see its README
-packaging/             install.sh, update.sh, and the EC2 build/verify scripts
-tests/                 run with `npm test` (build first)
-```
-
-## Adding an app
-
-An app is a manifest with a `mount` function. It gets a DOM node and the
-`DesktopAPI`; the shell never looks inside its element, so it can be plain DOM,
-canvas, or any framework.
-
-```ts
-// client/src/apps/notes/index.ts
-import type { AppManifest } from '../../core/types';
-
-export const notesApp: AppManifest = {
-  id: 'notes',
-  name: 'Notes',
-  icon: '📝',                 // emoji, or an inline <svg> string
-  category: 'Utilities',
-  showOnDesktop: true,
-  defaultSize: { width: 600, height: 400 },
-
-  async mount({ window: win, root, desktop, params }) {
-    const text = document.createElement('textarea');
-    root.appendChild(text);
-
-    const { content } = await desktop.rpc.call('fs', 'read', {
-      path: params.path ?? '/tmp/notes.txt',
-    });
-    text.value = content;
-
-    return {
-      menu: [{ label: 'File', submenu: () => [{ label: 'Save', onSelect: save }] }],
-      onResize: ({ width }) => win.setStatus(`${width}px`),
-      onClose: () => desktop.confirm({ message: 'Discard changes?' }),
-      destroy: () => { /* release timers, sockets, listeners */ },
-    };
-  },
-};
-```
-
-Register it in `client/src/main.ts`:
-
-```ts
-desktop.register(notesApp);
-```
-
-> There is a Claude Code skill for this: **`finestra-app`** in
-> `.claude/skills/`. It carries the full API reference, a compiling starter
-> template, the service-authoring guide, and the mistakes worth not repeating.
-
-That is the only place the shell learns an app exists — which is what will let
-this list eventually come from remote bundles loaded with `import()`.
-
-What `mount` receives:
-
-- `window` — `setTitle`, `setIcon`, `setMenu`, `setStatus`, `close`, `focus`,
-  `minimize`, `maximize`, `setBounds`, and an `on(event, fn)` for
-  `focus` / `blur` / `resize` / `move` / `state` / `close`.
-- `desktop` — `rpc`, `launch`, `notify`, `confirm`, `prompt`, `contextMenu`,
-  `settings`, `shortcuts`, `events`, `host`.
-- `params` — whatever `launch()` was called with.
-
-What you may return: `menu`, `destroy`, `onResize`, `onFocus`, `onBlur`,
-`onClose` (return `false` to veto the close), and `saveState` (see below).
-
-## Session restore
-
-Open windows come back after a reload: app, geometry, maximized/minimized
-state, stacking order and which window had focus.
-
-Live things cannot survive — a PTY dies with its socket — so a restored app
-starts fresh and reopens *in the right place*. Apps say what "the right place"
-means by returning it from `saveState()`:
-
-```ts
-return {
-  saveState: () => ({ path: currentDirectory }),
-  // …reopens as mount({ params: { path } })
-};
-```
-
-`saveState` is called synchronously, possibly while the page is unloading, so
-return an already-known value rather than starting async work. Anything you
-return must be JSON-serialisable; if it is not, that one window is dropped and
-the rest of the session still restores. Apps that do not implement it reopen
-with the params they were originally launched with.
-
-The terminal uses this to come back in the directory you left it in. Since a
-shell never announces `cd`, it polls `pty.cwd` — which reads `/proc/<pid>/cwd`
-— while the terminal is focused, and once more when it loses focus. The server
-answers only for PTYs that same connection started, and forgets a pid as soon
-as its shell exits, so a recycled pid cannot be used to inspect an unrelated
-process.
-
-Closing a terminal only asks for confirmation when something is actually
-running in it. `pty.status` reports the tty's foreground process group — the
-same signal a normal terminal emulator uses — so an idle prompt closes
-immediately, and a busy one names what it would kill ("vim" will be
-terminated). Background jobs count too, since they die with the shell. Turn the
-prompt off entirely under **Shell → Ask before closing**.
-
-### A terminal outlives its window
-
-Losing the connection is not closing the window. When the socket drops — the
-tab closed, the laptop lid shut, the VPN gone — the server keeps the shell
-running and banks its output, and the terminal that comes back picks it up by
-id: a reconnect on the same page is shown only what it missed, and a reload
-(session restore keeps the id) or a browser that had drawn nothing is shown
-the last megabyte. Full-screen programs repaint on the resize that follows.
-So a build, a download or a `vim` session carries on through a dropped
-connection exactly as it would under `tmux`, with nothing to type.
-
-What ends the shell is what ended it before there was any of this: closing
-its window, `exit`, or a restart of the service — the terminal is a child of
-the server, and only `tmux` or `screen` inside it survives an update. Nobody
-coming back does not end it. A model training overnight is still there in
-the morning; so is the shell you forgot about, which is the price, and the
-one a desktop on a real machine charges too. Come back the next day, from
-any browser, and the desktop opens a terminal onto it: at startup, after the
-saved session is restored, every shell on the server that no window is
-showing gets one. **Shell → Pick up a terminal** lists the rest — what each
-is running, how long it has been alone, whether another window has it — for
-taking one over by hand.
-
-`WD_TERMINAL_GRACE` puts a limit back, in seconds: after that long without
-a window the shell gets the SIGHUP a closed window would have sent. Under a
-limit, **Shell → Keep running while I am away** exempts one shell from it;
-the status bar says *kept while away*, and the mark travels with the shell,
-not the window. Without a limit the item is not offered, since there is
-nothing for it to do. Up to 0.3.15 the limit was an hour, and the shells
-lost to it were the ones nobody remembered to mark — on a poor connection,
-most of them.
-
-A native application's window works the same way, with `WD_WINDOW_GRACE`,
-and an application left running is picked up at startup as a shell is.
-
-If two windows claim the same shell the newest wins, as with
-`tmux attach -d`, and the other is told it was displaced rather than left
-guessing. The list is open to any connection, deliberately: it exists for
-the browser that has never seen the shell, and reaching this server at all
-already means holding the account these shells run as.
-
-Set `restorable: false` on a manifest to opt a window out. Users can turn the
-whole feature off under **Apps → Reopen windows on reload**, which also clears
-what was stored. Sessions older than 14 days are discarded.
-
-## File associations
-
-An app declares what it can open; the file manager routes double-clicks to it
-and offers an **Open with** menu.
-
-```ts
-export const editorApp: AppManifest = {
-  // …
-  handles: [
-    { extensions: ['.txt', '.md', '.conf'], verb: 'Edit' },
-    { names: ['Makefile', 'Dockerfile'] },
-    { matches: (f) => f.name.includes('.log.'), verb: 'Tail' },
-    // { fallback: true } claims anything nothing else wants
-  ],
-};
-```
-
-The app is launched with `params.path` set to the file.
-
-Ties resolve by specificity: an exact filename beats an extension, a longer
-extension beats a shorter one (`.tar.gz` over `.gz`), a predicate beats a
-`fallback`, and `priority` breaks anything still level. A dotfile like
-`.bashrc` counts as a *name*, not an extension. A user's explicit "always open
-this kind of file with" choice overrides all of it, and is forgotten
-automatically if that app is later uninstalled.
-
-From an app:
-
-```ts
-await desktop.openFile(path);                            // registered handler
-await desktop.openFile(path, { appId, remember: true }); // force, and remember
-desktop.fileHandlers(path);                              // for an Open with menu
-```
-
-`openFile` returns null when nothing handles the file, having already offered
-the user an **Open with…** picker — so callers do not need their own
-empty-handler path.
-
-## File transfer
-
-- **Download** — right-click a file in Files → Download. Streams over HTTP
-  (`/api/download`), so the browser's own progress/save-as UI applies and
-  there is no size cap.
-- **Upload** — drag files from your OS onto the desktop and they land in the
-  inbox folder (`~/Uploads` by default, changeable in Settings). Drop them onto
-  a Files window instead and they land in the directory you are looking at.
-  Files → File → "Upload files here…" opens a picker for the same thing.
-
-Name collisions never overwrite: a second `report.pdf` becomes
-`report (1).pdf`, atomically, and `backup.tar.gz` suffixes as
-`backup (1).tar.gz`. Apps get the same machinery via
-`desktop.downloadFile(path)` and `desktop.uploadFiles(files, dir?)`.
-
-## Settings
-
-The **Settings** app (launcher → System, or right-click the desktop)
-consolidates what used to live in scattered context menus:
-
-- **Appearance** — dark/light theme, wallpaper.
-- **Terminal** — font size, default shell, close confirmation.
-- **Files & uploads** — the inbox folder, hidden files.
-- **Apps** — enable/disable apps (Stage 1 of `docs/app-installation.md`).
-  State persists server-side, so it is a property of the machine, not of one
-  browser. Settings itself cannot be disabled — it is how apps get re-enabled.
-- **File associations** — review and forget "always open with" choices.
-- **Session** — the reopen-windows toggle, and a way to forget saved windows.
-
-Theme and wallpaper apply live: the shell watches the settings keys, so the
-Settings app never reaches into shell internals.
-
-## Adding a server capability
-
-A service is a named bundle of methods and channels. Methods are
-request/response; channels are long-lived streams.
-
-```ts
-// server/src/services/git.ts
-import { type Service } from '../service.js';
-
-export const gitService: Service = {
-  name: 'git',
-  methods: {
-    async status({ repo }) { /* … */ },
-  },
-  channels: {
-    log({ repo }, ctx) {
-      const child = spawn('git', ['log', '--follow'], { cwd: repo });
-      child.stdout.on('data', (b) => ctx.sendBinary(b));
-      return {
-        info: { pid: child.pid },
-        onCtl: (method) => { if (method === 'stop') child.kill(); },
-        onClose: () => child.kill(),
-      };
-    },
-  },
-};
-```
-
-Add it to the list in `server/src/services/index.ts`. The client discovers it
-from the `hello` handshake — nothing on the client needs registering.
-
-Calling it:
-
-```ts
-await desktop.rpc.call('git', 'status', { repo });
-
-const channel = desktop.rpc.openChannel('git', 'log', { repo }, {
-  onBinary: (bytes) => append(bytes),
-  onClose: (error) => done(error),
-});
-channel.ctl('stop');
-```
-
-Because every capability the browser has goes through a service,
-`server/src/services/` is the complete list of what the desktop can do to the
-machine — which is the place to look when auditing reach.
-
-## The wire protocol
-
-One WebSocket carries everything, defined in `shared/protocol.ts`.
-
-- **Requests** — `{t:'req', id, svc, m, a}` → `{t:'res', id, ok, d|e}`.
-- **Channels** — `{t:'open', id, svc, m, a}` → `{t:'opened', id, d}`, then
-  `data` / `ctl` in both directions until `close`.
-- **Binary frames** — `[opcode][4-byte channel id][payload]`. Terminal traffic
-  uses these so a fast `find /` is not JSON-escaped byte by byte, and so
-  xterm.js reassembles UTF-8 sequences split across writes itself.
-
-The client reconnects with backoff. Channels are deliberately *not* restored
-across a reconnect — the server cannot know what a stream meant to the app
-— so apps are told via `onClose` and decide whether to reopen. The server
-side of a channel is told whether the connection was *lost* or the client
-asked, which is how a terminal's shell is kept for a window that will be
-back and hung up for one that was closed.
+| **Terminal** | A real PTY on the host, xterm.js in front. Survives a reload or a dropped connection with whatever was running in it, and asks before closing only when something is running. |
+| **Files** | Browse, rename, delete, download, upload. Double-click routes to whichever app handles the file. |
+| **Text Editor** | Edit files on the server. Claims `.txt`, `.md`, `.conf` and friends. |
+| **System Manager** | Overview with live graphs; processes; systemd units for the system or your own user manager, with a log tail per unit; the whole journal, filtered and followed; disk usage; listening sockets attributed to their process; TLS certificate expiry. All of it from `/proc`, `/sys`, `systemctl` and `journalctl`, with no agent. |
+| **Native Desktop Applications** | The host's installed desktop entries, each run in a window. Pin one and it becomes an app of this desktop with its own icon. |
+| **Settings** | Appearance, terminal, uploads, which apps are enabled, file associations, session restore, the access token. |
+
+**Native applications.** Each launch gets a compositor of its own, which draws
+the window into the browser and takes its mouse, keyboard and clipboard. Wayland
+applications run directly; X11 applications — DOSBox-X and the SDL games and
+emulators, Tk, Java, Wine, the old X tools — run through an Xwayland the session
+starts the moment one asks, with the compositor as its window manager. Menus,
+dialogs, size hints and copy and paste both ways work for both. *Open File* and
+*Save As* are drawn by the shell through the file-chooser portal, so a confined
+application can reach the machine's files. Three limits are worth knowing
+before you wonder: anything that insists on rendering through a GPU buffer never
+paints (software rendering is set up for the toolkits that can take the hint);
+there is no audio; and there is no pointer capture yet, so an emulator or game
+that grabs the mouse to read its movement sees it drift. An X11 window is drawn
+at 1× and magnified on a 2× screen. Distribution packages are what this is
+tested against; snaps run, and when a substantial one misbehaves the reasons
+and the debugging order are in [`docs/wayland.md`](docs/wayland.md).
+
+**Terminals and applications outlive their window.** When the socket drops —
+tab closed, lid shut, VPN gone — the server keeps the shell or the application
+running, and the window that comes back picks it up: a reconnect is shown what
+it missed, a reload the last megabyte. Nobody coming back does not end it; what
+ends a shell is closing its window, `exit`, or a restart of the service. Come
+back from any browser and the desktop opens a window onto every shell and
+application nothing is showing; **Shell → Pick up a terminal** lists the rest.
+`WD_TERMINAL_GRACE` and `WD_WINDOW_GRACE` put a limit back, in seconds.
+
+**Session restore.** Open windows come back after a reload — app, geometry,
+state, stacking and focus. A restored app reopens in the right place: the
+terminal in the directory you left, Files in the folder you were in. Turn it off
+under **Apps → Reopen windows on reload**.
+
+**File transfer.** Right-click a file in Files to download it; the browser's own
+save-as applies and there is no size cap. Drag files from your machine onto the
+desktop and they land in the inbox folder (`~/Uploads` by default), or onto a
+Files window and they land where you are looking. Collisions never overwrite:
+a second `report.pdf` becomes `report (1).pdf`.
+
+**More than one machine.** One shell can drive several servers at once, each a
+separate connection straight from the browser to that machine; the servers never
+learn about each other, and a window belongs to one host for its life. On a
+single-machine install the feature is invisible and costs nothing.
 
 ## Keyboard shortcuts
 
@@ -702,50 +224,123 @@ back and hung up for one that was closed.
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste in the terminal |
 | `Ctrl+Wheel` | Terminal zoom |
 
-Apps add their own with `desktop.shortcuts.register('Ctrl+Alt+K', fn, 'What it
-does')`, which returns the unbinding function.
+## Configuration
 
-## What's next
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `WD_HOST` | `127.0.0.1` | Bind address. On an installed service, set it with `configure.sh --bind`, not by hand. |
+| `WD_PORT` | `7070` | Port. |
+| `WD_TOKEN` | generated | Access token. Unset, one is minted into `~/.local/state/finestra/token` and can be changed from Settings → Access without a restart; set, the environment owns it and Settings says so. |
+| `WD_NO_AUTH` | unset | `1` disables authentication entirely. Only for a private network you control. |
+| `WD_ROOT` | unset | Confines the `fs` service to a directory. Does **not** confine the terminal. |
+| `WD_STATIC` | auto | Directory the built client is served from. |
+| `WD_WDCOMP` | auto | Path to the `wdcomp` binary; without it, native applications are unavailable. |
+| `WD_XWAYLAND` | on | `0` turns X11 support off; the X server is otherwise started only when an X client connects. |
+| `WD_SERVICES_DIR` | unset | Load extra services from outside the tree (`server/src/extra-services.ts`). |
+| `WD_DIAL`, `WD_DIAL_TICKET` | unset | Dial *out* to a relay instead of listening, so the machine needs no open port; the ticket is presented to the relay. |
+| `WD_SESSION_TTL`, `WD_SESSION_IDLE` | unlimited | Seconds from start, and seconds without a message, after which the server exits. Enforced inside the process, so a control plane that is hung or forgotten cannot leave a desktop running. |
+| `WD_TERMINAL_GRACE`, `WD_WINDOW_GRACE` | unlimited | Seconds a shell, or an application's window, keeps running after its browser disappears. Unset keeps it until the window is closed; `0` hangs up at once. |
 
-See [`ROADMAP.md`](ROADMAP.md).
+## Developing
 
-On authentication specifically: the SSH tunnel is the boundary and the token is
-a second latch on top of it — that is the design, not a placeholder. Logging in
-as an OS user was built and then removed, because an unprivileged service cannot
-verify another user's password without being handed read access to the password
-hashes, which is more attack surface than it buys. `ROADMAP.md` records the
-evidence so nobody re-derives it.
+```bash
+npm install --include=dev
+npm run build          # client bundle, then server
+npm start              # serves client, API and socket from :7070
+npm run dev            # Vite on :5173 with hot reload, API and socket on :7070
+npm test               # the whole suite, against a server of its own; build first
+make -C compositor     # wdcomp; needs libwayland-dev, libxkbcommon-dev, libxcb1-dev, zlib1g-dev
+```
 
-- [`ROADMAP.md`](ROADMAP.md) — ordered by when each gap starts to hurt.
-- [`docs/app-installation.md`](docs/app-installation.md) — installing and
-  enabling apps without rebuilding the shell.
-- [`docs/apps-wanted.md`](docs/apps-wanted.md) — the apps a sysadmin actually
-  needs, and which ones are not worth building.
-- [`docs/wayland.md`](docs/wayland.md) — the compositor that puts *real* Linux
-  applications in a window. Working today for anything that renders with shm:
-  menus, dialogs, mouse, keyboard, cursor shapes and clipboard. It also records
-  what does *not* run and why — X11-only programs, and anything that insists on
-  a GPU buffer we cannot read.
+```
+shared/protocol.ts     wire format, imported by both sides
+server/src/
+  index.ts             HTTP, static files, WebSocket upgrade
+  session.ts           demultiplexes requests and channels onto services
+  services/            pty fs sys proc systemd journal net certs apps wayland
+client/src/
+  core/                rpc, desktop (the shell), hosts, registry, associations,
+                       session-store, settings, shortcuts, types (the app SDK)
+  ui/                  window, window-manager, menu, taskbar, icons, dialogs
+  apps/                terminal, files, editor, sysman, wayland, settings
+  apps-extra/          apps from other repositories, globbed at build time
+compositor/            wdcomp and its X11 window manager; protocols/ is vendored
+packaging/             install.sh, update.sh, configure.sh, the EC2 build and verify
+tests/                 run with `npm test`
+```
+
+**An app** is a manifest with a `mount` function. It gets a DOM node and the
+`DesktopAPI`; the shell never looks inside its element, so it can be plain DOM,
+canvas or any framework. Register it in `client/src/main.ts`, or drop it in
+`apps-extra/` to keep it in its own repository.
+
+```ts
+export const notesApp: AppManifest = {
+  id: 'notes',
+  name: 'Notes',
+  icon: '📝',
+  category: 'Utilities',
+  handles: [{ extensions: ['.txt', '.md'], verb: 'Edit' }],   // file associations
+  async mount({ window: win, root, desktop, params }) {
+    const { content } = await desktop.rpc.call('fs', 'read', { path: params.path });
+    // ... build the UI into root ...
+    return {
+      menu: [{ label: 'File', submenu: () => [{ label: 'Save', onSelect: save }] }],
+      onClose: () => desktop.confirm({ message: 'Discard changes?' }),
+      saveState: () => ({ path: params.path }),   // how it reopens after a reload
+      destroy: () => { /* release timers, sockets, listeners */ },
+    };
+  },
+};
+```
+
+`window` offers `setTitle`, `setMenu`, `setStatus`, `setBounds`, `close` and
+events; `desktop` offers `rpc`, `launch`, `openFile`, `notify`, `confirm`,
+`prompt`, `contextMenu`, `settings`, `shortcuts` and the clipboard. The full
+reference, a compiling starter and the mistakes worth not repeating are in the
+`finestra-app` skill under `.claude/skills/`; installing and enabling apps
+without rebuilding the shell is `docs/app-installation.md`.
+
+**A server capability** is a service: named methods (request and response) and
+channels (long-lived streams), listed in `server/src/services/index.ts` and
+discovered by the client from the handshake. Every capability the browser has
+goes through one, so that directory is the complete list of what the desktop can
+do to the machine — the place to look when auditing reach.
+
+**The wire protocol** is one WebSocket per host, defined in
+`shared/protocol.ts`: requests, channels with `data` and `ctl` in both
+directions, and binary frames (`[opcode][channel id][payload]`) for terminal
+and window traffic. The client reconnects with backoff; channels are not
+restored across a reconnect, and the server side of one is told whether the
+connection was lost or the client asked, which is how a shell is kept for a
+window that will be back and hung up for one that was closed.
+
+## Docs
+
+- [`ROADMAP.md`](ROADMAP.md) — what comes next, in the order it starts to hurt.
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed in each release.
+- [`docs/wayland.md`](docs/wayland.md) — the compositor: how applications are
+  launched, sized and drawn, what runs and what does not, X11 through
+  Xwayland, and how to find out why something did not start.
 - [`docs/packaging.md`](docs/packaging.md) — why the release carries its own
-  Node runtime, what ships, how updates and rollback work, and the failures that
-  cost the most time.
+  Node runtime, what ships, how updates and rollback work.
+- [`docs/app-installation.md`](docs/app-installation.md),
+  [`docs/apps-wanted.md`](docs/apps-wanted.md) — the app model, and which apps
+  are worth building.
 
 ## Licence
 
-**Free for personal and internal business use, on as many machines as you like.**
-That includes a company running it on its own servers, including the ones that
-earn the company money, and includes patching it to taste. There is no seat count,
-no expiry, no feature held back, and nothing to buy.
+**Free for personal and internal business use, on as many machines as you
+like**, including a company running it on its own servers and patching it to
+taste. No seat count, no expiry, nothing held back.
 
 **A commercial licence is needed to give Finestra to other people** — hosting it
 as a service for third parties, shipping it inside a product or appliance, or
 redistributing builds.
 
 The terms are the PolyForm Internal Use License with personal and noncommercial
-use added; see [`LICENSE`](LICENSE) for the text,
-[`LICENSE-COMMERCIAL.md`](LICENSE-COMMERCIAL.md) for the plain-language version
-and how to ask. [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) covers what
-the release bundles — all of it permissive.
-
+use added; see [`LICENSE`](LICENSE), [`LICENSE-COMMERCIAL.md`](LICENSE-COMMERCIAL.md)
+for the plain-language version and how to ask, and
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for what the release bundles.
 Patches are welcome; [`CONTRIBUTING.md`](CONTRIBUTING.md) explains the one
-sign-off line and why it is needed.
+sign-off line.
