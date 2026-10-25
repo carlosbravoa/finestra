@@ -4,6 +4,51 @@ What changed in each release, for someone deciding whether to update. The
 reasoning behind a change is in its commit; the failures that cost time are in
 `docs/`.
 
+## 0.4.0 — 2026-10-25
+
+**X11 applications run.** Programs that speak X11 rather than Wayland —
+DOSBox-X and the emulators and games built on SDL, anything written in
+Tk, Java and Wine programs, the old X tools — open in a window like any
+other. Each session starts an X server of its own the moment an X client
+asks for one, and the compositor is its window manager: windows are
+sized and named as the application asks, a transient window is a dialog
+of its parent, a menu is a menu over the window it belongs to, copy and
+paste work both ways, and the ✕ asks the application to close. Nothing
+is started for applications that never ask. It needs `Xwayland` on the
+server; the installer says whether it is there and which package provides
+it, and an X11 application started without it says so plainly. `libxcb1`
+is a new runtime dependency, in the installer's list. `WD_XWAYLAND=0`
+turns the feature off.
+
+Two limits to know about. An X window is drawn at 1× and magnified on a
+2× screen. And there is no pointer capture yet, so an emulator or a game
+that grabs the mouse to read its movement — DOSBox with a Windows guest,
+first-person views — sees it drift or stick to an edge; that is the next
+item.
+
+Found in the first afternoon of using it, and fixed before this release:
+the mouse pointer vanished over windows that set no cursor of their own,
+and over LibreOffice after its splash screen; DOSBox-X and the shell
+resized each other for as long as Windows took to boot; and clicks past
+the size the window had at launch stopped at that edge.
+
+**An application is not its first window.** When an application destroys
+its window, the shell keeps the window a few seconds for the next one
+instead of ending the session. LibreOffice's splash screen, a browser
+that opens each site in a fresh process, and anything else that replaces
+its window used to open or not depending on a race, and the browser could
+never reach its second page. An application that quits from its own menu
+is no longer reported as having failed to start.
+
+**A helper's dialog no longer stays as the application's window.** A
+process that exited with a window still up — zenity asking a question for
+DOSBox-X, a crash — was never reported closed, and the shell kept its last
+picture as the window.
+
+**A menu opened from a dialog is clickable.** Drop-downs opened from a
+dialog were drawn under the dialog's backdrop, where nothing could reach
+them, for Wayland and X11 applications alike.
+
 ## 0.3.16 — 2026-10-21
 
 - **What you leave running stays running.** A terminal or a native
