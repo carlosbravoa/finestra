@@ -111,8 +111,9 @@ substitution a guess.
 
 Cutting a release is therefore: bump `package.json`, write the CHANGELOG entry,
 commit, `git tag v0.2.1`, build. The website repository's `web/release.sh`
-does the tag and everything after it — both architectures, the verifiers, the
-publish and the push — and is the way a release is actually cut.
+does the tag and everything after it — both architectures, `verify.sh` on
+each and `verify-distros.sh` on every supported distribution, the publish and
+the push — and is the way a release is actually cut.
 
 ### Where a version can be read
 
