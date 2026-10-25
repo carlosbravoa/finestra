@@ -834,6 +834,24 @@ INCR-sized, and a 456 kB paste) and an XCB client that offers `STRING`
 only, exits while owning the selection, and reports whether it was
 cleared.
 
+**An X window is a client, for the session's lifetime.** The first thing
+tried after phase 3 was a real launcher: a script that starts DOSBox-X
+in the background with a Windows 98 disk and returns. The compositor
+decides when a session is over from its Wayland clients and the child it
+spawned — Xwayland is deliberately not counted, being ours — so the
+script exited 0 before the window was up, the five-second wait for a
+client began, the X window arrived at half a second and did not end it,
+and Windows booted for exactly five seconds before the browser was told
+the application had exited normally. "Randomly", to the person watching,
+because the boot looked different each time it was cut. An X client
+connects to Xwayland and never to us, so its windows are the only sign of
+it there is: a window arriving clears the launch grace as a client
+connecting does, and the last X window destroyed starts the same
+one-second debounce as the last client disconnecting — enough for an SDL
+program that destroys its window and makes a new one on a video mode
+change. An unmapped window keeps the session; only a destroyed one
+counts. With the child still running, the child decides, as before.
+
 ## What stage 8 settled
 
 **The complaint was a frozen terminal clock, and the cause was Firefox.**

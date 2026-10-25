@@ -3820,6 +3820,22 @@ static void xwayland_detach(struct wdc_server *server,
 		free(xdg->popup);
 	}
 	free(xdg);
+
+	/*
+	 * An X client connects to Xwayland, not to us, so its windows are the
+	 * only sign of it we have: the last one destroyed is the application
+	 * leaving, as a Wayland client's disconnection is. Same debounce, for
+	 * an SDL program that destroys its window and makes a new one when its
+	 * video mode changes. The child still running decides for itself, as
+	 * in client_gone; and a window that is only unmapped keeps the session.
+	 */
+	if (!destroyed || !server->running || server->client_count > 0 ||
+			server->child > 0 || !wl_list_empty(&server->xpending))
+		return;
+	struct wdc_xdg_surface *w;
+	wl_list_for_each(w, &server->windows, link)
+		if (w->xwin) return;
+	server->quit_at = now_ms() + WDC_REJOIN_GRACE_MS;
 }
 
 /*
@@ -3929,6 +3945,15 @@ static void xwayland_attach(struct wdc_server *server,
 static void xwm_on_surface(void *data, const struct xwm_window *win,
 		uint32_t surface_id) {
 	struct wdc_server *server = data;
+	/*
+	 * An X window is a client arrived, for the launch grace as much as for
+	 * had_client. A script that starts an X program in the background and
+	 * returns — the common shape of a VM or game launcher — exited 0 before
+	 * the window was up, the five-second wait for a client began, and no X
+	 * window ever ended it: DOSBox-X booted Windows for five seconds and
+	 * was then reported as having exited normally.
+	 */
+	server->quit_at = 0;
 	/* A remap: the same X window, a new wl_surface behind it. */
 	struct wdc_xdg_surface *old = find_xwindow(server, win->xwin);
 	if (old) xwayland_detach(server, old, false);

@@ -136,6 +136,15 @@ before anything widens what runs.
       Xwayland is plumbing, not the application, for "did not start",
       `liveApps` and `IPC_CLIENT`; `IPC_RESYNC` covers X windows; a missing
       Xwayland names its package.
+      Pulled forward, because the first real use hit it: an X window
+      counts as a client for the compositor's lifetime. A launcher that
+      starts an X program in the background and returns exited 0 before
+      the window was up, the five-second wait for a client began, and no
+      X window ever ended it — DOSBox-X booted Windows 98 for exactly five
+      seconds and was reported as having exited normally. The last X
+      window destroyed now ends the session the way the last Wayland
+      client's disconnection does, same one-second debounce; a window only
+      unmapped keeps it. The suite check waits for phase 5's XCB fixture.
    5. **Checks and packaging.** An XCB fixture client beside
       `subsurface-client.c`, run at scale 2 — it copies and pastes too, the
       clipboard checks live on the frame channel until then; Xwayland per
