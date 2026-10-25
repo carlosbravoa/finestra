@@ -1615,6 +1615,12 @@ export const waylandService: Service = {
             quoted
           );
         }
+        // An X11 application on a machine with no Xwayland: the compositor
+        // said so, naming the package, before the application said anything
+        // about a display it could not open — and its line is the one with
+        // the remedy in it.
+        const noX = stderrTail.split('\n').find((line) => /Xwayland is not installed/.test(line));
+        if (noX) return `${opening} ${noX.replace(/^wdcomp:\s*/, '')}`;
         // Its own words beat our guess whenever there are any: the guess is
         // what sent the last reader looking at desktop services for an hour.
         if (quoted) return `${opening}${quoted}`;

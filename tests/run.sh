@@ -11,6 +11,10 @@ unset WD_NO_AUTH WD_TOKEN WD_HOST WD_PORT WD_STATIC WD_WDCOMP WD_ROOT WD_DIAL \
   WD_DIAL_TICKET WD_SESSION_TTL WD_SESSION_IDLE WD_SERVICES_DIR WD_DEV
 PORT="${WD_TEST_PORT:-7199}"
 SERVER="server/dist/server/src/index.js"
+# Every session gets an X display of its own; the X server behind it is
+# started by the first X client, so a machine without Xwayland runs the same
+# suite with one line more in the log.
+export WD_XWAYLAND=1
 
 # Run against a scratch state directory. The suite pins applications, disables
 # apps and unpins them again, and without this it does all of that to the state
@@ -87,7 +91,7 @@ export WD_TEST_BIRTH="$XDG_STATE_HOME/birth"
 cat > "$BIN_DIR/wd-birth" <<EOF
 #!/bin/sh
 grep SigBlk /proc/self/status > "$WD_TEST_BIRTH"
-env | grep ELECTRON_OZONE_PLATFORM_HINT >> "$WD_TEST_BIRTH"
+env | grep -E '^(ELECTRON_OZONE_PLATFORM_HINT|DISPLAY|QT_QPA_PLATFORM)=' >> "$WD_TEST_BIRTH"
 ls /proc/self/fd >> "$WD_TEST_BIRTH"
 exit 0
 EOF

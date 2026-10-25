@@ -314,6 +314,23 @@ if (fixtureDir && fs.existsSync(path.join(fixtureDir, 'wd-test-hidden.desktop'))
   check('and holding the hint Electron needs to pick Wayland',
     /ELECTRON_OZONE_PLATFORM_HINT=auto/.test(birthReport ?? ''),
     birthReport?.split('\n').find((l) => l.includes('ELECTRON')) ?? 'not in the environment');
+  // An X display of the session's own exists before the application does,
+  // and the X server behind it is started by the first X client — so a
+  // Wayland application pays nothing for it, and a Qt build without the
+  // wayland plugin has somewhere to fall back to. A machine without
+  // Xwayland says so once and offers no display.
+  const birthLogs = birth.data.filter((d) => d.t === 'log').map((d) => d.message);
+  const xOffered = birthLogs.some((l) => /X clients may connect to DISPLAY=/.test(l));
+  const xMissing = birthLogs.some((l) => /Xwayland is not installed/.test(l));
+  check('a session offers an X display, or says which package would provide one',
+    xOffered !== xMissing, birthLogs.filter((l) => /Xwayland|DISPLAY/.test(l)).join(' | ') || 'neither said');
+  check('a Wayland application starts no X server',
+    !birthLogs.some((l) => /started Xwayland/.test(l)));
+  if (xOffered) {
+    check('and was born with DISPLAY set, and Qt told to fall back to it',
+      /^DISPLAY=:\d+$/m.test(birthReport ?? '') && /^QT_QPA_PLATFORM=wayland;xcb$/m.test(birthReport ?? ''),
+      (birthReport ?? '').split('\n').filter((l) => /^(DISPLAY|QT_QPA)/.test(l)).join(' ') || 'neither in the environment');
+  }
 
   // Closing a session must reach the application as a request it can act on,
   // not as an unannounced SIGKILL four seconds later.

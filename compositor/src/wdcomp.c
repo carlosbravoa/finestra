@@ -30,8 +30,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <stddef.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -210,7 +213,10 @@ struct wdc_server {
 	 * Xwayland, with --xwayland: an X server of this compositor's own, so
 	 * X11-only applications have somewhere to draw. It is a Wayland client
 	 * like any other, but plumbing rather than the application — it is not
-	 * counted in `clients` — and the launch waits for its display number.
+	 * counted in `clients`. The display's sockets are ours and exist from
+	 * the start, so DISPLAY is settled before the application is spawned;
+	 * Xwayland itself is started by the first connection to them, and a
+	 * Wayland application never starts it at all.
 	 */
 	bool xwayland;
 	pid_t xwl_pid;
@@ -220,13 +226,14 @@ struct wdc_server {
 	struct xwm *xwm;
 	struct wl_event_source *xwm_source;
 	struct wl_event_source *xwl_ready;
-	int x_display; /* -1 until Xwayland says which */
+	int x_display; /* -1 without an X display of our own */
+	int x_listen[2]; /* the display's abstract and filesystem sockets */
+	struct wl_event_source *x_listen_source[2];
+	char x_socket_path[64];
+	char x_lock_path[64];
 	/* X windows named before their wl_surface reached us: two connections,
 	 * so either can arrive first. wdc_xpending links. */
 	struct wl_list xpending;
-	char **launch_argv;
-	const char *socket_name;
-	bool force_shm;
 };
 
 struct wdc_toplevel;
@@ -3630,8 +3637,14 @@ struct wdc_client {
 
 static void announce_clients(struct wdc_server *server) {
 	if (!server->ipc) return;
+	/* An X client connects to Xwayland, not to us; its windows are what
+	 * we see of it, and each is counted as a client would be. */
+	uint32_t count = (uint32_t)server->client_count;
+	struct wdc_xdg_surface *w;
+	wl_list_for_each(w, &server->windows, link)
+		if (w->xwin) count++;
 	uint8_t msg[4];
-	ipc_put_u32(msg, (uint32_t)server->client_count);
+	ipc_put_u32(msg, count);
 	if (ipc_send(server->ipc, IPC_CLIENT, msg, sizeof msg, NULL, 0) != 0)
 		server->running = false;
 }
@@ -3728,7 +3741,18 @@ static void spawn_client(struct wdc_server *server, const char *socket_name,
 		unsetenv("DISPLAY");
 	}
 	setenv("GDK_BACKEND", "wayland", 1);
-	setenv("QT_QPA_PLATFORM", "wayland", 1);
+	/*
+	 * Qt with an X display to fall back to: a Qt 5 install without the
+	 * qtwayland plugin — the common shape, the plugin is a separate
+	 * package — aborts on "wayland" alone, and with ";xcb" runs through
+	 * Xwayland instead. Qt has taken the list since 5.12.
+	 * SDL2 is left to choose for itself, and it chooses X11 when DISPLAY
+	 * is set. The tempting "wayland,x11" is a list only from SDL 2.0.22;
+	 * 2.0.20 (Ubuntu 22.04, and whatever an application bundles) reads it
+	 * as the name of one driver that does not exist and exits — so a
+	 * SDL2 program costs an Xwayland, which works, rather than a gamble.
+	 */
+	setenv("QT_QPA_PLATFORM", server->x_display >= 0 ? "wayland;xcb" : "wayland", 1);
 	/*
 	 * Electron's door to the same choice. It defaults to the X11 Ozone
 	 * platform and aborts on a machine with no display — VS Code, and
@@ -3829,8 +3853,10 @@ static void xwayland_detach(struct wdc_server *server,
 	 * video mode changes. The child still running decides for itself, as
 	 * in client_gone; and a window that is only unmapped keeps the session.
 	 */
-	if (!destroyed || !server->running || server->client_count > 0 ||
-			server->child > 0 || !wl_list_empty(&server->xpending))
+	if (!destroyed || !server->running) return;
+	announce_clients(server);
+	if (server->client_count > 0 || server->child > 0 ||
+			!wl_list_empty(&server->xpending))
 		return;
 	struct wdc_xdg_surface *w;
 	wl_list_for_each(w, &server->windows, link)
@@ -3936,6 +3962,7 @@ static void xwayland_attach(struct wdc_server *server,
 	surface->xdg = xdg;
 	wl_list_insert(&server->windows, &xdg->link);
 	server->had_client = true;
+	announce_clients(server);
 	logmsg("X window 0x%x is w%u: %s %dx%d at %d,%d%s%s", win->xwin, xdg->id,
 		win->override_redirect ? "popup" : "toplevel", win->width,
 		win->height, win->x, win->y, win->title ? " — " : "",
@@ -4085,8 +4112,8 @@ static int handle_xwm_readable(int fd, uint32_t mask, void *data) {
 	return 0;
 }
 
-/* Xwayland wrote its display number: X clients can connect from here on,
- * so the window manager goes in first and the application follows. */
+/* Xwayland wrote its display number — ours, confirmed — which means it is
+ * ready for the window manager; the first client is waiting on it too. */
 static int handle_xwayland_ready(int fd, uint32_t mask, void *data) {
 	struct wdc_server *server = data;
 	char buf[16] = {0};
@@ -4112,24 +4139,25 @@ static int handle_xwayland_ready(int fd, uint32_t mask, void *data) {
 			logmsg("Xwayland is up but the window manager could not connect");
 		}
 	} else {
-		logmsg("Xwayland exited before it was ready; launching without X");
+		/* The client that started it finds its connection reset — our
+		 * copies of the sockets closed when Xwayland was forked. */
+		logmsg("Xwayland exited before it was ready; the X client finds no display");
 		close(server->xwm_fd);
 		server->xwm_fd = -1;
 	}
 	close(fd);
-	if (server->launch_argv)
-		spawn_client(server, server->socket_name, server->launch_argv,
-			server->force_shm);
-	server->launch_argv = NULL;
 	return 0;
 }
 
 /*
  * Rootless, so every X window is a wl_surface of its own rather than one
  * desktop-sized one; -wm hands us a connection that is already authorised;
- * -displayfd lets Xwayland pick a free display number and tell us when it is
- * ready. Its Wayland connection is a socketpair, not our listening socket,
- * which is how we know which client it is before it has said a word.
+ * -listenfd hands it the display's sockets, which are ours and already have
+ * the first client waiting in their backlog; -displayfd is how it says it
+ * is ready for the window manager to connect (and turns its own lock file
+ * off — the lock is ours too). Its Wayland connection is a socketpair, not
+ * our listening socket, which is how we know which client it is before it
+ * has said a word.
  */
 static bool xwayland_start(struct wdc_server *server) {
 	int wl[2], wm[2], ready[2];
@@ -4146,6 +4174,8 @@ static bool xwayland_start(struct wdc_server *server) {
 		close(wm[1]);
 		return false;
 	}
+	char display[16];
+	snprintf(display, sizeof display, ":%d", server->x_display);
 
 	pid_t pid = fork();
 	if (pid < 0) {
@@ -4154,7 +4184,7 @@ static bool xwayland_start(struct wdc_server *server) {
 	}
 	if (pid == 0) {
 		/* Same clean birth as spawn_client, and for the same reasons. The
-		 * three fds go high first so that putting them at 3, 4 and 5 cannot
+		 * fds go high first so that putting them at 3, 4, 5, 6 and 7 cannot
 		 * overwrite one another. */
 		sigset_t empty;
 		sigemptyset(&empty);
@@ -4162,24 +4192,46 @@ static bool xwayland_start(struct wdc_server *server) {
 		int a = fcntl(wl[1], F_DUPFD, 100);
 		int b = fcntl(wm[1], F_DUPFD, 100);
 		int c = fcntl(ready[1], F_DUPFD, 100);
-		if (a < 0 || b < 0 || c < 0 || dup2(a, 3) < 0 || dup2(b, 4) < 0 ||
-				dup2(c, 5) < 0)
+		int d = fcntl(server->x_listen[0], F_DUPFD, 100);
+		int e = server->x_listen[1] >= 0
+			? fcntl(server->x_listen[1], F_DUPFD, 100) : -1;
+		if (a < 0 || b < 0 || c < 0 || d < 0 || dup2(a, 3) < 0 ||
+				dup2(b, 4) < 0 || dup2(c, 5) < 0 || dup2(d, 6) < 0 ||
+				(e >= 0 && dup2(e, 7) < 0))
 			_exit(127);
 #ifdef __linux__
-		if (syscall(SYS_close_range, 6, ~0U, 0) != 0)
+		if (syscall(SYS_close_range, 8, ~0U, 0) != 0)
 #endif
-			for (int fd = 6; fd < 256; fd++) close(fd);
+			for (int fd = 8; fd < 256; fd++) close(fd);
 		setenv("WAYLAND_SOCKET", "3", 1);
 		unsetenv("WAYLAND_DISPLAY");
 		unsetenv("DISPLAY");
-		execlp("Xwayland", "Xwayland", "-rootless", "-wm", "4", "-displayfd",
-			"5", "-nolisten", "tcp", (char *)NULL);
+		if (e >= 0)
+			execlp("Xwayland", "Xwayland", display, "-rootless", "-wm", "4",
+				"-displayfd", "5", "-listenfd", "6", "-listenfd", "7",
+				"-nolisten", "tcp", (char *)NULL);
+		else
+			execlp("Xwayland", "Xwayland", display, "-rootless", "-wm", "4",
+				"-displayfd", "5", "-listenfd", "6", "-nolisten", "tcp",
+				(char *)NULL);
 		fprintf(stderr, "wdcomp: could not exec Xwayland: %s\n", strerror(errno));
 		_exit(127);
 	}
 	close(wl[1]);
 	close(wm[1]);
 	close(ready[1]);
+	/*
+	 * The sockets are Xwayland's to accept on now. Closing our copies is
+	 * also what makes a failure clean: should it die before it is ready,
+	 * the last fd on the socket goes with it, the backlog is reset and the
+	 * client waiting there sees a refused display instead of a hang.
+	 */
+	for (int i = 0; i < 2; i++) {
+		if (server->x_listen_source[i]) wl_event_source_remove(server->x_listen_source[i]);
+		server->x_listen_source[i] = NULL;
+		if (server->x_listen[i] >= 0) close(server->x_listen[i]);
+		server->x_listen[i] = -1;
+	}
 	server->xwl_pid = pid;
 	server->xwm_fd = wm[0];
 	server->xwl_connecting = true;
@@ -4191,8 +4243,164 @@ static bool xwayland_start(struct wdc_server *server) {
 	}
 	server->xwl_ready = wl_event_loop_add_fd(server->loop, ready[0],
 		WL_EVENT_READABLE | WL_EVENT_HANGUP, handle_xwayland_ready, server);
-	logmsg("started Xwayland (pid %d)", (int)pid);
+	logmsg("started Xwayland (pid %d) for the first X client", (int)pid);
 	return true;
+}
+
+/* The first connection to the display is what starts the X server. */
+static int handle_x_connection(int fd, uint32_t mask, void *data) {
+	struct wdc_server *server = data;
+	if (server->xwl_pid > 0) return 0;
+	if (!xwayland_start(server)) {
+		/* Nothing will ever answer; stop pretending to listen. */
+		for (int i = 0; i < 2; i++) {
+			if (server->x_listen_source[i]) wl_event_source_remove(server->x_listen_source[i]);
+			server->x_listen_source[i] = NULL;
+			if (server->x_listen[i] >= 0) close(server->x_listen[i]);
+			server->x_listen[i] = -1;
+		}
+	}
+	return 0;
+}
+
+static bool in_path(const char *program) {
+	const char *path = getenv("PATH");
+	if (!path) path = "/usr/local/bin:/usr/bin:/bin";
+	while (*path) {
+		const char *end = strchr(path, ':');
+		size_t len = end ? (size_t)(end - path) : strlen(path);
+		char full[PATH_MAX];
+		if (len > 0 && len + 1 + strlen(program) < sizeof full) {
+			snprintf(full, sizeof full, "%.*s/%s", (int)len, path, program);
+			if (access(full, X_OK) == 0) return true;
+		}
+		path = end ? end + 1 : path + len;
+	}
+	return false;
+}
+
+/*
+ * X servers claim a display by creating /tmp/.X<n>-lock exclusively, pid
+ * inside; a lock whose pid is dead is a crash's leftover and is taken
+ * over, which is what every X server does with it too.
+ */
+static bool x_lock_display(int n, char *lock_path, size_t size) {
+	snprintf(lock_path, size, "/tmp/.X%d-lock", n);
+	for (int attempt = 0; attempt < 2; attempt++) {
+		int fd = open(lock_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444);
+		if (fd >= 0) {
+			char pid[16];
+			int len = snprintf(pid, sizeof pid, "%10d\n", (int)getpid());
+			if (write(fd, pid, (size_t)len) != len) { /* unreadable, still ours */ }
+			close(fd);
+			return true;
+		}
+		if (errno != EEXIST) return false;
+		char buf[16] = {0};
+		fd = open(lock_path, O_RDONLY | O_CLOEXEC);
+		if (fd < 0) return false;
+		ssize_t got = read(fd, buf, sizeof buf - 1);
+		close(fd);
+		long owner = -1;
+		const char *s = buf;
+		while (*s == ' ') s++;
+		if (got <= 0 || !parse_dec(s, &owner) || owner <= 0) return false;
+		if (kill((pid_t)owner, 0) == 0 || errno != ESRCH) return false;
+		if (unlink(lock_path) != 0) return false;
+	}
+	return false;
+}
+
+/*
+ * libxcb tries the abstract socket first on Linux and the filesystem one
+ * after, so the abstract one is the display and the other is for whatever
+ * insists on a path (and for `ls /tmp/.X11-unix` making sense). The
+ * directory may not exist on a machine that has never had a display, and
+ * may not be ours to write to; the path socket is best effort.
+ */
+static int x_bind(int n, bool abstract, char *path_out, size_t size) {
+	struct sockaddr_un addr = {.sun_family = AF_UNIX};
+	int len = snprintf(addr.sun_path + (abstract ? 1 : 0),
+		sizeof addr.sun_path - 1, "/tmp/.X11-unix/X%d", n);
+	socklen_t addr_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) +
+		len + (abstract ? 1 : 0));
+	if (!abstract) {
+		if (mkdir("/tmp/.X11-unix", 01777) == 0) chmod("/tmp/.X11-unix", 01777);
+		/* The lock is ours, so a socket left at the path is a leftover. */
+		unlink(addr.sun_path);
+	}
+	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (fd < 0) return -1;
+	if (bind(fd, (struct sockaddr *)&addr, addr_len) != 0 || listen(fd, 128) != 0) {
+		close(fd);
+		return -1;
+	}
+	if (!abstract && path_out) snprintf(path_out, size, "%s", addr.sun_path);
+	return fd;
+}
+
+/*
+ * Claims a display of our own and listens on it, so that DISPLAY can be
+ * set for the application now and Xwayland started only if something
+ * connects. Without an Xwayland to start there is no display, and the line
+ * says which package would provide one.
+ */
+static bool xwayland_listen(struct wdc_server *server) {
+	if (!in_path("Xwayland")) {
+		logmsg("Xwayland is not installed, so X11 applications cannot run here: "
+			"install the package xwayland (Debian, Ubuntu) or "
+			"xorg-x11-server-Xwayland (Fedora, RHEL, Amazon Linux)");
+		return false;
+	}
+	for (int n = 0; n < 64; n++) {
+		if (!x_lock_display(n, server->x_lock_path, sizeof server->x_lock_path))
+			continue;
+		int abstract = x_bind(n, true, NULL, 0);
+		if (abstract < 0) {
+			unlink(server->x_lock_path);
+			continue;
+		}
+		server->x_listen[0] = abstract;
+		server->x_listen[1] = x_bind(n, false, server->x_socket_path,
+			sizeof server->x_socket_path);
+		server->x_display = n;
+		for (int i = 0; i < 2; i++) {
+			if (server->x_listen[i] < 0) continue;
+			server->x_listen_source[i] = wl_event_loop_add_fd(server->loop,
+				server->x_listen[i], WL_EVENT_READABLE, handle_x_connection,
+				server);
+		}
+		logmsg("X clients may connect to DISPLAY=:%d; Xwayland starts with the first",
+			n);
+		return true;
+	}
+	server->x_lock_path[0] = '\0';
+	logmsg("no free X display number; launching without X");
+	return false;
+}
+
+static void xwayland_finish(struct wdc_server *server) {
+	for (int i = 0; i < 2; i++) {
+		if (server->x_listen_source[i]) wl_event_source_remove(server->x_listen_source[i]);
+		server->x_listen_source[i] = NULL;
+		if (server->x_listen[i] >= 0) close(server->x_listen[i]);
+		server->x_listen[i] = -1;
+	}
+	if (server->xwl_pid > 0) {
+		xwm_destroy(server->xwm);
+		server->xwm = NULL;
+		kill(server->xwl_pid, SIGTERM);
+		uint32_t give_up = now_ms() + 2000;
+		while (waitpid(server->xwl_pid, NULL, WNOHANG) == 0 && now_ms() < give_up)
+			nanosleep(&(struct timespec){0, 10 * 1000 * 1000}, NULL);
+		if (waitpid(server->xwl_pid, NULL, WNOHANG) == 0) {
+			kill(server->xwl_pid, SIGKILL);
+			waitpid(server->xwl_pid, NULL, 0);
+		}
+		server->xwl_pid = 0;
+	}
+	if (server->x_socket_path[0]) unlink(server->x_socket_path);
+	if (server->x_lock_path[0]) unlink(server->x_lock_path);
 }
 
 static void usage(FILE *out) {
@@ -4253,6 +4461,7 @@ int main(int argc, char **argv) {
 		.running = true,
 		.x_display = -1,
 		.xwm_fd = -1,
+		.x_listen = {-1, -1},
 	};
 	const char *socket_name = "wayland-wd";
 	bool force_shm = true;
@@ -4463,13 +4672,11 @@ int main(int argc, char **argv) {
 			server.outdir);
 	}
 
-	/* With Xwayland the launch waits for its display number, so that
-	 * DISPLAY means something by the time the application reads it. */
-	if (server.xwayland && xwayland_start(&server) && optind < argc) {
-		server.launch_argv = &argv[optind];
-		server.socket_name = socket_name;
-		server.force_shm = force_shm;
-	} else if (optind < argc) {
+	/* The display exists before the application does, so DISPLAY means
+	 * something by the time it reads it; the X server itself waits for
+	 * the first connection. */
+	if (server.xwayland) xwayland_listen(&server);
+	if (optind < argc) {
 		spawn_client(&server, socket_name, &argv[optind], force_shm);
 	} else {
 		logmsg("run a client with: WAYLAND_DISPLAY=%s <command>", socket_name);
@@ -4562,18 +4769,7 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	if (server.xwl_pid > 0) {
-		xwm_destroy(server.xwm);
-		server.xwm = NULL;
-		kill(server.xwl_pid, SIGTERM);
-		uint32_t give_up = now_ms() + 2000;
-		while (waitpid(server.xwl_pid, NULL, WNOHANG) == 0 && now_ms() < give_up)
-			nanosleep(&(struct timespec){0, 10 * 1000 * 1000}, NULL);
-		if (waitpid(server.xwl_pid, NULL, WNOHANG) == 0) {
-			kill(server.xwl_pid, SIGKILL);
-			waitpid(server.xwl_pid, NULL, 0);
-		}
-	}
+	xwayland_finish(&server);
 
 	wl_display_destroy(server.display);
 	seat_finish(&server.seat);

@@ -43,6 +43,7 @@ enum {
 	ATOM_TEXT_PLAIN_UTF8,
 	ATOM_TEXT_PLAIN,
 	ATOM_WD_SELECTION,
+	ATOM_WM_S0,
 	ATOM_COUNT,
 };
 
@@ -64,6 +65,7 @@ static const char *const atom_names[ATOM_COUNT] = {
 	[ATOM_TEXT_PLAIN] = "text/plain",
 	/* Where an X client's selection lands when we ask for it. */
 	[ATOM_WD_SELECTION] = "_WD_SELECTION",
+	[ATOM_WM_S0] = "WM_S0",
 };
 
 /* A clipboard is text, not a file transfer — the same line wdcomp draws. */
@@ -581,11 +583,13 @@ static void handle_event(struct xwm *xwm, xcb_generic_event_t *ev) {
 			(const char *)&n);
 		break;
 	}
-	case XCB_SELECTION_CLEAR:
+	case XCB_SELECTION_CLEAR: {
 		/* An X client took over; XFixes says who, and the read starts
 		 * there. */
-		xwm->clip_owned = false;
+		xcb_selection_clear_event_t *e = (void *)ev;
+		if (e->selection == xwm->atoms[ATOM_CLIPBOARD]) xwm->clip_owned = false;
 		break;
+	}
 	case XCB_CREATE_NOTIFY: {
 		xcb_create_notify_event_t *e = (void *)ev;
 		if (e->parent != xwm->screen->root || e->window == xwm->check ||
@@ -902,6 +906,15 @@ struct xwm *xwm_create(int fd, const struct xwm_callbacks *cb, void *data) {
 	xcb_change_property(conn, XCB_PROP_MODE_REPLACE, xwm->check,
 		xwm->atoms[ATOM_NET_WM_NAME], xwm->atoms[ATOM_UTF8_STRING], 8, 6,
 		"wdcomp");
+	/*
+	 * The ICCCM window manager selection, and not for form's sake: given
+	 * -wm together with -listenfd, Xwayland does not accept a client on
+	 * the display's sockets until some window manager owns WM_S0 — the
+	 * first X client sat in the socket's backlog for ever, with the server
+	 * up and nothing in any log. The selection is the signal it waits on.
+	 */
+	xcb_set_selection_owner(conn, xwm->check, xwm->atoms[ATOM_WM_S0],
+		XCB_CURRENT_TIME);
 
 	/* The clipboard window: its property changes are the INCR pieces. */
 	xwm->selection = xcb_generate_id(conn);

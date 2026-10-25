@@ -852,6 +852,61 @@ program that destroys its window and makes a new one on a video mode
 change. An unmapped window keeps the session; only a destroyed one
 counts. With the child still running, the child decides, as before.
 
+## What Xwayland phase 4 settled
+
+**The display exists before the application, and the X server after
+it.** Phase 1 started Xwayland at every launch and held the application
+until it reported its display number, so that `DISPLAY` would mean
+something — forty-five milliseconds and a process for every Wayland
+application that would never use it. The sockets are now the
+compositor's: it takes `/tmp/.X<n>-lock` exclusively the way every X
+server does (a lock whose pid is dead is a crash's leftover and is taken
+over), binds the abstract socket that libxcb tries first and, best
+effort, the one under `/tmp/.X11-unix`, and listens. `DISPLAY=:n` is in
+the application's environment at once; the first connection to either
+socket is what forks Xwayland, which is handed the listening sockets
+with `-listenfd` and finds the client already waiting in the backlog.
+Our copies close once it has them, which is also what makes a failure
+clean: if Xwayland dies before it is ready the backlog is reset and the
+client sees a refused display rather than a hang. Without an Xwayland on
+`PATH` there is no display at all, and one line says which package would
+provide one.
+
+**With `-wm`, Xwayland listens only once a window manager owns `WM_S0`.**
+Everything above was in place and the first X client never got an
+answer: Xwayland up, the window manager connected, the clipboard
+primed, and one connection sitting in the socket's backlog for ever —
+`ss -xl` showed the queue of one. Given `-wm` together with `-listenfd`,
+Xwayland defers `ListenOnOpenFD` until the ICCCM window manager
+selection is owned, so a rootless compositor that forgets the formality
+has a server that works and a display nobody can reach. The window
+manager's check window owns it now.
+
+**Qt is told where to fall back; SDL2 is not.** `QT_QPA_PLATFORM` was
+`wayland`, which a Qt 5 install without the separate qtwayland plugin
+aborts on; it is `wayland;xcb` when there is a display to fall back to.
+The matching `SDL_VIDEODRIVER=wayland,x11` was planned and not done:
+SDL reads a comma list only from 2.0.22, and 2.0.20 — Ubuntu 22.04, and
+whatever a game bundles — takes the whole string as the name of one
+driver that does not exist and exits. SDL2 chooses X11 on its own when
+`DISPLAY` is set, so an SDL2 program costs an Xwayland and runs; a
+gamble on the version would have cost some of them the window.
+
+**An X window is counted as a client.** The compositor's `IPC_CLIENT`
+count is Wayland clients, and Xwayland is deliberately not one of them,
+so to the server every X application had reached the display zero
+times; each X window counts now, and the explanation for an application
+that exited without a window can say it reached the display. The
+reconnect path needed nothing: an X window is a `wdc_xdg_surface` with a
+kept canvas like any other, and a browser that comes back is shown it
+whole.
+
+**Still a flag.** `WD_XWAYLAND=1` is what turns all of this on, and the
+suite now runs with it set, checking that a Wayland application starts
+no X server and is born with `DISPLAY` and the Qt fallback. Turning it on
+by default is phase 5's, together with the fixture that exercises an X
+client in the suite and the libxcb line in the packaging.
+
 ## What stage 8 settled
 
 **The complaint was a frozen terminal clock, and the cause was Firefox.**
