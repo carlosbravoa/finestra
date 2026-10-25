@@ -60,7 +60,12 @@ done
 TARBALL="$(wd_ci_abs "${TARBALL:-$(wd_ci_newest_tarball)}")"
 [ -n "$TARBALL" ] && [ -f "$TARBALL" ] || die "no tarball; run packaging/aws/build.sh first"
 wd_ci_follow_tarball "$TARBALL"
-VERIFY_TYPE="${VERIFY_TYPE:-${WD_CI_FAMILY_T}.micro}"
+# 2 GB, not the 1 GB micro verify.sh uses: Amazon Linux 2023's dnf needs more
+# than the ~400 MB a micro has left with the checks running just to load its
+# repository index, and the kernel killed it (exit 137) three runs in a row
+# while the service itself held 31 MB. The checks ask the package manager
+# about the Xwayland package, so the machine has to be able to run it.
+VERIFY_TYPE="${VERIFY_TYPE:-${WD_CI_FAMILY_T}.small}"
 
 LOGDIR="$(mktemp -d -t wd-distros-XXXXXX)"
 log "verifying $(basename "$TARBALL") on: ${TARGETS[*]}"

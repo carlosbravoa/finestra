@@ -139,12 +139,37 @@ t "the compositor asks for no glibc newer than this one" \
 t "the installer names the Xwayland package" \
   bash -c 'grep -q "To enable them:.*[Xx]wayland" /tmp/wd-install.log'
 xwl_pkg="$(sed -n 's/.*To enable them:  sudo [a-z-]* \(install\|-S\) \(.*[Xx]wayland.*\)/\2/p' /tmp/wd-install.log | awk 'NR==1')"
-if command -v apt-get >/dev/null; then
-  t "and that package exists on this distribution ($xwl_pkg)" \
-    bash -c 'apt-cache show '"$xwl_pkg"' >/dev/null 2>&1'
-elif command -v dnf >/dev/null; then
-  t "and that package exists on this distribution ($xwl_pkg)" \
-    bash -c 'sudo dnf -q info '"$xwl_pkg"' >/dev/null 2>&1'
+# Asked with care, because the first version failed on two distributions
+# with both names correct and nothing to say why. A bare Debian image has no
+# apt index until `apt-get update` (Ubuntu's cloud image happens to carry
+# one), so the index is refreshed first. And on a 1 GB instance Amazon
+# Linux's dnf was killed by the kernel for memory (exit 137, with the service
+# itself at 31 MB) — which is why verify-distros.sh uses 2 GB instances, and
+# why the evidence here records memory and the exit code: t() silences the
+# command, so what the tool said goes through a file and is printed on
+# failure.
+pkg_known() {
+  local i rc
+  for i in 1 2 3; do
+    {
+      echo "attempt $i as $(id -un); memory: $(free -m | awk '/^Mem:/{print $2" MB total, "$7" MB available"}'); finestra unit: $(systemctl show -p MemoryCurrent --value finestra 2>/dev/null) bytes"
+      if command -v apt-get >/dev/null; then
+        sudo apt-get update -qq || true
+        apt-cache show "$1"; rc=$?
+      else
+        sudo dnf -q info "$1"; rc=$?
+      fi
+      echo "exit $rc"
+    } >> /tmp/wd-pkg-known.log 2>&1
+    [ "$rc" = 0 ] && return 0
+    sleep 20
+  done
+  return 1
+}
+if command -v apt-get >/dev/null || command -v dnf >/dev/null; then
+  rm -f /tmp/wd-pkg-known.log
+  t "and that package exists on this distribution ($xwl_pkg)" pkg_known "$xwl_pkg"
+  grep -q '^exit 0' /tmp/wd-pkg-known.log 2>/dev/null || note "it said: $(grep -vE '^\s*$' /tmp/wd-pkg-known.log | tail -n 6 | tr '\n' '|')"
 fi
 
 # ---------------------------------------------------------------------------

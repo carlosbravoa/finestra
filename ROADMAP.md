@@ -173,8 +173,14 @@ before anything widens what runs.
       manager, and `checks.sh` confirms the name it prints exists on that
       distribution. Linked rather than `dlopen`'d, for reasons in
       `docs/wayland.md`. DOSBox-X and Tk verified; VLC's skins2 not yet.
-      Still to run: `verify-distros.sh` for the Amazon Linux 2023 package
-      name.
+      `verify-distros.sh` run on 0.4.0: the package name is right on all
+      six (Amazon Linux 2023 ships `xorg-x11-server-Xwayland` 24.1.3), and
+      the check itself was what failed on Debian 12 and Amazon Linux — an
+      empty apt index on a bare image, and dnf killed for memory on a 1 GB
+      micro (the service held 31 MB; dnf's index needs more than the 400 MB
+      left) — so it refreshes the index, retries, keeps the tool's output,
+      and the distribution run uses 2 GB instances. The website's
+      `release.sh` runs it before every publish.
       **First hands-on round** (eight reports, four causes; `docs/wayland.md`,
       "What the first hands-on round with Xwayland settled"): the window
       manager now owns the root cursor, so a window that sets none — Tk,
