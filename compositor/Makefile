@@ -32,16 +32,19 @@ PROTOCOLS := \
   $(PROTO_DIR)/xdg-shell.xml \
   $(PROTO_DIR)/cursor-shape-v1.xml \
   $(PROTO_DIR)/tablet-v2.xml \
-  $(PROTO_DIR)/xdg-output-unstable-v1.xml
+  $(PROTO_DIR)/xdg-output-unstable-v1.xml \
+  $(PROTO_DIR)/viewporter.xml
 
 GEN_H := $(BUILD)/xdg-shell-server-protocol.h \
          $(BUILD)/cursor-shape-v1-server-protocol.h \
          $(BUILD)/tablet-v2-server-protocol.h \
-         $(BUILD)/xdg-output-unstable-v1-server-protocol.h
+         $(BUILD)/xdg-output-unstable-v1-server-protocol.h \
+         $(BUILD)/viewporter-server-protocol.h
 GEN_C := $(BUILD)/xdg-shell-protocol.c \
          $(BUILD)/cursor-shape-v1-protocol.c \
          $(BUILD)/tablet-v2-protocol.c \
-         $(BUILD)/xdg-output-unstable-v1-protocol.c
+         $(BUILD)/xdg-output-unstable-v1-protocol.c \
+         $(BUILD)/viewporter-protocol.c
 GEN_O := $(GEN_C:.c=.o)
 OBJS  := $(BUILD)/wdcomp.o $(BUILD)/png.o $(BUILD)/ipc.o $(BUILD)/xwm.o $(GEN_O)
 
@@ -91,7 +94,7 @@ check-ipc: $(BUILD)/ipc-test
 $(BUILD)/%-client-protocol.h: $(PROTO_DIR)/%.xml | $(BUILD)
 	$(SCANNER) client-header $< $@
 
-FIXTURE_PROTO := xdg-shell xdg-output-unstable-v1
+FIXTURE_PROTO := xdg-shell xdg-output-unstable-v1 viewporter
 FIXTURE_H := $(FIXTURE_PROTO:%=$(BUILD)/%-client-protocol.h)
 FIXTURE_O := $(FIXTURE_PROTO:%=$(BUILD)/%-protocol.o)
 $(BUILD)/subsurface-client: src/subsurface-client.c $(FIXTURE_H) $(FIXTURE_O)

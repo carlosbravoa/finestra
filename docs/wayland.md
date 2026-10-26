@@ -1044,6 +1044,49 @@ reads motion deltas, and Xwayland can only provide those from the
 protocols it is given. That is a feature, not a fix — the browser side is
 the Pointer Lock API — and it is in the roadmap.
 
+## What 0.4.1 settled: a frame's scale, and the one client that never says it
+
+**Firefox launched at twice its size on a 2× screen, the day 0.4.0
+shipped.** The frame header had just gained a scale byte — buffer pixels
+per logical one — and the browser had stopped dividing every frame by the
+screen's scale, so that an X client's 1× frame would fill its box rather
+than half of it. Right for X clients, and verified on one. Firefox's
+toplevel frame said scale 2, as GTK's `set_buffer_scale` makes it; the
+subsurface its whole interface is drawn in said **1**, with a 1100×212
+buffer for a 550×106 area. The shell took that at its word.
+
+A `WAYLAND_DEBUG=client` trace of the real thing showed Firefox calling
+`set_buffer_scale(2)` on the toplevel only. Its `WaylandSurface.cpp`
+scales a surface one way: `wp_viewport.set_destination`, the logical
+size said outright against whatever buffer it attaches. With no
+`wp_viewporter` on the registry it skips the call — the comment reads
+"silently ignore missing viewport to allow broken compositors to show
+something at least" — and there is no fallback to buffer scale. wdcomp
+was that broken compositor, and had been since the first Firefox window;
+the browser's habit of dividing by the screen's scale had been covering
+for it.
+
+`wdcomp` offers `wp_viewporter` now. The destination is double-buffered
+with the rest of the surface state, and at each commit a surface with one
+takes its scale from buffer width over destination width, whatever
+`set_buffer_scale` said; a ratio that is not an integer is rounded,
+because the header carries one byte and the only shape that has to be
+exact is a toolkit on an integer-scaled output. `set_source` is accepted
+and not applied — nothing that runs here crops. With the global present
+Firefox binds it at once, says `set_destination(550, 106)`, and the
+subsurface's frame says 2.
+
+Two things worth keeping from it. The release check for the scale byte
+was `texdoctk`'s xmessage, an X client — the one shape the change was
+right for — and the suite's 2× cases all used the fixture, which calls
+`set_buffer_scale` like a well-behaved toolkit. The fixture has
+`--viewport` now, Firefox's shape, and the suite checks that its frame
+says 2. And a single-instance Firefox can still be measured while
+another is running: `--new-instance --profile <dir>` under the snap gets
+as far as a "Profile Missing" dialog, which is a toplevel with a
+subsurface — enough to read the header from, with the probe the stage 8
+work left behind.
+
 ## What stage 8 settled
 
 **The complaint was a frozen terminal clock, and the cause was Firefox.**

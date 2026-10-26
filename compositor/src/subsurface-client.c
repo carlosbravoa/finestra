@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 
+#include "viewporter-client-protocol.h"
 #include "xdg-output-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
@@ -28,6 +29,7 @@ static struct wl_compositor *compositor;
 static struct wl_subcompositor *subcompositor;
 static struct wl_shm *shm;
 static struct xdg_wm_base *wm_base;
+static struct wp_viewporter *viewporter;
 
 static struct wl_surface *surface, *child;
 static struct wl_subsurface *subsurface;
@@ -36,6 +38,9 @@ static int configures;
 /* What the output says its density is: a toolkit draws scale times as many
  * pixels into the same logical size, and says so with set_buffer_scale. */
 static int32_t scale = 1;
+/* --viewport: the child says its logical size through wp_viewport instead,
+ * and never calls set_buffer_scale — Firefox's way, and its only way. */
+static bool viewport;
 
 /* The screen as the output describes it, written to the file WD_TEST_OUTPUT
  * names whenever the description is complete: the mode is in the screen's
@@ -204,7 +209,12 @@ static void surface_configure(void *data, struct xdg_surface *xdg,
 		struct wl_region *empty = wl_compositor_create_region(compositor);
 		wl_surface_set_input_region(child, empty);
 		wl_region_destroy(empty);
-		wl_surface_set_buffer_scale(child, scale);
+		if (viewport) {
+			struct wp_viewport *vp = wp_viewporter_get_viewport(viewporter, child);
+			wp_viewport_set_destination(vp, 120, 80);
+		} else {
+			wl_surface_set_buffer_scale(child, scale);
+		}
 		wl_surface_attach(child, solid(120 * scale, 80 * scale, 0xff00ff00), 0, 0);
 		wl_surface_damage_buffer(child, 0, 0, 120 * scale, 80 * scale);
 		wl_surface_commit(child);
@@ -252,6 +262,8 @@ static void global(void *data, struct wl_registry *registry, uint32_t name,
 		output_manager = wl_registry_bind(registry, name,
 			&zxdg_output_manager_v1_interface, version < 3 ? version : 3);
 		describe_output();
+	} else if (!strcmp(interface, wp_viewporter_interface.name)) {
+		viewporter = wl_registry_bind(registry, name, &wp_viewporter_interface, 1);
 	}
 }
 static void global_remove(void *data, struct wl_registry *registry, uint32_t name) {}
@@ -267,6 +279,7 @@ int main(int argc, char **argv) {
 		if (!strcmp(argv[i], "--unscaled")) unscaled = true;
 		else if (!strcmp(argv[i], "--hide")) hide = true;
 		else if (!strcmp(argv[i], "--brief")) brief = true;
+		else if (!strcmp(argv[i], "--viewport")) viewport = true;
 	}
 	struct wl_display *display = wl_display_connect(NULL);
 	if (!display) {
@@ -279,7 +292,8 @@ int main(int argc, char **argv) {
 	/* The output's scale arrives after the bind; one more round brings it. */
 	wl_display_roundtrip(display);
 	if (unscaled) scale = 1;
-	if (!compositor || !subcompositor || !shm || !wm_base) {
+	if (!compositor || !subcompositor || !shm || !wm_base ||
+			(viewport && !viewporter)) {
 		fprintf(stderr, "wd-subsurface-client: the compositor lacks a global\n");
 		return 1;
 	}

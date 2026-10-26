@@ -778,6 +778,24 @@ if (subApp) {
     await sleep(300);
   }
 
+  // The same screen, and an application that says a surface's logical size
+  // through wp_viewport and never calls set_buffer_scale on it — which is
+  // what Firefox does for the subsurface its whole interface is drawn in, and
+  // the only thing it does: without a viewporter it attaches the 2x buffer and
+  // says nothing. 0.4.0 took that silence at its word and showed Firefox at
+  // twice its size on every HiDPI screen.
+  if (apps.some((a) => a.id === 'wd-test-viewport')) {
+    const vp = open('wayland', 'session', { appId: 'wd-test-viewport', width: 320, height: 240, scale: 2 });
+    await until(() => vp.data.some((d) => d.t === 'subsurface') && vp.frames.length >= 2);
+    const vpPlaced = vp.data.find((d) => d.t === 'subsurface');
+    const vpChild = vp.frames.map(decodeFrame).find((f) => f.id === vpPlaced?.id);
+    check('a subsurface sized through wp_viewport sends a 2x frame that says so',
+      vpChild?.fullWidth === 240 && vpChild?.fullHeight === 160 && vpChild?.scale === 2,
+      vpChild ? `${vpChild.fullWidth}x${vpChild.fullHeight} at scale ${vpChild.scale}` : 'no frame');
+    ws.send(JSON.stringify({ t: 'close', id: vp.id }));
+    await sleep(300);
+  }
+
   /* -------------------------------------------------------------- */
   /* An X11 application, through an X server started for it          */
   /* -------------------------------------------------------------- */

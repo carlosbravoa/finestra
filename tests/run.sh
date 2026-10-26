@@ -156,6 +156,8 @@ if [ -x compositor/build/subsurface-client ]; then
   fixture wd-test-subsurface "WD Test Subsurface" "$PWD/compositor/build/subsurface-client" ""
   # The same client ignoring the output's scale, as an X client always does.
   fixture wd-test-unscaled "WD Test Unscaled" "$PWD/compositor/build/subsurface-client --unscaled" ""
+  # The same client sizing its subsurface through wp_viewport, as Firefox does.
+  fixture wd-test-viewport "WD Test Viewport" "$PWD/compositor/build/subsurface-client --viewport" ""
   # One that puts its window away and brings it back.
   fixture wd-test-hides "WD Test Hides" "$PWD/compositor/build/subsurface-client --hide" ""
   # An application with a helper process that shows a dialog and exits

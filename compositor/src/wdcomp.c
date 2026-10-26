@@ -49,6 +49,7 @@
 #include <wayland-server-protocol.h>
 
 #include "cursor-shape-v1-server-protocol.h"
+#include "viewporter-server-protocol.h"
 #include "xdg-output-unstable-v1-server-protocol.h"
 #include "xdg-shell-server-protocol.h"
 
@@ -263,9 +264,25 @@ struct wdc_surface {
 	bool damage_overflow;
 	int32_t pending_scale;
 	bool pending_input_empty;
+	/* wp_viewport.set_destination, double-buffered like the rest; 0 is
+	 * unset. */
+	int32_t pending_dest_w, pending_dest_h;
+	bool pending_dest_set;
 
 	/* Current state. */
+	/*
+	 * Buffer pixels per logical one. Set by set_buffer_scale, or — when
+	 * the client sized the surface through a wp_viewport instead — worked
+	 * out from the buffer and the destination at each commit. Firefox does
+	 * only the second for the subsurface its whole interface is drawn in,
+	 * and has no fallback: a compositor without viewporter is shown a 2x
+	 * buffer with no word of its scale, and shows it twice its size.
+	 */
 	int32_t scale;
+	int32_t dest_w, dest_h;
+	/* The surface's wp_viewport, so that it can be told when the surface
+	 * goes first — its later requests are a protocol error then. */
+	struct wl_resource *viewport;
 	/* An input region with nothing in it: the pointer goes to whatever is
 	 * underneath, which is the shell's business to arrange. */
 	bool input_empty;
@@ -795,6 +812,20 @@ static void render_commit(struct wdc_surface *surface,
 
 	int32_t buf_w = wl_shm_buffer_get_width(shm);
 	int32_t buf_h = wl_shm_buffer_get_height(shm);
+
+	/*
+	 * A viewport destination is the surface's logical size said outright,
+	 * and the buffer is however many pixels the client chose to draw it
+	 * with; the ratio is the scale, whatever set_buffer_scale said. A
+	 * toolkit on a 2x output sends a 2x buffer for a destination of the
+	 * logical size, which is the only shape this needs to be exact for —
+	 * the header carries an integer, and a ratio that is not one is
+	 * rounded to the nearest.
+	 */
+	if (surface->dest_w > 0 && surface->dest_h > 0) {
+		int32_t scale = (buf_w + surface->dest_w / 2) / surface->dest_w;
+		surface->scale = scale > 0 ? scale : 1;
+	}
 	struct wdc_rect win = window_rect(surface, buf_w, buf_h);
 
 	/*
@@ -989,6 +1020,11 @@ static void surface_apply(struct wdc_surface *surface) {
 
 	if (surface->pending_scale > 0) surface->scale = surface->pending_scale;
 	surface->pending_scale = 0;
+	if (surface->pending_dest_set) {
+		surface->dest_w = surface->pending_dest_w;
+		surface->dest_h = surface->pending_dest_h;
+		surface->pending_dest_set = false;
+	}
 
 	bool input_changed = surface->input_empty != surface->pending_input_empty;
 	surface->input_empty = surface->pending_input_empty;
@@ -1093,6 +1129,8 @@ static void surface_resource_destroy(struct wl_resource *resource) {
 	}
 	free(surface->canvas);
 	if (surface->xdg) surface->xdg->surface = NULL;
+	/* The viewport may outlive the surface; it must not point here. */
+	if (surface->viewport) wl_resource_set_user_data(surface->viewport, NULL);
 	if (surface->sub) {
 		/* The role object may outlive the surface; it must not point here. */
 		surface->sub->surface = NULL;
@@ -2669,6 +2707,118 @@ static void cursor_manager_bind(struct wl_client *client, void *data,
 		return;
 	}
 	wl_resource_set_implementation(resource, &cursor_manager_impl, data, NULL);
+}
+
+/* ------------------------------------------------------------------ */
+/* wp_viewporter                                                       */
+/*                                                                     */
+/* Crop and scale. Only the scale half matters here: a destination is  */
+/* the logical size of a surface whose buffer is some other size, and  */
+/* the ratio is the scale the frame is drawn at. Firefox sizes the     */
+/* subsurface its whole interface lives in this way and no other —     */
+/* without this global it attaches a 2x buffer, says nothing, and the  */
+/* browser was shown it at twice its size. The source rectangle is     */
+/* accepted and not applied: nothing that runs here crops.             */
+/* ------------------------------------------------------------------ */
+
+static void viewport_destroy_req(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static void viewport_resource_destroy(struct wl_resource *resource) {
+	struct wdc_surface *surface = wl_resource_get_user_data(resource);
+	if (!surface) return;
+	surface->viewport = NULL;
+	/* "The crop and scale state is removed", on the next commit. */
+	surface->pending_dest_w = 0;
+	surface->pending_dest_h = 0;
+	surface->pending_dest_set = true;
+}
+
+static void viewport_set_source(struct wl_client *client,
+		struct wl_resource *resource, wl_fixed_t x, wl_fixed_t y,
+		wl_fixed_t width, wl_fixed_t height) {
+	struct wdc_surface *surface = wl_resource_get_user_data(resource);
+	if (!surface) {
+		wl_resource_post_error(resource, WP_VIEWPORT_ERROR_NO_SURFACE,
+			"the wl_surface was destroyed");
+		return;
+	}
+	bool unset = x == wl_fixed_from_int(-1) && y == wl_fixed_from_int(-1) &&
+		width == wl_fixed_from_int(-1) && height == wl_fixed_from_int(-1);
+	if (!unset && (x < 0 || y < 0 || width <= 0 || height <= 0)) {
+		wl_resource_post_error(resource, WP_VIEWPORT_ERROR_BAD_VALUE,
+			"source rectangle must be positive");
+	}
+}
+
+static void viewport_set_destination(struct wl_client *client,
+		struct wl_resource *resource, int32_t width, int32_t height) {
+	struct wdc_surface *surface = wl_resource_get_user_data(resource);
+	if (!surface) {
+		wl_resource_post_error(resource, WP_VIEWPORT_ERROR_NO_SURFACE,
+			"the wl_surface was destroyed");
+		return;
+	}
+	if (width == -1 && height == -1) {
+		width = 0;
+		height = 0;
+	} else if (width <= 0 || height <= 0) {
+		wl_resource_post_error(resource, WP_VIEWPORT_ERROR_BAD_VALUE,
+			"destination size must be positive");
+		return;
+	}
+	surface->pending_dest_w = width;
+	surface->pending_dest_h = height;
+	surface->pending_dest_set = true;
+}
+
+static const struct wp_viewport_interface viewport_impl = {
+	.destroy = viewport_destroy_req,
+	.set_source = viewport_set_source,
+	.set_destination = viewport_set_destination,
+};
+
+static void viewporter_destroy_req(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static void viewporter_get_viewport(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id,
+		struct wl_resource *surface_resource) {
+	struct wdc_surface *surface = wl_resource_get_user_data(surface_resource);
+	if (surface->viewport) {
+		wl_resource_post_error(resource, WP_VIEWPORTER_ERROR_VIEWPORT_EXISTS,
+			"the surface already has a viewport");
+		return;
+	}
+	struct wl_resource *viewport = wl_resource_create(client,
+		&wp_viewport_interface, wl_resource_get_version(resource), id);
+	if (!viewport) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(viewport, &viewport_impl, surface,
+		viewport_resource_destroy);
+	surface->viewport = viewport;
+}
+
+static const struct wp_viewporter_interface viewporter_impl = {
+	.destroy = viewporter_destroy_req,
+	.get_viewport = viewporter_get_viewport,
+};
+
+static void viewporter_bind(struct wl_client *client, void *data,
+		uint32_t version, uint32_t id) {
+	struct wl_resource *resource = wl_resource_create(client,
+		&wp_viewporter_interface, (int)version, id);
+	if (!resource) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &viewporter_impl, data, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -4712,6 +4862,8 @@ int main(int argc, char **argv) {
 		wm_base_bind);
 	wl_global_create(server.display, &wp_cursor_shape_manager_v1_interface, 1,
 		&server, cursor_manager_bind);
+	wl_global_create(server.display, &wp_viewporter_interface, 1, &server,
+		viewporter_bind);
 
 	wl_event_loop_add_signal(server.loop, SIGINT, handle_signal, &server);
 	wl_event_loop_add_signal(server.loop, SIGTERM, handle_signal, &server);

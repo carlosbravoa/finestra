@@ -4,6 +4,18 @@ What changed in each release, for someone deciding whether to update. The
 reasoning behind a change is in its commit; the failures that cost time are in
 `docs/`.
 
+## 0.4.1 — 2026-10-25
+
+**Firefox at its right size on HiDPI screens.** 0.4.0 showed Firefox at
+twice its size on a 2× screen, the whole interface overflowing its
+window. Firefox tells a compositor the size of the surface it draws into
+through the `viewporter` protocol and no other way, and the compositor
+did not offer it; 0.4.0 began trusting what each window said about its
+own scale, and Firefox had said nothing. The compositor offers
+`viewporter` now. Nothing changes for applications that were already
+right, X11 ones included. Update if you use Firefox, or anything else
+built on its toolkit, from a laptop or phone with a high-density screen.
+
 ## 0.4.0 — 2026-10-25
 
 **X11 applications run.** Programs that speak X11 rather than Wayland —

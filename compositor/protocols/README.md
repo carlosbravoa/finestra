@@ -10,6 +10,7 @@ hand-written — it is just no longer read out of `/usr/share/wayland-protocols`
 | `cursor-shape-v1.xml` | `staging/cursor-shape/cursor-shape-v1.xml` |
 | `tablet-v2.xml` | `stable/tablet/tablet-v2.xml` |
 | `xdg-output-unstable-v1.xml` | `unstable/xdg-output/xdg-output-unstable-v1.xml` — one attribute removed, see below |
+| `viewporter.xml` | `stable/viewporter/viewporter.xml` |
 
 Each file carries its own MIT copyright notice in a `<copyright>` element; that
 is the licence they are used under, and copying them keeps it attached.
@@ -18,6 +19,12 @@ is the licence they are used under, and copying them keeps it attached.
 from the output *mode*, which at scale 2 is twice the window, and X menus
 place themselves against a screen that does not exist. With it the X screen
 is the logical size, which is the window.
+
+`viewporter` is here for Firefox: it tells a compositor the logical size of
+the subsurface its whole interface is drawn in through `wp_viewport` and in
+no other way, and skips the call where the global is missing. Without it a
+2× screen was shown a 2× buffer that claimed to be 1×, which is Firefox at
+twice its size.
 
 ## Why they are here and not read from the system
 
