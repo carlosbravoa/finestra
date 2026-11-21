@@ -4,6 +4,40 @@ What changed in each release, for someone deciding whether to update. The
 reasoning behind a change is in its commit; the failures that cost time are in
 `docs/`.
 
+## 0.4.2 — 2026-11-21
+
+**See what could be updated.** System Manager has an Updates section: press
+*Check for updates* and it lists every package with a newer version —
+the version installed, the one on offer, where it comes from, and which
+are security fixes — and says whether the machine is waiting for a
+restart. It asks apt, dnf, zypper, pacman, snap and flatpak, whichever
+the machine has. It checks only when asked and installs nothing; each
+package manager's line has the command to copy into a terminal. On apt
+and zypper it reads the package lists already on the machine unless
+`sudo` works without a password, and says how old they are. Security
+fixes are marked for apt and dnf; zypper's are counted, and pacman
+cannot say.
+
+**Disk usage finishes, and remembers.** A scan used to stop when you left
+the Disk usage tab and start again from nothing when you came back, and
+every folder you opened was measured again. The scan now belongs to the
+server: it carries on while you look at something else, a folder already
+measured opens at once, and the result stays until you press *Rescan* —
+which measures just the folder on screen. *Stop* pauses it and keeps
+what it has. It is about three times faster at reading a disk, and no
+longer wanders into `/proc`, `/sys`, RAM disks, snap images or network
+mounts; those show their type instead of a size and are measured if you
+open them. Files with several names are counted once, as `du` does, so
+some totals are smaller than before. The server keeps the result in
+memory — about 150 MB after a disk of 2.5 million files — and lets it go
+after a day unwatched.
+
+**A way to run the server out of memory is closed.** The WebSocket
+library is updated to 8.23.0, which fixes a fault where a connection
+that sent pings and never read the answers made the server queue them
+without limit. Reaching the server still means being past the SSH tunnel
+and the token, so this is one to take, not one to hurry for.
+
 ## 0.4.1 — 2026-10-25
 
 **Firefox at its right size on HiDPI screens.** 0.4.0 showed Firefox at
