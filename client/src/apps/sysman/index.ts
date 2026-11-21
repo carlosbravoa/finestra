@@ -8,6 +8,7 @@ import { overviewSection } from './overview';
 import { processesSection } from './processes';
 import { storageSection } from './storage';
 import { unitsSection } from './units';
+import { updatesSection } from './updates';
 import './sysman.css';
 
 const SYSMAN_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -22,6 +23,7 @@ const SECTIONS: SectionDef[] = [
   unitsSection,
   journalSection,
   storageSection,
+  updatesSection,
   networkSection,
   certificatesSection,
 ];
@@ -205,7 +207,7 @@ async function mount({ window: win, root, desktop, params }: AppContext): Promis
     ev.preventDefault();
     for (const item of active?.menu?.() ?? []) {
       if (item.type === 'separator' || item.type === 'header') continue;
-      if (!item.disabled && /^(refresh|rescan)/i.test(item.label)) {
+      if (!item.disabled && /^(refresh|rescan|check)/i.test(item.label)) {
         item.onSelect?.();
         break;
       }

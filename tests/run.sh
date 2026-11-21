@@ -291,6 +291,7 @@ run "outbound session + relay"    node tests/outbound.mjs
 run "host registry"               npx tsx tests/hosts.test.ts
 run "standalone stays standalone" npx tsx tests/standalone.test.ts
 run "session deadman"             npx tsx tests/deadman.test.ts
+run "what the package managers say" npx tsx tests/updates.test.ts
 run "the session's socket"        npx tsx tests/session.test.ts
 run "what outlives the browser"   npx tsx tests/grace.test.ts
 run "session store"               npx tsx tests/session-store.test.ts

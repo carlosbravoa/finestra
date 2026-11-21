@@ -83,7 +83,7 @@ const alive = (pid) => {
 /* Handshake                                                           */
 /* ------------------------------------------------------------------ */
 
-for (const svc of ['proc', 'systemd', 'journal', 'net', 'certs']) {
+for (const svc of ['proc', 'systemd', 'journal', 'net', 'certs', 'updates']) {
   check(`${svc} is advertised`, Boolean(named(svc)));
 }
 check('fs advertises the scan channel', named('fs').channels.includes('scan'));
@@ -528,6 +528,36 @@ async function countJournalctl() {
   await sleep(600);
   check('a scan of a missing path closes with an error',
     missing.closed && Boolean(missing.error), missing.error);
+}
+
+/* ------------------------------------------------------------------ */
+/* updates                                                             */
+/* ------------------------------------------------------------------ */
+
+{
+  // What the parsers read is pinned in updates.test.ts. This is the other
+  // half: that on whatever machine the suite runs on, the real tools are
+  // asked and something coherent comes back.
+  const before = await call('updates', 'last');
+  check('nothing is checked until somebody asks', before.report === null && before.checking === false,
+    JSON.stringify(before).slice(0, 80));
+
+  const report = await call('updates', 'check');
+  check('a check finds this machine\'s package manager', report.sources.length > 0,
+    report.sources.map((s) => `${s.id}:${s.error ? 'error' : s.packages.length}`).join(' '));
+  check('every source says how to install what it found',
+    report.sources.every((s) => typeof s.command === 'string' && s.command.length > 0));
+  check('a source that read old lists says how old',
+    report.sources.every((s) => s.fresh || s.error || typeof s.listsAt === 'number'),
+    report.sources.filter((s) => !s.fresh).map((s) => `${s.id}:${s.listsAt}`).join(' '));
+  check('every update names a package and the version on offer',
+    report.sources.every((s) => s.packages.every((p) => p.name && p.available)));
+  check('whether a restart is wanted is answered either way',
+    typeof report.reboot.needed === 'boolean' && report.reboot.needed === report.reboot.reasons.length > 0,
+    report.reboot.reasons.join(' '));
+
+  const after = await call('updates', 'last');
+  check('the answer is kept for whoever looks next', after.report?.checkedAt === report.checkedAt);
 }
 
 /* ------------------------------------------------------------------ */

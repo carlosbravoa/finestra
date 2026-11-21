@@ -1097,3 +1097,58 @@
     max-width: 150px;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Updates                                                             */
+/* ------------------------------------------------------------------ */
+
+/* One line per package manager: what it said, and how fresh its lists were. */
+.sysman-update-sources {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.sysman-update-sources:empty {
+  display: none;
+}
+
+.sysman-update-source {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 30px;
+  padding: 3px 12px;
+  font-size: 12px;
+}
+
+.sysman-update-source-name {
+  flex: 0 0 130px;
+  font-weight: 600;
+}
+
+.sysman-update-source-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysman-update-source.is-stale .sysman-update-source-detail {
+  color: var(--warning);
+}
+
+.sysman-update-source.is-error .sysman-update-source-detail {
+  color: var(--danger);
+}
+
+.sysman-update-copy {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.sysman-update-sec {
+  margin-left: 7px;
+}

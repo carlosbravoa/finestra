@@ -90,6 +90,11 @@ Updates available, install, remove, and crucially *what needs a reboot*. Big
 surface and distro-specific; a read-only "what is out of date" view delivers
 most of the value for a fraction of the work.
 
+The read-only view is built: System Manager → Updates, `services/updates.ts`.
+It asks apt, dnf, zypper, pacman, snap and flatpak, only when the button is
+pressed, as the ordinary user the service runs as. Installing stays in a
+terminal — it wants root and somebody watching.
+
 ### Cron / timer editor
 Both `crontab` and systemd timers, showing next run time. Editing cron in a
 form with a human-readable schedule preview prevents a whole class of mistakes.

@@ -10,6 +10,7 @@ import { shellService } from './shell.js';
 import { ptyService } from './pty.js';
 import { sysService } from './sys.js';
 import { systemdService } from './systemd.js';
+import { updatesService } from './updates.js';
 import { waylandService } from './wayland.js';
 
 /**
@@ -27,6 +28,7 @@ export const services: Service[] = [
   journalService,
   netService,
   certsService,
+  updatesService,
   waylandService,
   shellService,
   authService,
