@@ -2,6 +2,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { resolvePath } from '../paths.js';
+import { watchScan } from '../scan.js';
 import { ServiceError, type Service } from '../service.js';
 
 export interface DirEntry {
@@ -113,173 +114,25 @@ export const fsService: Service = {
 
   channels: {
     /**
-     * Disk-usage scan of one directory: each immediate child is walked fully
-     * and reported with its aggregated size, so a drill-down UI re-opens the
-     * channel one level deeper. Results stream in as children complete, with
-     * progress heartbeats inside big ones, and the walk stops the moment the
-     * channel closes — a scan of `/` must die with its window.
+     * Disk usage of one directory: a row per immediate child, directories
+     * with the total of everything under them. The measuring is not this
+     * channel's — see scan.ts. The channel watches one folder of a scan that
+     * outlives it, so leaving the panel and coming back costs nothing, and
+     * opening a folder already measured answers at once.
      */
-    scan(args: { path: string }, ctx) {
+    scan(args: { path: string; fresh?: boolean }, ctx) {
       const target = resolvePath(args?.path, ctx.config.root);
-      let cancelled = false;
-
-      void scanDirectory(target, ctx, () => cancelled).catch((err) => {
-        ctx.close((err as Error).message);
-      });
-
+      const handle = watchScan(target, args?.fresh === true, ctx);
       return {
-        info: { path: target },
-        onClose: () => {
-          cancelled = true;
+        info: handle.info,
+        onData: (data) => {
+          if ((data as { type?: string } | null)?.type === 'stop') handle.stop();
         },
+        onClose: () => handle.unwatch(),
       };
     },
   },
 };
-
-/** How many stat/readdir calls a scan keeps in flight. */
-const SCAN_CONCURRENCY = 16;
-/** Progress heartbeat interval while inside one large child. */
-const SCAN_PROGRESS_MS = 250;
-
-interface WalkTotals {
-  bytes: number;
-  entries: number;
-  errors: number;
-}
-
-async function scanDirectory(
-  target: string,
-  ctx: { send(data: unknown): void; close(error?: string): void },
-  isCancelled: () => boolean,
-): Promise<void> {
-  const dirents = await fsp.readdir(target, { withFileTypes: true });
-  ctx.send({ type: 'start', path: target, children: dirents.length });
-
-  const total: WalkTotals = { bytes: 0, entries: 0, errors: 0 };
-
-  // Children one at a time (parallelism lives inside the walk), so results
-  // arrive as a steady stream instead of everything completing at the end.
-  for (const dirent of dirents) {
-    if (isCancelled()) return;
-    const childPath = path.join(target, dirent.name);
-    const totals: WalkTotals = { bytes: 0, entries: 0, errors: 0 };
-
-    let lastBeat = Date.now();
-    const beat = () => {
-      if (Date.now() - lastBeat < SCAN_PROGRESS_MS) return;
-      lastBeat = Date.now();
-      ctx.send({ type: 'progress', name: dirent.name, bytes: totals.bytes, entries: totals.entries });
-    };
-
-    let kind: 'file' | 'directory' | 'symlink' | 'other' = 'other';
-    if (dirent.isSymbolicLink()) {
-      // Symlinks count as themselves; following them would double-count and loop.
-      kind = 'symlink';
-      try {
-        const lst = await fsp.lstat(childPath);
-        totals.bytes += lst.blocks * 512;
-        totals.entries += 1;
-      } catch {
-        totals.errors += 1;
-      }
-    } else if (dirent.isDirectory()) {
-      kind = 'directory';
-      await walkTree(childPath, totals, isCancelled, beat);
-    } else {
-      if (dirent.isFile()) kind = 'file';
-      try {
-        const lst = await fsp.lstat(childPath);
-        totals.bytes += lst.blocks * 512;
-        totals.entries += 1;
-      } catch {
-        totals.errors += 1;
-      }
-    }
-
-    if (isCancelled()) return;
-    total.bytes += totals.bytes;
-    total.entries += totals.entries;
-    total.errors += totals.errors;
-    ctx.send({
-      type: 'child',
-      name: dirent.name,
-      path: childPath,
-      kind,
-      bytes: totals.bytes,
-      entries: totals.entries,
-      errors: totals.errors,
-    });
-  }
-
-  ctx.send({ type: 'done', ...total });
-  ctx.close();
-}
-
-/**
- * Sum a subtree's disk usage (allocated blocks, like `du`) without following
- * symlinks. Keeps a bounded number of filesystem calls in flight and checks
- * for cancellation between them.
- */
-async function walkTree(
-  root: string,
-  totals: WalkTotals,
-  isCancelled: () => boolean,
-  beat: () => void,
-): Promise<void> {
-  const queue: string[] = [root];
-  let active = 0;
-
-  await new Promise<void>((resolve) => {
-    const pump = () => {
-      if (isCancelled()) {
-        queue.length = 0;
-        if (active === 0) resolve();
-        return;
-      }
-      while (active < SCAN_CONCURRENCY && queue.length > 0) {
-        const dir = queue.pop()!;
-        active++;
-        void processDir(dir).finally(() => {
-          active--;
-          if (active === 0 && queue.length === 0) resolve();
-          else pump();
-        });
-      }
-      if (active === 0 && queue.length === 0) resolve();
-    };
-
-    const processDir = async (dir: string): Promise<void> => {
-      let dirents;
-      try {
-        const lst = await fsp.lstat(dir);
-        totals.bytes += lst.blocks * 512;
-        totals.entries += 1;
-        dirents = await fsp.readdir(dir, { withFileTypes: true });
-      } catch {
-        totals.errors += 1;
-        return;
-      }
-      for (const d of dirents) {
-        const full = path.join(dir, d.name);
-        if (d.isDirectory() && !d.isSymbolicLink()) {
-          queue.push(full);
-        } else {
-          try {
-            const lst = await fsp.lstat(full);
-            totals.bytes += lst.blocks * 512;
-            totals.entries += 1;
-          } catch {
-            totals.errors += 1;
-          }
-        }
-      }
-      beat();
-    };
-
-    pump();
-  });
-}
 
 /**
  * When `tolerant`, an entry that cannot be stat'd is returned carrying an

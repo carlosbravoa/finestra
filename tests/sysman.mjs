@@ -432,38 +432,92 @@ async function countJournalctl() {
 /* ------------------------------------------------------------------ */
 
 {
-  const scan = open('fs', 'scan', { path: '/usr/share/doc' });
-  await sleep(2500);
+  const closed = async (c, ms = 60_000) => {
+    for (let waited = 0; !c.closed && waited < ms; waited += 50) await sleep(50);
+    return c.closed;
+  };
+  const rows = (c) => {
+    // A directory is sent as a name and again with its total; the last word counts.
+    const byPath = new Map();
+    for (const d of c.data) if (d.type === 'child') byPath.set(d.path, d);
+    return [...byPath.values()];
+  };
+  const done = (c) => c.data.find((d) => d.type === 'done');
+
+  const scan = open('fs', 'scan', { path: '/usr/share/doc', fresh: true });
+  await closed(scan);
   const start = scan.data.find((d) => d.type === 'start');
-  const children = scan.data.filter((d) => d.type === 'child');
+  const children = rows(scan);
   check('a scan announces what it is about to walk', Boolean(start), JSON.stringify(start));
   check('children stream in with sizes', children.length > 0, `${children.length} children`);
   check('directory sizes are aggregated, not just the inode',
     children.some((c) => c.kind === 'directory' && c.bytes > 4096));
   check('entry counts are reported', children.every((c) => typeof c.entries === 'number'));
+  check('a finished scan leaves no directory unmeasured',
+    Boolean(done(scan)) && children.every((c) => !c.pending),
+    `${children.filter((c) => c.pending).length} pending`);
 
-  // Cancellation is the property that matters: closing the channel must stop
-  // the walk, not merely stop delivering it. A control run establishes that
-  // this scan really is still producing results over the same interval —
-  // otherwise "it stopped" would prove nothing.
-  const kids = (c) => c.data.filter((d) => d.type === 'child').length;
+  // The scan is the server's, not the channel's. Everything below is that one
+  // property seen from different sides: asked again, it answers from what it
+  // has; left alone, it goes on; only Rescan and Stop change it.
+  const again = open('fs', 'scan', { path: '/usr/share/doc' });
+  const quick = await closed(again, 1000);
+  check('a folder already measured answers at once', quick && again.info?.state === 'done',
+    `closed=${quick} state=${again.info?.state}`);
+  check('and says the same', done(again)?.bytes === done(scan)?.bytes,
+    `${done(scan)?.bytes} then ${done(again)?.bytes}`);
 
-  const control = open('fs', 'scan', { path: '/usr/share' });
-  await sleep(700);
-  const controlEarly = kids(control);
-  await sleep(1500);
-  const controlLate = kids(control);
-  check('a scan left open keeps producing results', controlLate > controlEarly,
-    `${controlEarly} -> ${controlLate}`);
-  ws.send(JSON.stringify({ t: 'close', id: control.id }));
+  const biggest = children.filter((c) => c.kind === 'directory').sort((a, b) => b.bytes - a.bytes)[0];
+  const inside = open('fs', 'scan', { path: biggest.path });
+  await closed(inside, 2000);
+  check('a folder inside a finished scan is not walked again',
+    inside.info?.startedAt === scan.info?.startedAt && done(inside)?.bytes === biggest.bytes,
+    `${biggest.name}: row ${biggest.bytes}, opened ${done(inside)?.bytes}`);
 
-  const big = open('fs', 'scan', { path: '/usr/share' });
-  await sleep(700);
-  const partial = kids(big);
-  ws.send(JSON.stringify({ t: 'close', id: big.id }));
-  await sleep(1500);
-  check('closing a scan channel stops it', kids(big) === partial,
-    `${partial} -> ${kids(big)}`);
+  // /usr is the smallest tree here that is still being walked a moment later.
+  const left = open('fs', 'scan', { path: '/usr', fresh: true });
+  await sleep(150);
+  const leftUnfinished = !left.closed;
+  ws.send(JSON.stringify({ t: 'close', id: left.id }));
+  await sleep(200);
+  const back = open('fs', 'scan', { path: '/usr' });
+  await closed(back);
+  check('a scan goes on after the panel showing it has gone',
+    leftUnfinished && back.info?.startedAt === left.info?.startedAt && Boolean(done(back)),
+    `unfinished when left=${leftUnfinished}, same scan=${back.info?.startedAt === left.info?.startedAt}`);
+  check('and the folders it had not reached are measured by the time it is done',
+    rows(back).length > 0 && rows(back).every((c) => !c.pending));
+
+  const halted = open('fs', 'scan', { path: '/usr', fresh: true });
+  // A channel hears nothing until it is open, so Stop waits for that, as
+  // the button does.
+  for (let waited = 0; !halted.info && waited < 2000; waited += 10) await sleep(10);
+  ws.send(JSON.stringify({ t: 'data', id: halted.id, d: { type: 'stop' } }));
+  await closed(halted, 5000);
+  check('Stop stops the scan and says so',
+    halted.data.some((d) => d.type === 'stopped') && !done(halted));
+  const after = open('fs', 'scan', { path: '/usr' });
+  await closed(after, 5000);
+  check('a stopped scan stays stopped, with what it had',
+    after.info?.state === 'stopped' && after.data.some((d) => d.type === 'stopped') && !done(after),
+    `state=${after.info?.state}`);
+  const resumed = open('fs', 'scan', { path: '/usr/share', fresh: true });
+  await closed(resumed);
+  check('Rescan carries a stopped scan on', Boolean(done(resumed)) && done(resumed).bytes > 0,
+    JSON.stringify(done(resumed)));
+
+  // /dev is a few hundred entries with three or four other filesystems
+  // mounted inside it, which makes it the cheap stand-in for "/".
+  const dev = open('fs', 'scan', { path: '/dev', fresh: true });
+  await closed(dev);
+  const stayedOut = rows(dev).filter((c) => c.mount);
+  check('filesystems that are not disk are named, not walked',
+    stayedOut.length > 0 && stayedOut.every((c) => c.bytes === 0 && !c.pending),
+    stayedOut.map((c) => `${c.name}:${c.mount}`).join(' '));
+  const asked = open('fs', 'scan', { path: stayedOut[0]?.path ?? '/dev/shm' });
+  await closed(asked);
+  check('one of them asked for by name is measured', Boolean(done(asked)) && done(asked).entries > 0,
+    JSON.stringify(done(asked)));
 
   await call('fs', 'stat', { path: '/definitely-not-here' }).then(
     () => check('scanning a missing path fails', false, 'it answered'),

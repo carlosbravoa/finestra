@@ -720,6 +720,12 @@
   min-width: 0;
 }
 
+/* A mount the scan stayed out of: its type, in place of a size. */
+.sysman-du-note {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .sysman-du-icon {
   flex: 0 0 auto;
   font-size: 12px;

@@ -25,13 +25,26 @@ interface ChildRow {
   bytes: number;
   entries: number;
   errors: number;
+  /** A directory whose total is not in yet. */
+  pending?: boolean;
+  /** A mount the scan stayed out of, by filesystem type. */
+  mount?: string;
 }
 
 type ScanMessage =
   | { type: 'start'; path: string; children: number }
-  | { type: 'progress'; name: string; bytes: number; entries: number }
+  | { type: 'progress'; at: string; bytes: number; entries: number }
   | ({ type: 'child' } & ChildRow)
-  | { type: 'done'; bytes: number; entries: number; errors: number };
+  | { type: 'done'; bytes: number; entries: number; errors: number }
+  | { type: 'stopped' };
+
+/** What the server says about the scan a folder belongs to. */
+interface ScanInfo {
+  root: string;
+  state: 'scanning' | 'done' | 'stopped';
+  startedAt: number;
+  finishedAt: number | null;
+}
 
 interface StorageParams {
   path?: string;
@@ -50,9 +63,16 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
 
   let channel: Channel | null = null;
   let currentPath = typeof params.path === 'string' ? params.path : '/';
-  let children: ChildRow[] = [];
+  // Keyed by path: a directory's row arrives once as a name and again when
+  // its total is in.
+  const rows = new Map<string, ChildRow>();
   let total = 0;
   let scanning = false;
+  /** This folder's listing is whole: nothing to ask the server again. */
+  let complete = false;
+  let measuredAt: number | null = null;
+  /** Counts folders shown, so a late message from the last one is ignored. */
+  let watching = 0;
   let pendingRender: number | null = null;
   let progressText = '';
   let expected = 0;
@@ -79,7 +99,16 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
       label: 'Size',
       cls: 'is-num',
       width: '96px',
-      render: (row) => formatBytes(row.bytes),
+      render: (row) =>
+        row.mount
+          ? h('span', {
+              class: 'sysman-du-note',
+              text: row.mount,
+              title: `A ${row.mount} filesystem mounted here, not space on this disk. Open it to measure it anyway.`,
+            })
+          : row.pending
+            ? '…'
+            : formatBytes(row.bytes),
       sort: (row) => row.bytes,
       desc: true,
     },
@@ -127,7 +156,9 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
     const parent = parentOf(currentPath);
     if (parent) scan(parent);
   });
-  const rescanButton = button('Rescan', () => scan(currentPath));
+  const rescanButton = button('Rescan', () => scan(currentPath, true), {
+    title: 'Measure this folder again',
+  });
   const stopButton = button('Stop', () => stop(), { danger: true });
   const totalLabel = h('span', { class: 'sysman-toolbar-note' });
   const progressBar = h('div', { class: 'sysman-progress' });
@@ -162,13 +193,20 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
   function render(): void {
     if (ctx.isDisposed()) return;
     pathLabel.textContent = currentPath;
-    totalLabel.textContent = `${formatBytes(total)} in ${children.length} items`;
+    const children = [...rows.values()];
+    total = children.reduce((sum, row) => sum + row.bytes, 0);
+    totalLabel.textContent =
+      `${formatBytes(total)} in ${children.length} items` +
+      (complete && measuredAt
+        ? ` · measured ${new Date(measuredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+        : '');
     stopButton.disabled = !scanning;
     rescanButton.disabled = scanning;
 
     progressBar.hidden = !scanning;
     if (scanning) {
-      const pct = expected > 0 ? Math.min(100, (children.length / expected) * 100) : 0;
+      const settled = children.filter((row) => !row.pending).length;
+      const pct = expected > 0 ? Math.min(100, (settled / expected) * 100) : 0;
       progressBar.textContent = progressText || 'Scanning…';
       progressBar.style.setProperty('--progress', `${pct}%`);
     }
@@ -181,24 +219,32 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
     table.setRows(children);
   }
 
-  function stop(): void {
-    if (channel) {
-      channel.close();
-      channel = null;
-    }
-    if (scanning) {
-      scanning = false;
-      progressText = '';
-      render();
-    }
+  /** Stop looking. The scan itself belongs to the server and carries on. */
+  function detach(): void {
+    const open = channel;
+    channel = null;
+    // What a closed channel still has to say is about a folder left behind.
+    watching++;
+    open?.close();
   }
 
-  function scan(path: string): void {
-    stop();
+  /** Stop the scan itself. The server answers `stopped`, and what it has stays. */
+  function stop(): void {
+    channel?.send({ type: 'stop' });
+  }
+
+  /**
+   * Show a folder. Whatever the server has already measured comes back at
+   * once; `fresh` asks for it to be measured again.
+   */
+  function scan(path: string, fresh = false): void {
+    detach();
     currentPath = path;
-    children = [];
+    rows.clear();
     total = 0;
     expected = 0;
+    complete = false;
+    measuredAt = null;
     scanning = true;
     progressText = 'Starting…';
     banner.hidden = true;
@@ -206,31 +252,46 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
     upButton.disabled = parentOf(path) === null;
     render();
 
+    const mine = watching;
     channel = desktop.rpc.openChannel(
       'fs',
       'scan',
-      { path },
+      { path, fresh },
       {
+        onOpen: (info) => {
+          if (mine !== watching) return;
+          const scanInfo = info as ScanInfo | null;
+          // Asked to measure again, the time of the last answer is not this one's.
+          measuredAt = fresh ? null : (scanInfo?.finishedAt ?? null);
+        },
         onData: (raw) => {
-          if (ctx.isDisposed()) return;
+          if (ctx.isDisposed() || mine !== watching) return;
           const msg = raw as ScanMessage;
           switch (msg.type) {
             case 'start':
               expected = msg.children;
-              progressText = `Scanning ${msg.children} items…`;
+              progressText = `Measuring ${msg.children} items…`;
               break;
             case 'progress':
-              progressText = `${msg.name} — ${formatBytes(msg.bytes)} so far`;
+              progressText = `${msg.at} — ${formatBytes(msg.bytes)} so far`;
               break;
             case 'child': {
               const { type, ...row } = msg;
               void type;
-              children.push(row);
-              total += row.bytes;
+              rows.set(row.path, row);
               break;
             }
+            case 'stopped':
+              scanning = false;
+              progressText = '';
+              banner.hidden = false;
+              banner.textContent =
+                'The scan was stopped. Sizes shown as … were not measured; Rescan carries on.';
+              break;
             case 'done':
               scanning = false;
+              complete = true;
+              measuredAt ??= Date.now();
               progressText = '';
               ctx.setStatus(
                 `${currentPath}: ${formatBytes(msg.bytes)} across ${msg.entries.toLocaleString()} items` +
@@ -241,7 +302,7 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
           scheduleRender();
         },
         onClose: (error) => {
-          if (ctx.isDisposed()) return;
+          if (ctx.isDisposed() || mine !== watching) return;
           channel = null;
           const wasScanning = scanning;
           scanning = false;
@@ -250,9 +311,11 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
             banner.textContent = error;
             ctx.setStatus('Scan failed');
           } else if (wasScanning) {
-            // Closed without a `done`: the connection dropped mid-scan.
+            // Closed without a `done`: the connection dropped. The scan
+            // did not — it is the server's — so coming back picks it up.
             banner.hidden = false;
-            banner.textContent = 'The scan stopped before it finished.';
+            banner.textContent =
+              'Lost the connection. The scan carries on; this will catch up when it is back.';
           }
           render();
         },
@@ -290,17 +353,22 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
     element,
 
     activate() {
-      // A scan is expensive; start it on the first visit, not on every return.
-      if (children.length === 0 && !scanning) scan(currentPath);
+      // The first visit, or a return after the connection was lost. A return
+      // from another tab finds the channel still open and has nothing to do.
+      if (!channel && !complete) scan(currentPath);
     },
 
-    deactivate() {
-      // A scan of / must not keep walking the disk for a panel nobody sees.
-      stop();
-    },
+    // No deactivate: a scan that stopped whenever the panel was left never
+    // finished on a large disk. It runs on the server until it is done, and
+    // the rows arriving for a hidden panel cost nothing.
 
     menu: () => [
-      { label: 'Rescan', accelerator: 'F5', disabled: scanning, onSelect: () => scan(currentPath) },
+      {
+        label: 'Rescan',
+        accelerator: 'F5',
+        disabled: scanning,
+        onSelect: () => scan(currentPath, true),
+      },
       { label: 'Stop scan', disabled: !scanning, onSelect: () => stop() },
       { type: 'separator' },
       { label: 'Scan /', onSelect: () => scan('/') },
@@ -327,7 +395,7 @@ function createStorage(ctx: SectionContext, params: StorageParams): Section {
     saveState: () => ({ path: currentPath }),
 
     destroy() {
-      stop();
+      detach();
       if (pendingRender !== null) window.clearTimeout(pendingRender);
       pendingRender = null;
       table.destroy();

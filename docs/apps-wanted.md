@@ -63,8 +63,11 @@ the desktop itself is costing.
 miserable. A treemap or a drill-down list with sizes, scanned incrementally
 over a channel so a huge tree streams in rather than hanging.
 
-*Needs:* a scanning channel in `fs`. Must be cancellable — a scan of `/` on a
-big disk has to stop when the window closes.
+*Needs:* a scanning channel in `fs`. Built, and the second requirement written
+here — "a scan of `/` has to stop when the window closes" — turned out to be
+the wrong one: it made a scan that stopped whenever the panel was left, which
+on a big disk is one that never finishes. The scan is the server's now
+(`server/src/scan.ts`); Stop is a button, not a side effect.
 
 ## Build these once the basics work
 
